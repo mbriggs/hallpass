@@ -112,7 +112,7 @@ func TestGitThroughBroker(t *testing.T) {
 	}
 	cfg := &config.Config{
 		Token:             &config.Token{Secret: "file:/x", Source: "pat"},
-		Repos:             []config.Repo{{Match: "acme/widgets"}, {Match: "acme/site", Allow: []op.Op{op.PushDefault}}},
+		Repos:             []config.Repo{{Match: "acme/widgets"}, {Match: "acme/site", Allow: []config.Grant{config.Grant(op.PushDefault)}}},
 		ProtectedBranches: []string{"main", "release/*"},
 		APIURL:            up.URL + "/api",
 		GitURL:            up.URL,

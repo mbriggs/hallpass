@@ -24,7 +24,6 @@ import (
 	"github.com/mbriggs/hallpass/internal/config"
 	"github.com/mbriggs/hallpass/internal/github"
 	"github.com/mbriggs/hallpass/internal/keys"
-	"github.com/mbriggs/hallpass/internal/op"
 	"github.com/mbriggs/hallpass/internal/peer"
 	"github.com/mbriggs/hallpass/internal/sign"
 )
@@ -249,8 +248,8 @@ func (s *Server) status(check bool) *Status {
 }
 
 // opChanges summarizes a layer's allow and deny lists, like
-// "+pr.merge -labels".
-func opChanges(allow, deny []op.Op) string {
+// "+pr.merge -labels +read:deployments".
+func opChanges(allow, deny []config.Grant) string {
 	var parts []string
 	for _, o := range allow {
 		parts = append(parts, "+"+string(o))

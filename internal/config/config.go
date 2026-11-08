@@ -18,6 +18,7 @@ import (
 	"github.com/mbriggs/hallpass/internal/github"
 	"github.com/mbriggs/hallpass/internal/keys"
 	"github.com/mbriggs/hallpass/internal/op"
+	"github.com/mbriggs/hallpass/internal/policy"
 )
 
 // Path is where the broker reads its config. Only root writes it.
@@ -66,10 +67,10 @@ type Config struct {
 	// ProtectedBranches can't be pushed by agents in any repo, on top of
 	// each repo's default branch. A trailing "/*" matches a prefix.
 	ProtectedBranches []string `toml:"protected_branches"`
-	// Allow and Deny change which operations agents may do in every repo.
-	// A repo entry's own lists override these.
-	Allow []op.Op `toml:"allow,omitempty"`
-	Deny  []op.Op `toml:"deny,omitempty"`
+	// Allow and Deny change which operations agents may do, and what they
+	// may read, in every repo. A repo entry's own lists override these.
+	Allow []Grant `toml:"allow,omitempty"`
+	Deny  []Grant `toml:"deny,omitempty"`
 
 	Token   *Token `toml:"token,omitempty"`
 	SSH     *Key   `toml:"ssh,omitempty"`
@@ -111,8 +112,48 @@ type Repo struct {
 	Via string `toml:"via,omitempty"`
 	// Allow and Deny override the global lists for the repos this entry
 	// covers. An exact entry's lists override an "owner/*" entry's.
-	Allow []op.Op `toml:"allow,omitempty"`
-	Deny  []op.Op `toml:"deny,omitempty"`
+	Allow []Grant `toml:"allow,omitempty"`
+	Deny  []Grant `toml:"deny,omitempty"`
+}
+
+// Grant is one entry of an allow or deny list:
+//
+//	pr.merge                             an operation
+//	field:Repository.hasProjectsEnabled  a field reads may see of a repo or
+//	                                     account outside the one named
+//	                                     (global lists only)
+//	read:deployments/#                   a GET route under /repos/{owner}/{repo}
+type Grant string
+
+// Op returns the operation g names, if it names one.
+func (g Grant) Op() (op.Op, bool) {
+	if strings.Contains(string(g), ":") {
+		return "", false
+	}
+	return op.Op(g), true
+}
+
+// Field returns the Type.field g names, if it names one.
+func (g Grant) Field() (string, bool) { return strings.CutPrefix(string(g), "field:") }
+
+// Read returns the read pattern g names, if it names one.
+func (g Grant) Read() (string, bool) { return strings.CutPrefix(string(g), "read:") }
+
+// Check refuses a grant that names nothing, which would otherwise allow or
+// deny nothing, and one no policy may open.
+func (g Grant) Check() error {
+	if f, ok := g.Field(); ok {
+		return policy.CheckField(f)
+	}
+	if r, ok := g.Read(); ok {
+		return policy.CheckRead(r)
+	}
+	if o, ok := g.Op(); ok {
+		if _, known := op.Lookup(string(o)); known {
+			return nil
+		}
+	}
+	return fmt.Errorf("no operation is named %q. hallpass policy show lists them; field: and read: name API reads", g)
 }
 
 // Rule is what the config says about one repo.
@@ -167,12 +208,16 @@ func (c *Config) decide(wild, exact *Repo) []Decision {
 		ds[i] = Decision{Op: info.Op, On: info.On, From: "default"}
 		at[info.Op] = i
 	}
-	apply := func(from string, allow, deny []op.Op) {
-		for _, o := range allow {
-			ds[at[o]] = Decision{Op: o, On: true, From: from}
+	apply := func(from string, allow, deny []Grant) {
+		for _, g := range allow {
+			if o, ok := g.Op(); ok {
+				ds[at[o]] = Decision{Op: o, On: true, From: from}
+			}
 		}
-		for _, o := range deny {
-			ds[at[o]] = Decision{Op: o, On: false, From: from}
+		for _, g := range deny {
+			if o, ok := g.Op(); ok {
+				ds[at[o]] = Decision{Op: o, On: false, From: from}
+			}
 		}
 	}
 	apply("global", c.Allow, c.Deny)
@@ -275,7 +320,7 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("%s.key: %w", name, err)
 		}
 	}
-	if err := checkOps("global", c.Allow, c.Deny); err != nil {
+	if err := checkGrants("global", c.Allow, c.Deny, true); err != nil {
 		return err
 	}
 	for _, r := range c.Repos {
@@ -292,7 +337,7 @@ func (c *Config) Validate() error {
 		if r.Access != "" && r.Access != "read" && r.Access != "write" {
 			return fmt.Errorf("repo %s: access must be read or write", r.Match)
 		}
-		if err := checkOps("repo "+r.Match, r.Allow, r.Deny); err != nil {
+		if err := checkGrants("repo "+r.Match, r.Allow, r.Deny, false); err != nil {
 			return err
 		}
 		if r.Via != "" && r.Via != "https" && r.Via != "ssh" {
@@ -302,20 +347,65 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// checkOps refuses unknown names, which would otherwise deny nothing, and
-// an operation one layer both allows and denies.
-func checkOps(layer string, allow, deny []op.Op) error {
-	for _, o := range append(slices.Clone(allow), deny...) {
-		if _, ok := op.Lookup(string(o)); !ok {
-			return fmt.Errorf("%s: no operation is named %q. hallpass policy show lists them", layer, o)
+// checkGrants refuses a layer's grants that name nothing or that no policy
+// may open, a field: grant outside the global lists, and a grant the layer
+// both allows and denies.
+func checkGrants(layer string, allow, deny []Grant, global bool) error {
+	for _, g := range append(slices.Clone(allow), deny...) {
+		if err := g.Check(); err != nil {
+			return fmt.Errorf("%s: %w", layer, err)
+		}
+		if _, ok := g.Field(); ok && !global {
+			return fmt.Errorf("%s: %s applies to every repo, so it goes in the global lists", layer, g)
 		}
 	}
-	for _, o := range allow {
-		if slices.Contains(deny, o) {
-			return fmt.Errorf("%s: %s is both allowed and denied", layer, o)
+	for _, g := range allow {
+		if slices.Contains(deny, g) {
+			return fmt.Errorf("%s: %s is both allowed and denied", layer, g)
 		}
 	}
 	return nil
+}
+
+// Grants is the config's field: and read: grants, for the classifiers.
+func (c *Config) Grants() *policy.Grants {
+	g := &policy.Grants{Fields: map[string]bool{}}
+	for _, x := range c.Allow {
+		if f, ok := x.Field(); ok {
+			g.Fields[f] = true
+		}
+	}
+	for _, x := range c.Deny {
+		if f, ok := x.Field(); ok {
+			g.Fields[f] = false
+		}
+	}
+	g.Reads = func(repo github.Repo) []policy.ReadLayer {
+		layers := []policy.ReadLayer{readLayer("global", c.Allow, c.Deny)}
+		wild, exact := c.entries(repo)
+		for _, e := range []*Repo{wild, exact} {
+			if e != nil {
+				layers = append(layers, readLayer(e.Match, e.Allow, e.Deny))
+			}
+		}
+		return layers
+	}
+	return g
+}
+
+func readLayer(from string, allow, deny []Grant) policy.ReadLayer {
+	l := policy.ReadLayer{From: from}
+	for _, g := range allow {
+		if r, ok := g.Read(); ok {
+			l.Allow = append(l.Allow, r)
+		}
+	}
+	for _, g := range deny {
+		if r, ok := g.Read(); ok {
+			l.Deny = append(l.Deny, r)
+		}
+	}
+	return l
 }
 
 // Write saves the config root-owned and world-readable, through a temp file

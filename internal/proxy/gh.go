@@ -73,7 +73,7 @@ func (s *Server) serveGH(w http.ResponseWriter, r *http.Request) {
 	var follow bool
 	var strip []string
 	if graphql {
-		g, err := policy.ClassifyGraphQL(body)
+		g, err := policy.ClassifyGraphQL(body, s.Config.Grants())
 		if err != nil {
 			refuse(http.StatusForbidden, err.Error())
 			return
@@ -85,7 +85,7 @@ func (s *Server) serveGH(w http.ResponseWriter, r *http.Request) {
 		}
 		path, upBody = "/graphql", g.Body
 	} else {
-		rest, err := policy.ClassifyREST(r.Method, r.RequestURI, body)
+		rest, err := policy.ClassifyREST(r.Method, r.RequestURI, body, s.Config.Grants())
 		if err != nil {
 			refuse(http.StatusForbidden, err.Error())
 			return

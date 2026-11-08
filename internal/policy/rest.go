@@ -65,8 +65,9 @@ var (
 	name = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
 )
 
-// ClassifyREST decides a REST request. target is the raw request target.
-func ClassifyREST(method, target string, body []byte) (*REST, error) {
+// ClassifyREST decides a REST request. target is the raw request target. g
+// adds and removes read routes; nil means the built-in ones.
+func ClassifyREST(method, target string, body []byte, g *Grants) (*REST, error) {
 	if err := cleanTarget(target); err != nil {
 		return nil, err
 	}
@@ -107,20 +108,36 @@ func ClassifyREST(method, target string, body []byte) (*REST, error) {
 	base := "/repos/" + repo.Owner + "/" + repo.Name
 
 	if method == "GET" {
-		for _, pat := range reads {
-			if match(rest, pat) {
-				r.Follow = match(rest, "actions/runs/#/logs") || match(rest, "actions/runs/#/attempts/#/logs") ||
-					match(rest, "actions/jobs/#/logs") || match(rest, "actions/artifacts/#/zip")
-				if len(rest) == 0 {
-					// A private repo's response carries a temporary clone
-					// credential.
-					r.Strip = []string{"temp_clone_token"}
-				}
-				r.Route = "GET " + pattern(rest)
-				return r, nil
-			}
+		if floored(rest) {
+			return nil, errorf("hallpass never allows reading %s: no policy opens secrets, settings, keys, hooks, or security findings", pattern(rest))
 		}
-		return nil, errorf("hallpass doesn't allow reading %s. Reads are limited to code, PRs, issues, checks, and Actions runs", pattern(rest))
+		builtin := anyMatch(rest, reads)
+		on, from := g.readOn(repo, rest, builtin)
+		if !on {
+			p := readPattern(rest)
+			if len(rest) == 0 || CheckRead(p) != nil {
+				return nil, errorf("hallpass doesn't allow reading %s", pattern(rest))
+			}
+			why := "Reads are limited to code, PRs, issues, checks, and Actions runs"
+			if from != "default" {
+				why = "The policy for " + from + " denies it"
+			}
+			return nil, errorf("hallpass doesn't allow reading %s in %s. %s. To allow it: sudo /opt/hallpass/bin/hallpass policy allow read:%s --repo %s", pattern(rest), repo, why, p, repo)
+		}
+		if builtin {
+			r.Follow = match(rest, "actions/runs/#/logs") || match(rest, "actions/runs/#/attempts/#/logs") ||
+				match(rest, "actions/jobs/#/logs") || match(rest, "actions/artifacts/#/zip")
+		}
+		if len(rest) == 0 {
+			// A private repo's response carries a temporary clone
+			// credential.
+			r.Strip = []string{"temp_clone_token"}
+		}
+		r.Route = "GET " + pattern(rest)
+		if from != "default" {
+			r.Route += " (allowed by " + from + ")"
+		}
+		return r, nil
 	}
 
 	type write struct {

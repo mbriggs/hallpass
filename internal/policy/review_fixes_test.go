@@ -18,7 +18,7 @@ func TestReviewFindings(t *testing.T) {
 		{"POST", "/repos/acme/widgets/issues/3/comments", `{"body":"fine\r/merge"}`},
 	}
 	for _, c := range refusedREST {
-		if r, err := ClassifyREST(c.method, c.target, []byte(c.body)); err == nil {
+		if r, err := ClassifyREST(c.method, c.target, []byte(c.body), nil); err == nil {
 			t.Errorf("%s %s %s: allowed (%+v)", c.method, c.target, c.body, r)
 		}
 	}
@@ -28,11 +28,11 @@ func TestReviewFindings(t *testing.T) {
 		"/repos/acme/widgets/actions/workflows/ci.yml/runs", "/repos/acme/widgets/git/trees/main?recursive=1",
 	}
 	for _, target := range allowedREST {
-		if _, err := ClassifyREST("GET", target, nil); err != nil {
+		if _, err := ClassifyREST("GET", target, nil, nil); err != nil {
 			t.Errorf("GET %s: %v", target, err)
 		}
 	}
-	if r, _ := ClassifyREST("GET", "/repos/acme/widgets", nil); len(r.Strip) == 0 {
+	if r, _ := ClassifyREST("GET", "/repos/acme/widgets", nil, nil); len(r.Strip) == 0 {
 		t.Error("repo response keeps temp_clone_token")
 	}
 
@@ -44,7 +44,7 @@ func TestReviewFindings(t *testing.T) {
 		"pr's upstream":    gql(`{repository(owner:"acme",name:"widgets"){ref(qualifiedName:"x"){associatedPullRequests(first:1){nodes{body}}}}}`, nil),
 	}
 	for name, body := range refusedGQL {
-		if g, err := ClassifyGraphQL(body); err == nil {
+		if g, err := ClassifyGraphQL(body, nil); err == nil {
 			t.Errorf("%s: allowed (%+v)", name, g)
 		}
 	}
