@@ -40,7 +40,8 @@ optional; set up the ones you want:
   sudo hallpass ssh-key create         make a TPM SSH key, for git over SSH
   sudo hallpass signing-key create     make a TPM signing key, for signed commits
   sudo hallpass allow OWNER/REPO       let agents use a repo; OWNER/* for all of an owner's
-  hallpass status --check              confirm what works
+  hallpass status --check              confirm the broker's credentials with GitHub
+  hallpass doctor                      check this machine's git, gh, and signing setup
 
 Daily use. git calls these for you:
   hallpass gh ARGS...                  run gh through the broker
@@ -52,6 +53,8 @@ Maintenance, as root:
   policy allow|deny|reset OP... [--repo OWNER/REPO]
                                        change what agents may do, everywhere or in one repo
   policy show [OWNER/REPO]             list the operations and what's in effect
+  ledger add OWNER/REPO BRANCH         let agents update a branch they didn't create
+  ledger list OWNER/REPO               list the branches agents may update
   ssh-key remove | signing-key remove | logout
   uninstall [--purge]
   serve                                the broker itself; systemd or launchd runs it
@@ -98,6 +101,10 @@ func main() {
 		err = policyCmd(args)
 	case "status":
 		err = status(args)
+	case "doctor":
+		err = doctor(args)
+	case "ledger":
+		err = ledger(args)
 	case "gh":
 		err = gh(args)
 	case "sign":
@@ -142,7 +149,8 @@ func serve(args []string) error {
 	for name, p := range creds.Problems {
 		log.Error("credential didn't load", "credential", name, "problem", p)
 	}
-	ctl := &broker.Server{Config: cfg, Creds: creds, Log: log}
+	self, _ := os.Executable()
+	ctl := &broker.Server{Config: cfg, Creds: creds, Log: log, Version: version, Binary: fileHash(self)}
 
 	px := &proxy.Server{
 		Config:    cfg,

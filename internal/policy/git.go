@@ -387,14 +387,6 @@ func RefusePush(p Push, refused map[string]string) []byte {
 	return out.Bytes()
 }
 
-// GitError builds an info/refs response that makes git print
-// "fatal: remote error: hallpass: <msg>".
-func GitError(msg string) []byte {
-	var b bytes.Buffer
-	writePkt(&b, "ERR hallpass: "+msg+"\n")
-	return b.Bytes()
-}
-
 // ReportStatus reads the ref results from GitHub's receive-pack response,
 // which the broker relays to git unchanged. It returns the refs GitHub
 // accepted. A response it can't parse yields none, so nothing gets recorded.

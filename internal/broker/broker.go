@@ -102,6 +102,10 @@ type Status struct {
 	Policy string `json:"policy,omitempty"`
 	// Checked is set when the request asked for a live check against GitHub.
 	Checked bool `json:"checked,omitempty"`
+	// Version is the running broker's build, and Binary the SHA-256 of
+	// its executable, so a client can tell it's running an old install.
+	Version string `json:"version,omitempty"`
+	Binary  string `json:"binary,omitempty"`
 }
 
 // CredStatus describes one credential.
@@ -123,6 +127,8 @@ type Server struct {
 	HTTP   *http.Client
 	// SSHCheck confirms GitHub accepts the SSH key.
 	SSHCheck func() (string, error)
+	Version  string
+	Binary   string
 }
 
 func (s *Server) Serve(ln net.Listener) error {
@@ -197,7 +203,7 @@ func (s *Server) sign(data []byte, log *slog.Logger) Response {
 
 func (s *Server) status(check bool) *Status {
 	cfg := s.Config
-	st := &Status{Checked: check}
+	st := &Status{Checked: check, Version: s.Version, Binary: s.Binary}
 	if t := cfg.Token; t != nil {
 		st.Token = &CredStatus{Problem: s.Creds.Problems["token"], Login: t.Login, Source: t.Source, Created: t.Created, Expires: t.Expires}
 		if check && s.Creds.Token != "" {

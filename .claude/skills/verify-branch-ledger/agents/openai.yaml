@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verify branch ledger"
+  short_description: "Model-check hallpass's branch ledger with TLA+"
+  default_prompt: "Use $verify-branch-ledger to check this change against the branch ledger model."

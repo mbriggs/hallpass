@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verify hallpass"
+  short_description: "Drive a scratch hallpass broker through real gh and git"
+  default_prompt: "Use $verify-hallpass to prove what hallpass allows and refuses after this change."

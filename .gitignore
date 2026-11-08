@@ -1,2 +1,7 @@
 bin/
 dist/
+
+# The global gitignore drops .claude. Keep the project skills.
+!.claude/
+.claude/*
+!.claude/skills/

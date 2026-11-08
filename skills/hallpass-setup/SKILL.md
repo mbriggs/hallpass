@@ -1,6 +1,6 @@
 ---
 name: hallpass-setup
-description: Set up hallpass on a machine, so coding agents use git and gh through a broker that holds the credentials. Use when installing hallpass, or when `hallpass status` fails.
+description: Set up hallpass on a machine with the user, or repair a setup that `hallpass status --check` reports broken.
 disable-model-invocation: true
 ---
 
@@ -10,8 +10,7 @@ You and the user take turns. The user runs every step that needs sudo or a
 browser, since you can't type their password or approve anything on GitHub.
 In Claude Code they can run a command in this session by typing
 `! <command>`. Outside it, they run commands in their own terminal and tell
-you when each finishes. You check the state between steps and explain what
-each one did.
+you when each finishes.
 
 Run hallpass as `/opt/hallpass/bin/hallpass` throughout, including in
 commands you give the user. A `hallpass` found on PATH may be a copy that code
@@ -25,11 +24,16 @@ exist, start at Install. Otherwise
 
 - **"can't reach the hallpass broker".** Install didn't finish. Rerun it.
 - **`token`, `ssh`, or `signing` missing.** That credential isn't set up.
-  Ask the user which ones they want before setting any up.
-- **A credential with `problem` or `check_error` set.** It's broken. Remove
-  it and set it up again, under its section below.
+  If the user hasn't said whether they want it, go to Choose the
+  credentials. One they declined is fine.
+- **A credential with `problem` or `check_error` set.** A `check_error` can
+  be a network failure, so rerun the check once. If it stays broken, set
+  the token up again, which replaces the old one. For a key, the user runs
+  `sudo /opt/hallpass/bin/hallpass ssh-key remove` or `signing-key remove`,
+  then creates it again.
 - **No `repos`.** Go to Allow repos.
-- **Everything set and checked.** Go to Check git and gh.
+- **Every credential the user wants is set and checked.** Go to Check git
+  and gh.
 
 ## Install
 
@@ -53,12 +57,14 @@ to their PATH.
 
 ## Choose the credentials
 
-Each is optional. Explain what each turns on and let the user pick:
+Each is optional:
 
 - **The token** turns on git over HTTPS and gh. Most users want it.
 - **The SSH key** turns on git over SSH. It's only needed for orgs that
   block both classic PATs and GitHub CLI's OAuth app but accept SSH keys,
-  or when the user wants a credential that can't leave the TPM.
+  or when the user wants a key that can't leave the TPM. Only Linux has a
+  TPM backend. Elsewhere hallpass keeps keys in a file only its service user
+  can read.
 - **The signing key** signs commits and tags, which then show as Verified.
 
 Tell the user that every credential acts as them on GitHub, so agent PRs,
@@ -72,14 +78,14 @@ Two ways, and both store the token the same way:
   opens the printed link in any browser, and enters the code. GitHub shows
   it as GitHub CLI asking for the `repo` scope. The token goes straight from
   GitHub into storage. It doesn't expire, so they should run `login` again
-  every few months. Orgs that restrict OAuth apps and haven't approved
-  GitHub CLI reject it.
+  every few months, which revokes the old one. Orgs that restrict OAuth
+  apps and haven't approved GitHub CLI reject it.
 - **A classic PAT.** For those orgs. The user runs
   `sudo /opt/hallpass/bin/hallpass install-pat` in their own terminal, not
-  through `!`, opens the printed link, creates a token with only `repo` and
-  an expiry of 90 days, and pastes it at the hidden prompt. For orgs with
-  SAML SSO they click Configure SSO next to the token and authorize each
-  org.
+  through `!`, since the hidden prompt needs a real terminal. They open the
+  printed link, create a token with only `repo` and an expiry of 90 days,
+  and paste it at the hidden prompt. For orgs with SAML SSO they click
+  Configure SSO next to the token and authorize each org.
 
 ### The SSH key
 
@@ -95,17 +101,9 @@ the printed key at https://github.com/settings/ssh/new as a **Signing** key.
 Tell them Verified will mean "made on this machine through hallpass", not
 "you reviewed it".
 
-Then check the user's own git config, because a global setting overrides
-hallpass's system config:
-
-```sh
-git config --show-origin --get-all user.signingkey
-git config --show-origin --get-all gpg.ssh.program
-```
-
-If either comes from a file other than `/etc/hallpass/gitconfig`, the user's
-own signing wins and agent commits would still go to it, often a password
-manager prompt. Offer to move those settings into a file that only
+A global `user.signingkey` or `gpg.ssh.program` overrides hallpass's system
+config, so agent commits would still go to the user's own signer, often a
+password manager prompt. `doctor`, under Check git and gh, reports it. Offer to move those settings into a file that only
 `git personal` loads, with an alias in their global config:
 
 ```ini
@@ -113,44 +111,38 @@ manager prompt. Offer to move those settings into a file that only
   personal = "!GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=include.path GIT_CONFIG_VALUE_0=$HOME/.config/git/personal-signing.inc git"
 ```
 
-Show them the change before you make it.
+Show them the change and wait for a yes before you make it.
 
 ## Allow repos
 
-Agents reach only allowed repos. Ask which, then have the user run, for
-each:
+Agents reach only allowed repos. Ask which. Before the first `allow`, warn
+the user: with a token or SSH key, every github.com remote goes through the
+broker, and repos not allowed are refused. Pushing to the default branch is
+refused too, so the user pushes their own commits with `git personal push`.
+Then have the user run, for each:
 
 ```sh
 sudo /opt/hallpass/bin/hallpass allow OWNER/REPO
 ```
 
-`OWNER/*` covers every current and future repo of an owner. `--read` lets
-agents read but not write. `--via ssh` sends the owner's git over SSH.
+`'OWNER/*'` covers every current and future repo of an owner. Quote it, or
+zsh fails the glob before hallpass runs. `--read` lets agents read but not
+write. `--via ssh` sends git for every repo of that owner over SSH.
 `hallpass policy` turns operations like `pr.merge` or `push.default` on or
-off, everywhere or for one repo. For
-each org repo, the hallpass-repo skill checks what an agent's branch could
-trigger there.
-
-Warn the user before the first `allow` takes effect: with a token, every
-github.com remote goes through the broker, and repos not allowed are refused.
-Pushing to the default branch is refused too, so the user pushes their own
-commits with `git personal push`, or allows it for one repo with
-`sudo /opt/hallpass/bin/hallpass policy allow push.default --repo OWNER/REPO`.
+off, everywhere or for one repo. For an org repo, suggest the user run
+`/hallpass-repo` instead, which checks what an agent's branch could trigger
+there before suggesting any policy change.
 
 ## Check git and gh
 
-Confirm the user's git reads the include, since on macOS a Homebrew git has a
-different system config from Apple's:
-
-```sh
-type -a git
-git config --show-origin --get-all include.path
-```
-
-Every git listed should show `/etc/hallpass/gitconfig`. If one doesn't, have
-the user run `sudo <that git> config --system --add include.path /etc/hallpass/gitconfig`.
-For the token, each git must be 2.47 or later; install prints a warning for
-older ones. Apple's git on Xcode 16 and Ubuntu 24.04's git are too old.
+Run `/opt/hallpass/bin/hallpass doctor`. It checks that every git on the
+machine includes hallpass's config and is new enough, that nothing in the
+user's own config overrides the broker's routing, credential helper, ssh
+command, or signing, that gh can run through the broker, and that the running
+broker is the installed build. Each FAIL line carries its fix; walk the user
+through them and rerun until it exits 0. Its warn lines name other
+credentials agents could reach, like an SSH agent or a gh login; hiding those
+is a sandbox's job, not hallpass's.
 
 For gh, add `alias gh='/opt/hallpass/bin/hallpass gh'` to the user's shell
 config. Agents that run non-interactive shells don't expand aliases, so tell
@@ -158,17 +150,15 @@ the user to have those agents call `/opt/hallpass/bin/hallpass gh` directly,
 or set `GH_CONFIG_DIR=/etc/hallpass/gh` in their environment.
 
 Tell the user how to do what hallpass refuses: `git personal <command>` runs
-git with their own credentials, and gh run directly uses their own login.
-
-Name any other credentials you find that agents could reach, such as an SSH
-agent socket, a logged-in gh config, or keyring tokens. Hiding those is a
-sandbox's job, not hallpass's.
+git with their own credentials, and `command gh`, which skips the alias,
+uses their own login.
 
 ## Confirm it works
 
 Setup is done when all of these hold, for the credentials the user chose:
 
-- `/opt/hallpass/bin/hallpass status --check` exits 0.
+- `/opt/hallpass/bin/hallpass status --check` and
+  `/opt/hallpass/bin/hallpass doctor` exit 0.
 - `git ls-remote https://github.com/OWNER/REPO` succeeds for an allowed
   private repo, and fails with `isn't in hallpass's allowlist` for one that
   isn't.

@@ -5,32 +5,18 @@ five-way arena; see "Where this came from" at the end.
 
 ## As built
 
-Built on 2026-11-08 and run against real GitHub on Linux. Where the build
-differs from the plan below, the code wins:
+Built on 2026-11-08 and run against real GitHub on Linux. Where this
+document and the code in `cmd/` and `internal/` disagree, the code wins.
 
-- The config calls the token `[token]`, with `source = "pat"` or `"login"`,
-  since `hallpass login` can supply it.
-- git runs `gpg.ssh.program` without arguments, so signing goes through a
-  `/opt/hallpass/bin/hallpass-sign` link, and the wrapper recognizes the
-  broker's key by content, not path.
-- The generated git config sets `ssh.variant = ssh`, so git passes `-p` and
-  `GIT_PROTOCOL` to `hallpass ssh`.
-- GraphQL validation drops gqlparser's overlapping-fields rule, because gh
-  sends queries GitHub accepts that fail it. Identity reads may list the
-  members of a connection they were given, and see `title`, `totalCount`, and
-  pagination fields. A mutation's payload is read with the full view.
-- The library's TPM unseal leaves objects loaded, and Linux's resource
-  manager allows three per connection, so `internal/keys` unseals and flushes
-  itself.
-- Not built: `ledger add`, the `X-OAuth-Scopes` re-check on responses, the
-  side-band expiry warning on pushes, the corpus capture command, and
-  `hallpass why`.
+Planned but not built: the `X-OAuth-Scopes` re-check on
+responses, expiry warnings from `hallpass gh` and on pushes, the corpus
+capture command, and `hallpass why`.
 
 ## Goal
 
 Coding agents work unattended on the user's GitHub repos, including repos in
 orgs the user belongs to, without anyone in those orgs approving anything.
-Agents run ordinary `git` and `gh`. No credential ever reaches an agent: the
+Agents run ordinary `git` and `gh`. No credential reaches an agent: the
 broker holds every one, uses it itself, and applies one policy to every
 request.
 
@@ -77,7 +63,7 @@ prints what the user adds on GitHub:
 - `sudo hallpass signing-key create`, which prints the public key to add as a
   **signing** key
 
-Each also has `remove`. `install` writes git and gh config for whatever is
+The keys also have `remove`, and the PAT has `logout`. `install` writes git and gh config for whatever is
 present, and the commands above rerun that step.
 
 ## Trade-offs of dropping the App
@@ -86,37 +72,39 @@ present, and the commands above rerun that step.
   user can reach. The allowlist in `/etc/hallpass/hallpass.toml` is the only
   limit on which repos agents use, so a bug there exposes all of them.
 - **Agents act as the user everywhere.** On personal repos too, so the user
-  can't approve agent PRs. The broker's refusal of approvals and merges is
-  the guard, and the user merges with their own credentials.
+  can't approve agent PRs. The broker refuses approvals and merges unless
+  `hallpass policy` turns them on, and the user merges with their own
+  credentials.
 - **The PAT is weaker against root than a key.** Root on the running machine
   can unseal it and use it elsewhere until it expires. The SSH and signing
   keys are generated in the TPM and can't leave it, even for root.
 
 ## How it works
 
-The broker listens on up to three new Unix sockets, all behind the existing
+The broker listens on three new Unix sockets beside `hallpass.sock`, all behind the existing
 peer-uid check. Only the sockets for credentials that are present serve
 anything; the others answer with "this machine has no <credential>".
 
 - **gh** uses its own `http_unix_socket` config key, which sends plain
   HTTP/1.1 over the socket even for `https://` URLs. go-gh sets both
   `DialContext` and `DialTLSContext` to the same Unix dial. Verified by
-  running gh 2.98 against a capture listener, three times independently.
+  running gh 2.98 against a capture listener.
 - **git over HTTPS** uses `http.proxy = socks5h://localhost/<socket>`,
   supported from git 2.47 with libcurl 7.84. Remotes are rewritten to
   `http://github.com/`, so the bytes inside the SOCKS tunnel are plain
   smart-HTTP. Verified on this machine with git 2.56: `CONNECT github.com 80`,
   then a readable `GET /acme/widget/info/refs?service=git-upload-pack`.
 - **git over SSH** uses `core.sshCommand = /opt/hallpass/bin/hallpass ssh`.
-  For github.com, the wrapper sends the remote command
-  (`git-upload-pack 'acme/widgets.git'`) to the broker and relays stdin and
-  stdout. The broker opens the SSH connection to GitHub with its own key,
-  runs exactly that command, and sees the git protocol in the clear. For any
-  other host the wrapper runs the real `ssh` unchanged.
+  For github.com, the wrapper sends the service and repo from the remote
+  command (`git-upload-pack 'acme/widgets.git'`) to the broker and relays
+  stdin and stdout. The broker opens the SSH connection to GitHub with its
+  own key, runs exactly that command, and sees the git protocol in the clear.
+  For any other host the wrapper runs the real `ssh` unchanged.
 - **Signing** uses `gpg.format = ssh` and
-  `gpg.ssh.program = /opt/hallpass/bin/hallpass sign`. git calls it with the
-  same arguments as `ssh-keygen -Y sign`. The wrapper sends the buffer to the
-  broker and writes back the signature.
+  `gpg.ssh.program = /opt/hallpass/bin/hallpass-sign`, a link to the binary,
+  because git runs that program without arguments of its own. git calls it
+  with the same arguments as `ssh-keygen -Y sign`. The wrapper sends the
+  buffer to the broker and writes back the signature.
 
 For HTTPS and gh, the broker parses each request strictly, classifies it,
 checks policy, builds a fresh upstream request from what it parsed, adds the
@@ -127,7 +115,7 @@ keychain trust, no TCP port, and no per-run secret, on either platform.
 agent ── gh ────(http_unix_socket, plain HTTP)──────────▶ gh.sock   ─┐
 agent ── git ───(SOCKS5 to github.com:80, plain HTTP)───▶ git.sock  ─┤
 agent ── git ───(hallpass ssh: command + stdio)─────────▶ ssh.sock  ─┤
-agent ── git ───(hallpass sign: buffer)──────────────────▶ hallpass.sock (JSON, also status)
+agent ── git ───(hallpass-sign: buffer)──────────────────▶ hallpass.sock (JSON, also status)
                                                                      ▼
           broker: peer uid → parse → classify → resolve → decide → audit
                   → PAT over HTTPS, or the TPM SSH key over SSH, to GitHub
@@ -144,10 +132,10 @@ rejects everything that isn't its one protocol.
 
 | Socket | Linux | macOS | Speaks |
 | --- | --- | --- | --- |
-| `hallpass.sock` (exists) | `/run/hallpass/hallpass.sock` | `/var/db/hallpass/run/hallpass.sock` | one JSON request: `status`, `sign`, `ledger` |
+| `hallpass.sock` (exists) | `/run/hallpass/hallpass.sock` | `/var/db/hallpass/run/hallpass.sock` | one JSON request: `status` or `sign` |
 | `git.sock` | `/run/hallpass/git.sock` | `/var/db/hallpass/run/git.sock` | SOCKS5 (no auth, CONNECT, domain `github.com:80` only), then HTTP/1.1 |
 | `gh.sock` | `/run/hallpass/gh.sock` | `/var/db/hallpass/run/gh.sock` | HTTP/1.1, `Host: api.github.com` only |
-| `ssh.sock` | `/run/hallpass/ssh.sock` | `/var/db/hallpass/run/ssh.sock` | one JSON header line, then the git protocol stream |
+| `ssh.sock` | `/run/hallpass/ssh.sock` | `/var/db/hallpass/run/ssh.sock` | one JSON header line, then git's stdin. Back: framed stdout, stderr, and exit status |
 
 On Linux they're socket units with `FileDescriptorName=` and
 `Service=hallpass.service`. `Listen` picks fds by `LISTEN_FDNAMES`. On macOS
@@ -202,9 +190,7 @@ Matching ignores case. With no `[[repo]]` entries, nothing is reachable.
 `install` generates `/etc/hallpass/gitconfig` from the config. With the PAT:
 
 ```ini
-# Written by hallpass install. Included from git's system config.
-# github.com traffic goes through the hallpass broker, which holds the
-# credentials. The URL is http:// because the broker makes the TLS connection.
+# The URL is http:// because the broker makes the TLS connection.
 [url "http://github.com/"]
 	insteadOf = https://github.com/
 	insteadOf = git@github.com:
@@ -233,13 +219,14 @@ general one, since git picks the longest `insteadOf`:
 ```
 
 With only the SSH key, every form rewrites to `ssh://git@github.com/`. With
-either, `core.sshCommand = /opt/hallpass/bin/hallpass ssh` is set, and the
-wrapper passes non-GitHub hosts to the real `ssh`.
+the SSH key, `core.sshCommand = /opt/hallpass/bin/hallpass ssh` is set, and
+the wrapper passes non-GitHub hosts to the real `ssh`. `ssh.variant = ssh`
+makes git pass `-p` and `GIT_PROTOCOL` to the wrapper.
 
 gh's remote parsing ignores the scheme, so `http://` and `ssh://` remotes both
-resolve for `gh pr create`. The credential helper no longer returns tokens.
-It answers every request with `quit=1` and "this should have gone through the
-hallpass broker", so a bypassed request fails instead of prompting.
+resolve for `gh pr create`. The credential helper answers every github.com
+request with `quit=1` and "it went around the hallpass broker", so a
+bypassed request fails instead of prompting.
 `git personal` skips the system config, as today.
 
 With the PAT, gh runs with `GH_CONFIG_DIR=/etc/hallpass/gh`: root-owned,
@@ -248,10 +235,10 @@ With the PAT, gh runs with `GH_CONFIG_DIR=/etc/hallpass/gh`: root-owned,
 `hosts.yml` with a placeholder token so gh thinks it's logged in.
 `version: "1"` matters: without it gh tries to migrate the read-only file and
 exits. `hallpass gh ARGS` is a thin wrapper that sets that, unsets
-`GH_TOKEN`, `GITHUB_TOKEN`, `GH_HOST`, and `GH_ENTERPRISE_TOKEN`, and runs gh.
-Agents can also get brokered plain `gh` with `GH_CONFIG_DIR=/etc/hallpass/gh`
-in their environment. Without the PAT, `hallpass gh` refuses: "gh through
-hallpass needs the PAT".
+`GH_TOKEN`, `GITHUB_TOKEN`, `GH_HOST`, and the other token variables, and
+runs gh. Agents can also get brokered plain `gh` with
+`GH_CONFIG_DIR=/etc/hallpass/gh` in their environment. Without the PAT,
+`hallpass gh` refuses: "gh through hallpass needs a token".
 
 Routing everything costs two things: git 2.47 or later is required for HTTPS
 remotes, and git LFS doesn't work through the broker. Use `git personal` for
@@ -315,7 +302,7 @@ typo in `deny` can't quietly deny nothing. `access` and `via` still come
 from the most specific entry alone.
 
 `hallpass policy allow|deny|reset OP... [--repo MATCH]` edits a layer, and
-warns before allowing the risky ones. `hallpass policy show [OWNER/REPO]`
+prints a warning when it allows a risky one. `hallpass policy show [OWNER/REPO]`
 prints what's in effect and which layer decided each operation. Refusals
 name the operation and the command that would allow it.
 
@@ -333,25 +320,28 @@ These have no operation name, so no config can lift them.
 - Settings, rulesets, protections, collaborators, teams, hooks, deploy keys,
   environments, secrets and variables (names included), releases, uploads,
   workflow cancels, deletes, transfers, projects, discussions.
-- Body lines that work as ChatOps commands from the user: lines starting with
-  `/`, `bors r+`, `@mergifyio`, `@dependabot merge`. This list can't be
-  complete; see open questions.
+- Lines that work as ChatOps commands from the user: lines starting
+  with `/` or `bors`, and mentions of bots like `@mergifyio` and
+  `@dependabot`. This list can't be complete.
 
 GitHub adds a layer underneath: a PAT without `workflow` scope can't push
 changes under `.github/workflows/`.
 
 ### Classifying REST
 
-A route table of method and path template, first match wins, deny otherwise.
-The broker reads the raw request target and rejects `%`, `\`, `;`, `//`, dot
-segments, control bytes, and non-ASCII before matching. `{owner}/{repo}` goes
-through `github.ParseRepo`. Query keys come from a per-route allowlist.
+Reads match an allowlist of path patterns under `/repos/{owner}/{repo}`,
+plus `/user`, `/rate_limit`, and search. Writes match a table of method and
+path, each naming its operation. Everything else is refused, including
+routes GitHub adds later. The broker reads the raw request target and
+rejects `%`, `\`, `;`, `#`, `//`, dot segments, spaces, control bytes, and
+non-ASCII before matching. `{owner}/{repo}` goes through `github.ParseRepo`.
+Reads pass their query string re-encoded from the parse. Writes refuse one.
 Write bodies are decoded strictly (no duplicate or unknown keys) and
-re-encoded from the decoded struct.
+re-encoded.
 
 Search (`GET /search/issues`) is allowed only with exactly one `repo:`
-qualifier naming a reachable repo, no `org:`, `user:`, or `owner:`, and no
-boolean operators.
+qualifier naming a reachable repo, no `org:`, `user:`, or `owner:`, no
+quotes, and no boolean operators.
 
 Run logs and artifacts (`.../actions/runs/{id}/logs`,
 `.../actions/jobs/{id}/logs`, `.../artifacts/{id}/zip`): the broker follows
@@ -366,44 +356,45 @@ This is the largest piece.
 
 1. **Parse and validate.** One JSON object with `query`, `variables`,
    `operationName`. Parse with `github.com/vektah/gqlparser/v2` and validate
-   against GitHub's public schema, embedded and refreshed per release. Refuse
-   arrays (batches), more than one operation, subscriptions, directives other
-   than `@include`/`@skip` (both branches get checked), and anything that
-   fails validation. Unknown fields fail closed with "hallpass's copy of
-   GitHub's schema doesn't know X".
-2. **Normalize.** Substitute variables, inline fragments, apply size limits
-   (depth 20, 2000 fields).
+   against GitHub's public schema, embedded and refreshed per release.
+   Validation skips gqlparser's overlapping-fields rule, because gh sends
+   queries GitHub accepts that fail it. Refuse arrays (batches), more than
+   one operation, subscriptions, directives other than `@include`/`@skip`
+   (both branches get checked), and anything that fails validation,
+   including fields hallpass's schema copy lacks.
+2. **Limit.** Coerce the variables, walk fragments where they're spread, and
+   refuse more than 25 levels or 5,000 fields.
 3. **Roots.** Allowed: `repository(owner, name)` for a reachable repo;
    `node`/`nodes` whose IDs resolve into one; `viewer` (identity only);
    `search` under the REST search rule; `rateLimit`; `__typename`; and
    introspection (`__type`, `__schema`). gh sends `__type` probes at runtime
    to pick fields, so refusing introspection breaks `gh pr view`. The schema
    is public, so allowing it leaks nothing.
-4. **Walk with views.** Under an allowed root the view is `Full`. A
-   hand-written edge table lists the edges GitHub guarantees stay in the
-   same repo, such as `Repository.pullRequest`, `PullRequest.comments`,
-   `PullRequest.reviews`, and `PullRequest.commits`. Those keep `Full`. Every
-   other object-typed edge, including `owner`, `author`, `headRepository`,
-   `parent`, `forks`, `CrossReferencedEvent.source`, and
-   `closingIssuesReferences`, drops to `Identity`. `Identity` allows only
-   scalar identity fields (`id`, `login`, `name`, `nameWithOwner`, `url`,
-   `number`, `title`, `state`, `isPrivate`) and no connections. An edge
-   missing from the table is `Identity`, so new GitHub fields can't open a
-   path to other repos. A purely type-based rule would miss cross-references:
-   `CrossReferencedEvent.source` is an `Issue`, not a `Repository`.
+4. **Walk with views.** Under an allowed root the view is `Full`. Edges to
+   repos, accounts, teams, and projects (`owner`, `author`,
+   `headRepository`, `forks`) drop to `Identity`. Edges to repo content
+   (types with a `repository` field) keep `Full` only in a mutation's
+   payload or when a hand-written table says GitHub keeps them in the same
+   repo, like `PullRequest.comments`. Others drop to `Identity`, so new
+   GitHub fields can't open a path to other repos. That catches
+   cross-references a rule on repo types alone would miss:
+   `CrossReferencedEvent.source` is an `Issue`. `Identity` allows identity
+   scalars (`id`, `login`, `nameWithOwner`, `url`, `number`, `title`,
+   `state`, counts, pagination), an `owner` hop, and the members of a
+   connection it was given, but no new connection.
 5. **Mutations.** Every root field must be in the mutation table, with an
    allowlist of input fields. Each table entry names the input fields that
    bind it to a repo (`repositoryId`, `pullRequestId`, `subjectId`, ...) and
-   any extra rule (event must be `COMMENT`, author must be the user,
-   `headRepositoryId` must equal `repositoryId`). gh passes every mutation as
-   `input: $input`.
-6. **Resolve node IDs.** One batched query with the PAT:
-   `nodes(ids:$ids){__typename ...on Repository{nameWithOwner} ...on RepositoryNode{repository{nameWithOwner}} ...on Comment{viewerDidAuthor} ...on PullRequest{viewerDidAuthor} ...on Issue{viewerDidAuthor}}`.
-   The type must match what the mutation expects. Null, error, or timeout
-   means deny. Cache repo bindings for an hour. Don't decode IDs locally;
-   the format is undocumented.
-7. **Forward what was checked.** Print the normalized AST back to text and
-   re-encode the variables. GitHub receives the document the broker printed,
+   any extra rule (a review event other than `COMMENT` needs its operation,
+   author must be the user, `headRepositoryId` must equal `repositoryId`).
+   gh passes every mutation as `input: $input`.
+6. **Resolve node IDs.** One batched `nodes(ids:)` query with the PAT asks
+   each ID's `__typename`, repo, and `viewerDidAuthor` (`resolveQuery` in
+   `internal/proxy/gh.go`). The type must match what the mutation expects.
+   Null, error, or timeout means deny. Cache results for an hour. Don't
+   decode IDs locally; the format is undocumented.
+7. **Forward what was checked.** Print the parsed document back to text and
+   re-encode the coerced variables. GitHub receives the document the broker printed,
    so parser differences can't change its meaning.
 
 Refusals come back as HTTP 200 with
@@ -423,44 +414,47 @@ prints as `GraphQL: hallpass: ...`.
 For receive-pack, read pkt-lines up to the first flush through a 64 KiB
 bounded reader. Strip `Git-Protocol`; receive-pack has no v2. Refuse any
 `Content-Encoding`, since git doesn't gzip pushes. Refuse `push-cert`,
-non-empty push options, and unknown capabilities. Each `<old> <new> <ref>`:
+push options, shallow pushes, and unknown capabilities. Each
+`<old> <new> <ref>`:
 
 - must be `refs/heads/<name>`, with `<name>` passing `check-ref-format` rules
-- `new` all zeros (delete): only for ledger branches
-- `old` all zeros (create): not the default branch (looked up with the PAT,
-  cached 10 minutes; a failed lookup denies), not `protected_branches`
-- otherwise (update or force): only ledger branches
+- the default branch (looked up with the PAT, cached 10 minutes; a failed
+  lookup denies): only with `push.default`, and never deleted
+- any other branch in `protected_branches`: refused
+- `old` all zeros (create): allowed
+- otherwise (update, force, or delete): only ledger branches
 
 If any command fails, nothing goes upstream. The broker answers 200 with a
 synthesized report-status, side-band framed when negotiated, so git prints
 `! [remote rejected] main -> main (hallpass: main is the default branch)`.
 git only prints HTTP error bodies for `info/refs`, so a plain 403 on the POST
-would show nothing useful. Refusals on `info/refs` use an `ERR hallpass: ...`
-pkt-line.
+would show nothing useful. Refusals on `info/refs` are a 403 with the
+reason as plain text.
 
 If every command passes, the broker sends its re-encoded commands, then
 streams the pack unchanged. It reads GitHub's report-status as it relays it
 and adds a ledger entry for each `ok` create.
 
 The branch ledger is `<StateDir>/branches.jsonl`, append-only, written only
-after GitHub confirms. `sudo hallpass ledger add <url>` lets agents push to a
-branch the user made by hand.
+after GitHub confirms. `sudo hallpass ledger add OWNER/REPO BRANCH` lets
+agents push to a branch the user made by hand.
 
 ### Upstream
 
-- Inbound headers pass an allowlist: `Accept`, `Accept-Encoding`,
-  `Content-Type`, `Content-Length`, `User-Agent`, `X-GitHub-Api-Version`,
-  `If-None-Match`, `Git-Protocol` (upload-pack only), `GraphQL-Features`
-  (values from an allowlist). Client `Authorization` and `Cookie` never pass.
+- Inbound headers pass a short allowlist per socket, such as `Accept`,
+  `User-Agent`, and `Git-Protocol` (upload-pack only). Client
+  `Authorization` and `Cookie` never pass.
 - API calls get `Authorization: token <PAT>`. git gets Basic auth with
-  `<login>:<PAT>`. The upstream client never follows redirects.
-- Responses drop `Set-Cookie` and `X-OAuth-Scopes`.
-- GitHub 401 becomes 403 "GitHub rejected the org PAT (expired <date>, or
-  revoked). Run sudo /opt/hallpass/bin/hallpass install-pat." git never sees
-  a 401, so it never asks a credential helper.
-- A 403 or 404 with `X-GitHub-SSO: required; url=...` becomes "acme requires
-  SSO. Authorize the hallpass PAT at <url>".
-- The PAT shares the user's 5,000 requests an hour. The broker refuses agent
+  `x-access-token:<PAT>`. The upstream client never follows redirects.
+- Response headers pass an allowlist too, which leaves out `Set-Cookie` and
+  `X-OAuth-Scopes`. The broker strips `temp_clone_token` from REST and
+  refuses it in GraphQL.
+- GitHub 401 becomes 403 "GitHub rejected hallpass's token. It expired or
+  was revoked. Run sudo /opt/hallpass/bin/hallpass login, or install-pat."
+  git never sees a 401, so it never asks a credential helper.
+- A response with `X-GitHub-SSO: required; url=...` becomes "this org
+  requires SAML SSO authorization for hallpass's token. Open <url>".
+- The PAT shares the user's 5,000 requests an hour. The broker refuses gh
   requests with 429 when `X-RateLimit-Remaining` drops below 1,000, so the
   user's own gh keeps working.
 - One audit line per request: decision, reason, socket, method, repo, REST
@@ -484,7 +478,7 @@ asking for scope `repo` only:
    opens it in any browser, on any machine, and approves.
 3. Poll `POST https://github.com/login/oauth/access_token` at the interval
    GitHub gives, until it returns the token or the code expires.
-4. Check and store it exactly as `install-pat` does (steps 3 to 5 below),
+4. Check and store it exactly as `install-pat` does (steps 3 and 4 below),
    except that an OAuth token (`gho_`) has no expiry header.
 
 The token goes from GitHub's API into the TPM inside one root process. It
@@ -521,26 +515,22 @@ terminal or piped from `op read`:
    `X-OAuth-Scopes` is exactly `repo`; `GitHub-Authentication-Token-Expiration`
    is present and at most 366 days out (warn past 90); the login matches the
    previous PAT's, unless `--new-login`.
-4. Checks each allowlist entry answers 200, printing SSO URLs where needed.
-5. Stores it. On Linux with a TPM, sealed as a keyed-hash object under the
-   SRK, so a copied disk blob is useless. Otherwise a 0600 file owned by the
-   service user. The new one is verified before the config points at it.
-6. Revokes the old PAT with `POST /credentials/revoke`, unless `--keep-old`.
+4. Stores it. On Linux with a TPM, sealed under the SRK, so a copied disk
+   blob is useless. Otherwise a 0600 file owned by the service user. The
+   config points at the new one only after it's stored.
+5. Revokes the old PAT with `POST /credentials/revoke`, unless `--keep-old`.
 
-The broker re-checks `X-OAuth-Scopes` on responses and stops serving if it
-ever widens. `status` shows login, scope, and days left, and warns from 14
-days; `status --check` fails within 7 days or when GitHub rejects the PAT.
-`hallpass gh` prints one stderr line in that window, and pushes get a
-side-band `remote: hallpass: ...expires in N days` line.
+`status` shows login and days left, and warns from 14 days. `status --check`
+fails when GitHub rejects the PAT or its scopes aren't exactly `repo`.
 
 ## The SSH key
 
 `sudo hallpass ssh-key create` generates an ECDSA P-256 key inside the TPM
-(go-tpm `CreatePrimary`/`Create` under the SRK, saved as a TSS2 blob, like
+(`go-tpm-keyfiles` under the SRK, saved as a TSS2 key file, like
 `ssh-tpm-agent`), prints the public key with a title, and links to
 https://github.com/settings/ssh/new. For SSO orgs the user authorizes the
 key on GitHub. On macOS it's a 0600 file owned by the service user.
-`ssh-key check` runs `ssh -T`-equivalent auth against GitHub and reports the
+`status --check` runs the `ssh -T` equivalent against GitHub and reports the
 login.
 
 ### The wrapper
@@ -548,29 +538,28 @@ login.
 git runs `hallpass ssh [options] git@github.com git-upload-pack 'acme/widgets.git'`
 (`-o SendEnv=GIT_PROTOCOL` and `-p` appear too). The wrapper:
 
-- For a host other than `github.com`, execs the real `ssh` with the same
+- For a host other than `github.com`, runs the real `ssh` with the same
   arguments.
 - For `github.com`, accepts only user `git` and a command of
   `git-upload-pack '<path>'` or `git-receive-pack '<path>'`, connects to
-  `ssh.sock`, sends `{"command": ..., "git_protocol": "$GIT_PROTOCOL"}`, and
-  then copies stdin and stdout until either side closes. It never holds a
-  key.
+  `ssh.sock`, and sends `{"service": ..., "repo": ..., "git_protocol": ...}`.
+  It then copies stdin to the broker and the broker's frames to stdout,
+  stderr, and its exit status. It never holds a key.
 
 ### In the broker
 
-1. Peer uid check, then parse the command with the same path rules as git
-   over HTTPS. The repo must be allowed, with `access = "write"` for
-   receive-pack.
+1. Peer uid check, then parse the repo name. The repo must be allowed, with
+   `via = "ssh"`, and with `access = "write"` for receive-pack.
 2. Open an SSH connection to `github.com:22` with `golang.org/x/crypto/ssh`,
-   signing with the TPM key through `crypto.Signer`. GitHub's host keys are
-   pinned from its published fingerprints, embedded in the binary; a
-   mismatch refuses.
+   signing with the TPM key through `crypto.Signer`. GitHub's published host
+   keys are embedded in the binary; a mismatch refuses.
 3. Run exactly the parsed command, with `GIT_PROTOCOL` set only to
    `version=2` or nothing.
 4. upload-pack: relay both directions.
 5. receive-pack: relay GitHub's ref advertisement, adding `no-thin` to its
    capabilities so the pack the client sends is self-contained. Read the
-   client's commands with the same pkt-line reader and `CheckPush`. Then read
+   client's commands with the same pkt-line reader and `CheckPush`, taking
+   the default branch from HEAD in a second upload-pack session. Then read
    the pack and check it for workflow changes (below). If anything is
    refused, discard the rest of the pack and answer with a synthesized
    report-status. Otherwise forward the commands and the pack, and relay
@@ -581,18 +570,21 @@ git runs `hallpass ssh [options] git@github.com git-upload-pack 'acme/widgets.gi
 Over HTTPS, GitHub refuses workflow changes from a PAT without `workflow`
 scope. Over SSH it doesn't, so the broker does:
 
-1. Index the pack: parse every object, resolving deltas. `no-thin` means
-   every delta base is inside the pack.
-2. For each updated ref, walk the new commits that are in the pack. For each
-   one, look up the entry at `.github/workflows` in its tree and in its
-   parent's tree. Different entries mean the commit changes workflows.
-3. A parent outside the pack is already on GitHub. Its `.github/workflows`
-   entry comes from a blobless fetch: upload-pack v2 `fetch` with
-   `want <parent>`, `deepen 1`, `filter blob:none`, over the same SSH key,
-   cached per commit.
-4. Any change refuses the push: "agents can't change .github/workflows; push
-   it yourself with git personal". The pack is capped at 200 MiB; a bigger
-   push is refused with the same advice.
+1. Index the pack: parse every object, resolving deltas, and keep commits
+   and trees. `no-thin` means every delta base is inside the pack.
+2. GitHub runs a push's workflows from the commit the ref ends at, so check
+   that commit, whether it's in the pack or already on GitHub. Its
+   `.github/workflows` entry (mode and ID) must match the entry at the ref's
+   old commit or at the default branch's head. The second covers rebasing
+   onto a main whose workflows someone else changed.
+3. Objects the comparison needs that aren't in the pack come from a blobless
+   fetch: upload-pack v2 `fetch` with `want <commit>`, `deepen 1`,
+   `filter blob:none`, over the same SSH key.
+4. Commit headers are read like git: tree first, parents right after. A
+   tree or parent line anywhere else refuses the push.
+5. A mismatch refuses the push: "agents can't change .github/workflows. Push
+   that change yourself with git personal push". The pack is capped at
+   512 MiB; a bigger push can't be checked and is refused.
 
 This is the most delicate code over SSH. It's needed only when an SSH-routed
 repo takes pushes; a machine with the PAT and no `via = "ssh"` entries never
@@ -611,7 +603,7 @@ alone.
 [gpg]
 	format = ssh
 [gpg "ssh"]
-	program = /opt/hallpass/bin/hallpass sign
+	program = /opt/hallpass/bin/hallpass-sign
 	allowedSignersFile = /etc/hallpass/allowed_signers
 [user]
 	signingkey = /etc/hallpass/signing.pub
@@ -621,25 +613,26 @@ alone.
 	gpgsign = true
 ```
 
-git calls `hallpass sign -Y sign -n git -f /etc/hallpass/signing.pub <file>`
+git calls `hallpass-sign -Y sign -n git -f /etc/hallpass/signing.pub <file>`
 and expects `<file>.sig`. The wrapper:
 
-- For `-Y sign` with namespace `git` and that key, sends the buffer to the
+- For `-Y sign` with namespace `git` and a key file holding the broker's
+  public key, sends the buffer to the
   broker's `sign` op and writes the armored SSHSIG it gets back.
 - For anything else (`-Y verify`, `-Y find-principals`,
   `-Y check-novalidate`, or another key), runs the real `ssh-keygen` with the
   same arguments, so verification and the user's own keys work as before.
 
 The broker signs only namespace `git`, and only a buffer that parses as a
-commit or tag object. It logs the object's tree, first message line, uid, and
-process chain. Anything running as the user can get commits signed this way,
+commit or tag object. It logs the object's kind, first message line, uid,
+and process chain. Anything running as the user can get commits signed this way,
 so Verified means "made on this machine through hallpass", not "the user
 reviewed it". The README says so.
 
 The user's global config wins over the system config, so a global
 `gpg.ssh.program` (here, `op-ssh-sign` in dots `dev/.gitconfig`) would
 override hallpass's. The setup skill moves the user's own signing settings
-into the `git personal` alias, as `-c` options, so personal commits still
+into a file the `git personal` alias includes, so personal commits still
 sign with 1Password and everything else signs through hallpass.
 
 ## Linux and macOS
@@ -650,11 +643,10 @@ sign with 1Password and everything else signs through hallpass.
 | PAT at rest | TPM-sealed, or 0600 file without a TPM | 0600 file. Root can read it. |
 | SSH and signing keys | generated in the TPM | 0600 files. Root can read them. |
 | git | distro git; Arch has 2.56. Ubuntu 24.04's 2.43 is too old for HTTPS routing. | Apple git on macOS 26 is 2.50.1. Xcode 16's 2.39.5 is too old. Homebrew git has its own curl and `$(brew --prefix)/etc/gitconfig`. |
-| Include | `git config --system` with root's git | every git found: `/usr/bin/git` only if `xcode-select -p` succeeds (otherwise it opens the CLT installer), `/opt/homebrew/bin/git`, `/usr/local/bin/git`, `--git PATH` |
+| Include | `git config --system` with root's git | every git found: the one on `PATH`, `/usr/bin/git` only if `xcode-select -p` succeeds (otherwise it opens the CLT installer), `/opt/homebrew/bin/git`, `/usr/local/bin/git` |
 | Logs | journald | `/var/log/hallpass.log`, plus `/etc/newsyslog.d/hallpass.conf`, since per-request lines grow faster |
 
-`install` and `status` print each git's version and warn below 2.47 or
-libcurl 7.84 when the PAT is present. An old git drops the socket path and
+With the PAT, `install` warns about each git older than 2.47. An old git drops the socket path and
 fails to connect, so it fails closed. SSH routing works with any git.
 
 ## Failure modes
@@ -680,18 +672,19 @@ fails to connect, so it fails closed. SSH routing works with any git.
 | Area | Change |
 | --- | --- |
 | delete | `internal/appflow`, `create-app`, `install-key`, App JWT and `Mint` in `internal/github`, the `token` op, `hallpass token`, `client.Token`, `RepoFromRemote`, the App-key import in `internal/keys` |
-| `internal/config` | `[token]`, `[ssh]`, `[signing]`, `[[repo]]`, `protected_branches`, validation, `Allowed(repo) (access, via)` |
+| `internal/config` | `[token]`, `[ssh]`, `[signing]`, `[[repo]]`, `protected_branches`, the `allow` and `deny` layers, validation, `Allowed(repo)` with access, via, and operations |
 | new `internal/peer` | peer credentials and the process chain, moved out of `internal/broker` |
-| `internal/broker` | `status` lists credentials and their state; new `sign` and `ledger` ops; `LISTEN_FDNAMES` in `Listen` |
+| `internal/broker` | `status` lists credentials and their state; new `sign` op; `LISTEN_FDNAMES` in `Listen` |
+| new `internal/op` | operation names, defaults, and warnings |
 | new `internal/policy` | pure classification: REST table, GraphQL walk and tables, embedded schema, pkt-line and receive-pack parsing, report-status synthesis, hard denies |
 | new `internal/proxy` | HTTPS and gh: listeners, SOCKS5, HTTP framing rules, header filters, upstream client, error mapping, redirect follow, rate reserve, audit |
-| new `internal/sshgate` | SSH: command parse, GitHub host-key pinning, session relay, `no-thin`, pack indexing, workflow check, blobless parent fetch |
+| new `internal/sshgate` | SSH: command parse, GitHub host-key pinning, session relay, `no-thin`, pack indexing, workflow check, blobless fetch |
 | new `internal/sign` | SSHSIG signing, commit and tag object check |
 | `internal/keys` | TPM: generate P-256 keys, seal and unseal the PAT; file backend for macOS |
-| `internal/client` | `Credential` always answers `quit=1` with a hint; `SSH` and `Sign` wrappers |
+| `internal/client` | `Credential` always answers `quit=1` with a hint |
 | `internal/system` | generated gitconfig per credential, `/etc/hallpass/gh`, socket units, `allowed_signers`, multi-git include and `xcode-select` guard on macOS, newsyslog, uninstall |
-| `cmd/hallpass` | `login`, `install-pat`, `ssh-key create/remove/check`, `signing-key create/remove`, `allow [--read] [--via ssh]`, `disallow`, `ledger add/list`, `ssh`, `sign`; `gh` becomes the env wrapper; `status` lines |
-| `go.mod` | add `github.com/vektah/gqlparser/v2`, `golang.org/x/crypto/ssh`, `golang.org/x/term` |
+| `cmd/hallpass` | `login`, `install-pat`, `logout`, `ssh-key` and `signing-key` `create/remove/show`, `allow [--read] [--via ssh]`, `disallow`, `policy`, `ledger add/list`, `ssh`, `sign` and the `hallpass-sign` link; `gh` becomes the env wrapper; `status` lines |
+| `go.mod` | add `github.com/vektah/gqlparser/v2`, `golang.org/x/crypto`, `golang.org/x/term`, `github.com/foxboron/go-tpm-keyfiles` |
 
 ## Skills and README
 
@@ -704,7 +697,7 @@ fails to connect, so it fails closed. SSH routing works with any git.
 - `hallpass-repo` becomes short: `allow` the repo or owner, choose `--read`
   or `--via ssh`, list workflows that run agent branches with secrets, and
   list bot configs (`.mergify.yml`, `bors.toml`, Prow `OWNERS`, workflows on
-  `issue_comment`) so the user can add ChatOps patterns. No App install, no
+  `issue_comment`), since hallpass's ChatOps list is fixed. No App install, no
   rulesets, no CODEOWNERS.
 - README: rewrite "What it prevents and mitigates" for the brokered design.
   Agent work shows as the user; the allowlist is the scope; same-uid code can
@@ -802,12 +795,12 @@ The user decided these on 2026-11-08:
 - No marker on agent content.
 - LFS isn't supported through the broker in v1.
 
-Open, with a recommendation:
+Left open, then built as recommended:
 
-- **HTTPS or SSH by default when both exist?** HTTPS, because GitHub enforces
-  the workflow block there. SSH per owner with `via = "ssh"`.
-- **Sign by default when the signing key exists?** Yes for commits and tags
-  made under hallpass's config.
+- HTTPS by default when the PAT and SSH key both exist. SSH per owner with
+  `via = "ssh"`.
+- Commits and tags made under hallpass's config are signed when the signing
+  key exists.
 
 ## Where this came from
 

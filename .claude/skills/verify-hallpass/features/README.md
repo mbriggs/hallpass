@@ -1,0 +1,41 @@
+# hallpass verification map
+
+Each feature file below is the recipe for one area: its sub-feature IDs,
+commands, and expected output.
+
+## Fixture
+
+The fake has `acme/widgets` with branches `main` and `colleague`. PR and
+issue 1 are by `verifier` (the token's login), and 2 is by `colleague`.
+`acme/secret` isn't on the allowlist.
+
+## Driving conventions
+
+- Commands are literal. Run them from any directory except the hallpass
+  checkout, because the checkout's own `origin` would confuse gh's repo
+  detection. `cd /tmp` or `cd "$S/work"`.
+- Every refusal reaches the client prefixed `hallpass: `: in gh's error
+  (`GraphQL: hallpass: ...` for GraphQL), in git's `remote:` or `! [remote
+  rejected]` output, or on stderr. Match on the reason text quoted in each
+  feature file.
+- Reasons change wording as the policy code changes. When the text differs
+  from a feature file but the request is still refused and absent from the
+  fake's log, it's a wording change, not a policy failure: report the new
+  text and update the file.
+- Pushes change the fake's refs. Each journey says which ones it leaves
+  behind. Run them in the order given, or start over with a fresh `up.sh`.
+
+## Features
+
+- [gh REST](./gh-rest.md): `gh api` reads and writes, the allowlist,
+  read-only repos, refused routes, and the author check.
+- [gh PR commands and GraphQL](./gh-graphql.md): `gh pr comment`, refused
+  `merge` and `approve`, and the ChatOps filter.
+- [git over HTTPS](./git-https.md): clone, fetch, and push to agent
+  branches. Refused default, protected, colleague, and tag pushes.
+- [Signed commits](./signing.md): `git commit -S` through `hallpass-sign`.
+- [Status](./status.md): `hallpass status`, `--check`, `--json`, and the
+  broker-down error.
+
+Git over SSH, the setup commands, and the TPM backend aren't mapped,
+because the scratch broker can't reach them. See SKILL.md.
