@@ -1,6 +1,7 @@
 package system
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -56,6 +57,12 @@ func Install(cfg *config.Config) error {
 		if err := os.Lchown(d.path, uid, gid); err != nil {
 			return err
 		}
+	}
+	// Keep the credentials out of Time Machine, so no backup holds a copy.
+	// The exclusion is an attribute on the directory, so it holds whether or
+	// not backups are set up yet.
+	if out, err := exec.Command("/usr/bin/tmutil", "addexclusion", "/var/db/hallpass").CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "Couldn't exclude /var/db/hallpass from Time Machine (%v: %s). Run: sudo tmutil addexclusion /var/db/hallpass\n", err, bytes.TrimSpace(out))
 	}
 	const logPath = "/var/log/hallpass.log"
 	logf, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)

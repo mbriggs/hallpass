@@ -19,6 +19,7 @@ import (
 	"github.com/mbriggs/hallpass/internal/broker"
 	"github.com/mbriggs/hallpass/internal/client"
 	"github.com/mbriggs/hallpass/internal/config"
+	"github.com/mbriggs/hallpass/internal/keys"
 	"github.com/mbriggs/hallpass/internal/system"
 )
 
@@ -99,10 +100,35 @@ func (d *checkup) broker() bool {
 			d.fail("hallpass status explains; set the credential up again", "the %s didn't load: %s", name, c.Problem)
 		}
 	}
+	d.plainCredentials()
 	if d.st.Token == nil && d.st.SSH == nil && d.st.Signing == nil {
 		d.warn("the broker has no credentials yet, so nothing goes through it. See %s help", system.Binary)
 	}
 	return true
+}
+
+// plainCredentials warns about credentials kept as plain files on a machine
+// that seals new ones, as on macOS before the sealed backend existed.
+func (d *checkup) plainCredentials() {
+	if keys.DefaultBackend() == "file" {
+		return
+	}
+	plain := func(ref string) bool { b, _, err := keys.Split(ref); return err == nil && b == "file" }
+	if t := d.cfg.Token; t != nil && plain(t.Secret) {
+		cmd := "login"
+		if t.Source == "pat" {
+			cmd = "install-pat"
+		}
+		d.warn("the token is a plain file that secret scanners recognize. Seal it by setting it up again: sudo %s %s", system.Binary, cmd)
+	}
+	for _, k := range []struct {
+		kind string
+		key  *config.Key
+	}{{"ssh", d.cfg.SSH}, {"signing", d.cfg.Signing}} {
+		if k.key != nil && plain(k.key.Key) {
+			d.warn("the %s key is a plain file that secret scanners recognize. Seal it by making a new one: sudo %s %s-key remove, then %s-key create, and replace it on GitHub", k.kind, system.Binary, k.kind, k.kind)
+		}
+	}
 }
 
 // gits checks every git on PATH, and the usual macOS ones, since each may
