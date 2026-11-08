@@ -42,6 +42,7 @@ optional; set up the ones you want:
   sudo hallpass allow OWNER/REPO       let agents use a repo; OWNER/* for all of an owner's
   hallpass status --check              confirm the broker's credentials with GitHub
   hallpass doctor                      check this machine's git, gh, and signing setup
+  hallpass skills                      install or update the agent skills; install offers this
 
 Daily use. git calls these for you:
   hallpass gh ARGS...                  run gh through the broker
@@ -105,6 +106,8 @@ func main() {
 		err = doctor(args)
 	case "ledger":
 		err = ledger(args)
+	case "skills":
+		err = skillsCmd(args)
 	case "gh":
 		err = gh(args)
 	case "sign":
@@ -228,6 +231,11 @@ func install(args []string) error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "Installed %s and started the broker.\n", system.Binary)
+	if uid, err := system.InvokingUID(); err == nil {
+		if err := offerSkills(uid); err != nil {
+			fmt.Fprintln(os.Stderr, "hallpass: skills:", err)
+		}
+	}
 	if cfg.Token == nil && cfg.SSH == nil && cfg.Signing == nil {
 		fmt.Fprintf(os.Stderr, "Next, set up the credentials you want. See: %s help\n", system.Binary)
 	}

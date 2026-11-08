@@ -259,6 +259,11 @@ hallpass status --check    # the broker's credentials, checked with GitHub
 hallpass doctor            # this machine's git, gh, and signing setup
 ```
 
+`install` offers to copy the `hallpass-setup` and `hallpass-repo` skills into
+`~/.claude/skills` and `~/.agents/skills`, and to update them when a new
+binary brings changes. It runs `hallpass skills` as you to do it, and you can
+run that yourself any time.
+
 `login` runs GitHub's device flow as root, with GitHub CLI's client ID and
 the `repo` scope, so the token goes straight from GitHub into storage. Orgs
 that restrict OAuth apps and haven't approved GitHub CLI reject it. For those,
