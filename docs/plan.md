@@ -32,9 +32,9 @@ on its own features. A machine can have any one, any two, or all three.
 
 | Credential | Lives in | Turns on |
 | --- | --- | --- |
-| **PAT**: a classic PAT with `repo` scope only and a 90-day expiry, or a `repo`-scoped token from `hallpass login` | TPM-sealed blob on Linux, 0600 file on macOS | git over HTTPS through the broker, and gh through the broker |
-| **SSH key**: ECDSA P-256 generated in the TPM, added to the user's GitHub account as an authentication key | TPM on Linux, 0600 file on macOS | git over SSH through the broker |
-| **Signing key**: ECDSA P-256 generated in the TPM, added as a signing key | TPM on Linux, 0600 file on macOS | signed commits and tags, shown as Verified on GitHub |
+| **PAT**: a classic PAT with `repo` scope only and a 90-day expiry, or a `repo`-scoped token from `hallpass login` | TPM-sealed blob on Linux, sealed file on macOS | git over HTTPS through the broker, and gh through the broker |
+| **SSH key**: ECDSA P-256 generated in the TPM, added to the user's GitHub account as an authentication key | TPM on Linux, sealed file on macOS | git over SSH through the broker |
+| **Signing key**: ECDSA P-256 generated in the TPM, added as a signing key | TPM on Linux, sealed file on macOS | signed commits and tags, shown as Verified on GitHub |
 
 What each combination gives:
 
@@ -516,7 +516,10 @@ terminal or piped from `op read`:
    is present and at most 366 days out (warn past 90); the login matches the
    previous PAT's, unless `--new-login`.
 4. Stores it. On Linux with a TPM, sealed under the SRK, so a copied disk
-   blob is useless. Otherwise a 0600 file owned by the service user. The
+   blob is useless. On macOS, AES-256-GCM-encrypted under a key derived
+   from a random machine secret, the serial number, the hardware UUID, and
+   the data volume UUID (`internal/keys/sealed.go`). Otherwise a 0600 file
+   owned by the service user. The
    config points at the new one only after it's stored.
 5. Revokes the old PAT with `POST /credentials/revoke`, unless `--keep-old`.
 
@@ -529,7 +532,8 @@ fails when GitHub rejects the PAT or its scopes aren't exactly `repo`.
 (`go-tpm-keyfiles` under the SRK, saved as a TSS2 key file, like
 `ssh-tpm-agent`), prints the public key with a title, and links to
 https://github.com/settings/ssh/new. For SSO orgs the user authorizes the
-key on GitHub. On macOS it's a 0600 file owned by the service user.
+key on GitHub. On macOS it's a sealed file owned by the service user,
+encrypted the same way as the PAT.
 `status --check` runs the `ssh -T` equivalent against GitHub and reports the
 login.
 
@@ -640,8 +644,8 @@ sign with 1Password and everything else signs through hallpass.
 | | Linux | macOS |
 | --- | --- | --- |
 | Sockets | socket units with `LISTEN_FDNAMES` | broker binds under `/var/db/hallpass/run` |
-| PAT at rest | TPM-sealed, or 0600 file without a TPM | 0600 file. Root can read it. |
-| SSH and signing keys | generated in the TPM | 0600 files. Root can read them. |
+| PAT at rest | TPM-sealed, or 0600 file without a TPM | sealed 0600 file. A launchd daemon can't use the Secure Enclave, so root can decrypt it. Excluded from Time Machine. |
+| SSH and signing keys | generated in the TPM | sealed 0600 files. Root can decrypt them. |
 | git | distro git; Arch has 2.56. Ubuntu 24.04's 2.43 is too old for HTTPS routing. | Apple git on macOS 26 is 2.50.1. Xcode 16's 2.39.5 is too old. Homebrew git has its own curl and `$(brew --prefix)/etc/gitconfig`. |
 | Include | `git config --system` with root's git | every git found: the one on `PATH`, `/usr/bin/git` only if `xcode-select -p` succeeds (otherwise it opens the CLT installer), `/opt/homebrew/bin/git`, `/usr/local/bin/git` |
 | Logs | journald | `/var/log/hallpass.log`, plus `/etc/newsyslog.d/hallpass.conf`, since per-request lines grow faster |
@@ -680,7 +684,7 @@ fails to connect, so it fails closed. SSH routing works with any git.
 | new `internal/proxy` | HTTPS and gh: listeners, SOCKS5, HTTP framing rules, header filters, upstream client, error mapping, redirect follow, rate reserve, audit |
 | new `internal/sshgate` | SSH: command parse, GitHub host-key pinning, session relay, `no-thin`, pack indexing, workflow check, blobless fetch |
 | new `internal/sign` | SSHSIG signing, commit and tag object check |
-| `internal/keys` | TPM: generate P-256 keys, seal and unseal the PAT; file backend for macOS |
+| `internal/keys` | TPM: generate P-256 keys, seal and unseal the PAT; sealed backend for macOS; file backend for Linux without a TPM |
 | `internal/client` | `Credential` always answers `quit=1` with a hint |
 | `internal/system` | generated gitconfig per credential, `/etc/hallpass/gh`, socket units, `allowed_signers`, multi-git include and `xcode-select` guard on macOS, newsyslog, uninstall |
 | `cmd/hallpass` | `login`, `install-pat`, `logout`, `ssh-key` and `signing-key` `create/remove/show`, `allow [--read] [--via ssh]`, `disallow`, `policy`, `ledger add/list`, `ssh`, `sign` and the `hallpass-sign` link; `gh` becomes the env wrapper; `status` lines |

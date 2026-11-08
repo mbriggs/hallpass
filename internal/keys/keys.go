@@ -6,9 +6,10 @@
 //
 // The tpm backend generates signing keys inside this machine's TPM, so the
 // private key never exists anywhere else, even for root. It seals the token
-// to the TPM, so a copied disk yields nothing. The file backend keeps both in
-// files only the service user can read. It is the fallback where there is no
-// TPM, and the only choice on macOS.
+// to the TPM, so a copied disk yields nothing. The sealed backend, on macOS,
+// encrypts both under a key tied to this machine; see sealed.go. The file
+// backend keeps both in plain files only the service user can read. It is
+// the fallback on Linux without a TPM.
 package keys
 
 import (
@@ -29,7 +30,7 @@ import (
 // returns its signer.
 func NewSigner(backend, path, description string) (crypto.Signer, error) {
 	switch backend {
-	case "file":
+	case "file", "sealed":
 		k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		if err != nil {
 			return nil, err
@@ -38,7 +39,7 @@ func NewSigner(backend, path, description string) (crypto.Signer, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := writePrivate(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})); err != nil {
+		if err := Seal(backend, path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})); err != nil {
 			return nil, err
 		}
 	case "tpm":
@@ -58,8 +59,8 @@ func NewSigner(backend, path, description string) (crypto.Signer, error) {
 // LoadSigner returns a signer for the key at path.
 func LoadSigner(backend, path string) (crypto.Signer, error) {
 	switch backend {
-	case "file":
-		b, err := os.ReadFile(path)
+	case "file", "sealed":
+		b, err := Unseal(backend, path)
 		if err != nil {
 			return nil, err
 		}
@@ -87,6 +88,8 @@ func Seal(backend, path string, secret []byte) error {
 	switch backend {
 	case "file":
 		return writePrivate(path, secret)
+	case "sealed":
+		return sealFile(path, secret)
 	case "tpm":
 		blob, err := sealTPM(secret)
 		if err != nil {
@@ -102,6 +105,8 @@ func Unseal(backend, path string) ([]byte, error) {
 	switch backend {
 	case "file":
 		return os.ReadFile(path)
+	case "sealed":
+		return openFile(path)
 	case "tpm":
 		return unsealTPM(path)
 	}
@@ -112,10 +117,14 @@ func Unseal(backend, path string) ([]byte, error) {
 // can use.
 func HaveTPM() bool { return haveTPM() }
 
-// DefaultBackend is tpm where there is one, and file otherwise.
+// DefaultBackend is tpm where there is one, sealed on macOS, and file
+// otherwise.
 func DefaultBackend() string {
-	if HaveTPM() {
+	switch {
+	case HaveTPM():
 		return "tpm"
+	case haveSealed():
+		return "sealed"
 	}
 	return "file"
 }
@@ -124,8 +133,8 @@ func DefaultBackend() string {
 // its backend and path.
 func Split(ref string) (backend, path string, err error) {
 	backend, path, ok := strings.Cut(ref, ":")
-	if !ok || (backend != "tpm" && backend != "file") || !strings.HasPrefix(path, "/") {
-		return "", "", fmt.Errorf("want tpm:/path or file:/path, got %q", ref)
+	if !ok || (backend != "tpm" && backend != "sealed" && backend != "file") || !strings.HasPrefix(path, "/") {
+		return "", "", fmt.Errorf("want tpm:/path, sealed:/path, or file:/path, got %q", ref)
 	}
 	return backend, path, nil
 }

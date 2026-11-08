@@ -156,11 +156,7 @@ func storeToken(cfg *config.Config, token, source string, newLogin, keepOld bool
 		}
 		removeStored(old.Secret)
 	}
-	where := "sealed to this machine's TPM"
-	if backend == "file" {
-		where = "in " + path + ", readable only by " + config.ServiceUser()
-	}
-	fmt.Fprintf(os.Stderr, "Stored a token for %s, %s.\n", info.Login, where)
+	fmt.Fprintf(os.Stderr, "Stored a token for %s, %s.\n", info.Login, storedWhere(backend, path, "sealed to this machine's TPM"))
 	if source == "login" {
 		fmt.Fprintln(os.Stderr, "Device login tokens don't expire. Run login again every few months; it revokes the old one.")
 	}
@@ -261,10 +257,7 @@ func keyCommand(kind string, args []string) error {
 			removeIfUnused(path, err)
 			return err
 		}
-		where := "inside this machine's TPM. It can't leave it"
-		if backend == "file" {
-			where = "in " + path + ", readable only by " + config.ServiceUser()
-		}
+		where := storedWhere(backend, path, "inside this machine's TPM. It can't leave it")
 		use := "an Authentication key"
 		if kind == "signing" {
 			use = "a Signing key"
@@ -333,8 +326,23 @@ func newStatePath(kind, backend string) (string, error) {
 	if err := ownByService(dir); err != nil {
 		return "", err
 	}
-	ext := map[string]string{"tpm": "tpm", "file": "key"}[backend]
+	ext, ok := map[string]string{"tpm": "tpm", "sealed": "sealed", "file": "key"}[backend]
+	if !ok {
+		return "", fmt.Errorf("unknown key backend %q", backend)
+	}
 	return filepath.Join(dir, fmt.Sprintf("%s-%d.%s", kind, time.Now().UnixNano(), ext)), nil
+}
+
+// storedWhere says where a new credential went, for the message after
+// creating it. tpm is what to say for the tpm backend.
+func storedWhere(backend, path, tpm string) string {
+	switch backend {
+	case "sealed":
+		return "in " + path + ", readable only by " + config.ServiceUser() + " and encrypted under a key tied to this Mac"
+	case "file":
+		return "in " + path + ", readable only by " + config.ServiceUser()
+	}
+	return tpm
 }
 
 func ownByService(path string) error {

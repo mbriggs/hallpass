@@ -12,9 +12,9 @@ Each credential is optional and turns on its own features:
 
 | Credential | Kept in | Turns on |
 | --- | --- | --- |
-| Token: a device login or a classic PAT, `repo` scope only | sealed to the TPM where there is one, otherwise a file only the broker user reads | git over HTTPS, and gh |
-| SSH key, ECDSA P-256 | generated inside the TPM where there is one, otherwise a file | git over SSH |
-| Signing key, ECDSA P-256 | generated inside the TPM where there is one, otherwise a file | signed commits and tags |
+| Token: a device login or a classic PAT, `repo` scope only | sealed to the TPM where there is one; on macOS, an encrypted file tied to the Mac; otherwise a file only the broker user reads | git over HTTPS, and gh |
+| SSH key, ECDSA P-256 | generated inside the TPM where there is one; on macOS, an encrypted file tied to the Mac; otherwise a file | git over SSH |
+| Signing key, ECDSA P-256 | generated inside the TPM where there is one; on macOS, an encrypted file tied to the Mac; otherwise a file | signed commits and tags |
 
 Every credential acts as you on GitHub, so it works in your repos and your
 orgs' repos without any org approving it. The allowlist in `/etc/hallpass/hallpass.toml` decides which repos
@@ -70,6 +70,17 @@ It mitigates these:
 - **Agent work looks like yours.** PRs, comments, and pushes show as you,
   so nobody needs to approve anything. Edits are limited to PRs,
   issues, and comments you wrote, so agents can't rewrite a colleague's.
+- **Credential sweeps on macOS.** macOS has a Secure Enclave, but a launchd
+  daemon can't use it, so the broker encrypts each credential with
+  AES-256-GCM. The key comes from three inputs: a random secret made when you
+  first set up a credential, the Mac's serial number and hardware UUID, and
+  the data volume's UUID. A tool that scans the disk for secrets finds no
+  PEM key or `gho_` token. A copy of `/var/db/hallpass` doesn't open on
+  another Mac. Opening one also takes the volume UUID and the secret, and
+  `system_profiler SPHardwareDataType` prints neither. `install` also excludes `/var/db/hallpass` from Time
+  Machine. Replacing the logic board or erasing the disk means setting the
+  credentials up again. `doctor` warns about credentials made before this,
+  which are still plain files.
 - **A stolen token.** A PAT expires within a year, and `status` warns from
   14 days out. A device-login token doesn't expire. Run `login` again every
   few months, which revokes the old one.
@@ -94,7 +105,10 @@ It doesn't protect against these:
   whatever prompt guards them. Run agents in a sandbox that hides those if
   you need that boundary.
 - **Root.** Root can unseal the token on the running machine and use it
-  until it's revoked or expires. On macOS, root can read every credential.
+  until it's revoked or expires. On macOS, malware running as root that was
+  written for hallpass can also decrypt every credential and copy it off the
+  machine, since it can read every input to the key. If that happens, run
+  `login` again, and recreate both keys.
 - **A compromised setup session.** Setup runs `sudo` from your shell. If code
   running as you replaced `sudo` on your PATH, or edited the checkout you
   build from, it gets root. Install from an attested release binary, from a

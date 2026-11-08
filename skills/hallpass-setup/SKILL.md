@@ -63,8 +63,9 @@ Each is optional:
 - **The SSH key** turns on git over SSH. It's only needed for orgs that
   block both classic PATs and GitHub CLI's OAuth app but accept SSH keys,
   or when the user wants a key that can't leave the TPM. Only Linux has a
-  TPM backend. Elsewhere hallpass keeps keys in a file only its service user
-  can read.
+  TPM backend. On macOS hallpass keeps keys in a file only its service user
+  can read, encrypted under a key tied to the Mac. If `doctor` warns that a
+  credential is a plain file, it predates sealing; offer to set it up again.
 - **The signing key** signs commits and tags, which then show as Verified.
 
 Tell the user that every credential acts as them on GitHub, so agent PRs,
