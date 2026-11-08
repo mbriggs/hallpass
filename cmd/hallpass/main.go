@@ -191,6 +191,9 @@ func serve(args []string) error {
 		Addr:      cfg.SSHAddr,
 		HostKeys:  cfg.SSHHostKeys,
 	}
+	if creds.Token != "" {
+		gate.CurrentName = px.CurrentName
+	}
 	if creds.SSH != nil {
 		ctl.SSHCheck = gate.Check
 	}

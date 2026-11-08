@@ -43,7 +43,11 @@ It prevents these:
   titles, and states, never bodies, code, or comments. Of a repo reached
   that way, like a fork's parent, they also see its description, its
   default branch's name, your permission there, and whether it has issues
-  and a wiki, which `gh pr create` reads.
+  and a wiki, which `gh pr create` reads. GitHub keeps a repo's old name
+  working after a rename or transfer, so with a token the broker asks
+  GitHub what a repo is called now before running git there, and refuses
+  an old name. On a machine with only an SSH key it can't ask, so an old
+  name that the allowlist covers still reaches the renamed repo.
 - **Merging, approving, and pushing to protected branches.** By default,
   agents can't merge or approve PRs, push the default branch, add labels,
   or rerun or dispatch workflows. You can allow each of these everywhere or
