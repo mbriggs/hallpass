@@ -12,30 +12,25 @@ SSH key.
 - `status-json` prints the same as JSON.
 - `status-down` gives a clear error when the broker isn't running.
 
-## Driving it with hallpass
+## Driving it
 
-- **Plain.** `hallpass status` exits 0 and prints:
-  - `broker:   running at $S/run/hallpass.sock`
-  - `token:    classic PAT for verifier, 0 days old, doesn't expire`
-  - `ssh:      ` and the key in `$S/keys/ssh.pub`
-  - `signing:  ` and the key in `$S/keys/signing.pub`
-  - `repos:    acme/widgets, acme/readonly (read), acme/gadgets`
-  - `audit:    journalctl -u hallpass` on Linux, or
-    `audit:    /var/log/hallpass.log` on macOS. Either way it names the
-    live broker's log, even here. The scratch broker logs to `$S/evidence/broker.log`.
+`scripts/drive.sh "$S" status` runs these cases from
+`scripts/cases/status.sh`:
 
-  There's no `policy:` line, because the scratch config sets no global
-  allow or deny.
-- **Check.** `hallpass status --check` exits 0 with no `FAILED` or `BROKEN`,
-  and adds `          GitHub accepts it for verifier` under the `ssh:` line.
-  The fake log has `GET /api/user` with `token-ok` and a line with
-  `"method":"SSH","path":"shell"` and `"auth":"key-ok"`.
-- **JSON.** `hallpass status --json | jq -r .token.login` prints `verifier`.
-  The top-level keys are `binary`, `repos`, `signing`, `ssh`, `token`, and
-  `version`. With `--check`, `.ssh.login` is `verifier` and `.checked` is
-  `true`.
-- **Down.** `HALLPASS_RUN_DIR="$S/nowhere" hallpass status` exits 1 with
-  `hallpass: can't reach the hallpass broker at $S/nowhere/hallpass.sock: dial unix ...: no such file or directory`.
+- `status-plain`: `hallpass status` names `$S/run/hallpass.sock`, `classic
+  PAT for verifier, 0 days old, doesn't expire`, the keys in
+  `$S/keys/ssh.pub` and `$S/keys/signing.pub`, and `repos:    acme/widgets,
+  acme/readonly (read), acme/gadgets`. There's no `policy:` line, because
+  the scratch config sets no global allow or deny. Its `audit:` line names
+  the live broker's log even here; the scratch broker logs to
+  `$S/evidence/broker.log`.
+- `status-check`: `--check` adds `GitHub accepts it for verifier` under
+  `ssh:`, with no `FAILED` or `BROKEN`. The fake sees `GET /api/user` with
+  `token-ok`, and an SSH `shell` session with `key-ok`.
+- `status-json`: `--json` has `"login": "verifier"`, and with `--check`,
+  `"checked": true`.
+- `status-down`: with `HALLPASS_RUN_DIR="$S/nowhere"`, it fails with `can't
+  reach the hallpass broker at $S/nowhere/hallpass.sock`.
 
 ## Gotchas
 

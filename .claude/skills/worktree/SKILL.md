@@ -59,18 +59,25 @@ release, and the broker allows it only because the user ran
 
 1. Commit, then write the commit message you want on `main` to a file
    (subject line, blank line, body, and the attribution lines).
-2. Write the PR description to a second file, outside the checkout. Use
+2. Verify the commit with the verify-hallpass skill: with nothing
+   uncommitted, run its `up.sh`, then `drive.sh S all`, then `down.sh S`.
+   A passing `all` run stamps the commit's tree, and `land` refuses a branch
+   whose tree has no stamp, unless it changes only Markdown. Rebasing
+   changes the tree, so rebase first, then verify. If the change can't
+   affect the broker, pass `--no-verify REASON` to `land`, and the reason
+   goes in the PR description.
+3. Write the PR description to a second file, outside the checkout. Use
    the `prose` skill for it, with the reviewer as the reader, and the
    `show-me` skill for the views that make the change clear, such as a
    file tree of what moved or a Mermaid sequence of a new flow. End it with
    the PR attribution line.
-3. From the lane: `bin/worktree land --message MSG --body DESC`. It squashes
+4. From the lane: `bin/worktree land --message MSG --body DESC`. It squashes
    the branch onto `origin/main`, force-pushes with a lease, and opens the
    PR or rewrites its title (the commit subject) and description (DESC).
    It prints the PR URL. Rebase onto `origin/main` first if it says the
    branch is behind. Pass `--body` every time you land: without it, the
    description becomes the commit body.
-4. Own the PR until it merges. Watch it with
+5. Own the PR until it merges. Watch it with
    `/opt/hallpass/bin/hallpass gh pr checks BRANCH --watch` (run it in the
    background), and check `gh pr view BRANCH --json state,reviews,comments`
    for merges and review comments.
@@ -79,12 +86,12 @@ release, and the broker allows it only because the user ran
      description if the change grew. Then watch again. If you can't fix
      it, tell the user what failed and why.
    - Answer review comments the same way: fix, re-land, and reply.
-5. When every check passes and no review asks for changes, merge it:
+6. When every check passes and no review asks for changes, merge it:
    `/opt/hallpass/bin/hallpass gh pr merge BRANCH --squash`. Leave out
    `--delete-branch`: teardown deletes the branch. If hallpass refuses the
    merge, show the user its message, which names the command that allows
    it, and stop there.
-6. Once the PR is merged, call `ExitWorktree` with `keep`, and run
+7. Once the PR is merged, call `ExitWorktree` with `keep`, and run
    `bin/worktree sync` in the primary. It fast-forwards `main` and runs
    `make install` so the live broker runs what merged. If it prints
    `NOT INSTALLED`, sudo needed a password: ask the user to run

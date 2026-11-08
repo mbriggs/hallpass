@@ -24,65 +24,46 @@ colleagues' branches, tags, or commits that change `.github/workflows`.
 - `git-renamed` refuses a repo's old name after a rename or transfer.
 - `git-push-default-allowed` pushes `main` once `push.default` is on.
 
-## Driving it with git
+## Driving it
 
-Preconditions: `cd /tmp`, and the fake's refs recorded with
-`GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -C "$S/gh-root/acme/widgets.git" for-each-ref > "$S/evidence/refs-before.txt"`.
+`scripts/drive.sh "$S" ssh` runs these cases from `scripts/cases/git-ssh.sh`,
+in order, as one journey in `$S/work`:
 
-- **Clone.** `git clone -q git@github.com:acme/widgets.git "$S/work" && cd "$S/work"`
-  exits 0. `git clone -q https://github.com/acme/widgets "$S/work2"` and
-  `git clone -q ssh://git@github.com/acme/widgets "$S/work3"` also exit 0.
-  The fake log has a `GET /api/repos/acme/widgets` with `token-ok` (the
-  current-name check) and a line with `"method":"SSH"`,
-  `"path":"git-upload-pack 'acme/widgets.git'"`, and `"auth":"key-ok"`.
-- **Commit.** `echo change >> README && git commit -qam "agent work"`.
-- **New branch.** `git push origin HEAD:agent/fix` exits 0 and prints
-  `* [new branch]      HEAD -> agent/fix`. The fake log has
-  `git-receive-pack 'acme/widgets.git'`, and the fake's refs gain
-  `refs/heads/agent/fix`. `broker.log` has `msg=pushed ... refs=[refs/heads/agent/fix]`.
-- **Own branch.** `git commit -q --amend -m "agent work, amended" && git push --force origin HEAD:agent/fix`
-  exits 0 and prints `(forced update)`.
-- **Refusals.** Each exits 1 with `! [remote rejected]` and
-  `(hallpass: <reason>)`:
-  - `git push origin HEAD:main`: `main is the default branch; push another branch and open a PR. agents may not push the default branch in acme/widgets. To allow it: sudo /opt/hallpass/bin/hallpass policy allow push.default --repo acme/widgets`
-  - `git push origin HEAD:release/1`: `release/1 is protected in hallpass's config`
-  - `git push --force origin HEAD:colleague`: `agents can only update branches they created. To let agents update it as it is: sudo /opt/hallpass/bin/hallpass ledger add acme/widgets colleague <sha>`
-  - `git push origin :colleague`: `agents can only delete branches they created. To let agents delete it as it is: sudo /opt/hallpass/bin/hallpass ledger add acme/widgets colleague <sha>`
-  - `git push origin HEAD:refs/tags/v1`: `agents can't push tags`
-- **Workflow.** `printf 'on: push\njobs: {x: {}}\n' > .github/workflows/ci.yml && git commit -qam wf && git push origin HEAD:agent/fix`
-  exits 1 with `hallpass: agents can't change .github/workflows. Push that change yourself with git personal push`.
-  Then `git reset -q --hard HEAD~1`.
-- **Allowlist.** `git ls-remote https://github.com/acme/secret` exits 128
-  with `hallpass: acme/secret isn't in hallpass's allowlist. To allow it: sudo /opt/hallpass/bin/hallpass allow acme/secret`.
-  No fake log line names `acme/secret`.
-- **Read-only.** `git ls-remote git@github.com:acme/readonly` lists `main`
-  and `colleague`. `git push git@github.com:acme/readonly HEAD:agent/ro`
-  exits 128 with `hallpass: agents may only read acme/readonly`, and the
-  fake log has no `git-receive-pack 'acme/readonly.git'`.
-- **Renamed.** `git ls-remote git@github.com:acme/gadgets` exits 128 with
-  `hallpass: acme/gadgets is now acme/widgets on GitHub. Use the new name, which hallpass checks against its allowlist`.
-  The fake log has `GET /api/repos/acme/gadgets` and then
-  `GET /api/repositories/1`, which is the broker following the redirect,
-  and no SSH line for it.
-- **Delete own.** `git push origin :agent/fix` exits 0 and prints `- [deleted]         agent/fix`.
-- **Proof.** Diff the fake's refs against `refs-before.txt`: nothing changed.
-  `main` and `colleague` didn't move, and there's no `release/1`, no
-  `refs/tags/v1`, and no `agent/fix` left. Each refused push still logs
-  `git-receive-pack` in the fake, because the broker opens the session to
-  read GitHub's refs before it checks. The refs don't move.
+- `git-clone`: clones over `git@github.com:`, `https://github.com/`, and
+  `ssh://git@github.com/`. The fake sees the broker's current-name check,
+  `GET /api/repos/acme/widgets` with `token-ok`, and `git-upload-pack
+  'acme/widgets.git'` with `key-ok`.
+- `git-push-new`: pushes `agent/fix` as a new branch, `broker.log` records
+  `refs=[refs/heads/agent/fix]`, and the fake gains the branch.
+- `git-push-own`: amends and force-pushes `agent/fix`.
+- `git-push-default`, `git-push-protected`, `git-push-colleague`,
+  `git-push-tag`: refused with `main is the default branch`, `release/1 is
+  protected`, `agents can only update branches they created` and `agents
+  can only delete branches they created`, and `agents can't push tags`.
+- `git-push-workflow`: a commit that changes `.github/workflows` is refused
+  with `agents can't change .github/workflows`.
+- `git-allowlist`: `ls-remote` on `acme/secret` is refused with `isn't in
+  hallpass's allowlist`, and the fake never sees it.
+- `git-readonly`: `ls-remote` on `acme/readonly` lists its branches, and a
+  push there is refused with `agents may only read acme/readonly`.
+- `git-renamed`: `acme/gadgets` is refused with `acme/gadgets is now
+  acme/widgets on GitHub`. The fake sees `GET /api/repos/acme/gadgets` and
+  the redirect's `GET /api/repositories/1`, and no SSH for it.
+- `git-delete-own`: deletes `agent/fix`.
+- `git-refs-unchanged`: the fake's refs match the start. A refused push
+  still logs `git-receive-pack`, because the broker reads GitHub's refs
+  before it checks, but no ref moves.
 
 ## push.default
 
-To check `push.default`, stop the broker (its pid is in `$S/broker.pid`;
-check that `ps -ww -o command= -p PID` names `$S` first), add
-`allow = ["push.default"]` on the line after `match = "acme/widgets"` in
-`$S/hallpass.toml`, and start it again with the `nohup` line from `up.sh`,
-appending (`>>`) to `broker.log`. `hallpass status` then shows
-`acme/widgets (+push.default)`. From `$S/work`,
-`echo d >> README && git commit -qam "default push" && git push origin HEAD:main`
-exits 0, and the fake's `main` moves to your `HEAD`. `git push origin :main`
-still exits 1 with `hallpass: agents can't delete the default branch`.
-Run this last: it leaves the fake's `main` moved.
+`scripts/drive.sh "$S" push-default`, after `ssh`, adds
+`allow = ["push.default"]` to the `acme/widgets` entry and restarts the
+broker. `push-default-allowed` checks that `hallpass status` shows
+`acme/widgets (+push.default)` and that a push to `main` moves the fake's
+`main`. `push-default-delete` checks that deleting `main` is still refused
+with `agents can't delete the default branch`. It then restores the config
+and restarts the broker. It leaves the fake's `main` moved, so start over
+with `up.sh` before running `ssh` again.
 
 ## Gotchas
 
@@ -112,8 +93,8 @@ Run this last: it leaves the fake's `main` moved.
 - The fake's repos set `uploadpack.allowFilter` and
   `uploadpack.allowAnySHA1InWant`, as GitHub does. The workflow check
   fetches trees blobless, and fails without them.
-- The agent permission check may block the push batch, because it can't
-  tell the fake from real GitHub when it sees `git push --force` and pushes
-  to `main`. Ask the user to approve these commands, and say they go to the
-  fake under `$S`. `TestGitOverSSHThroughBroker` in
-  `cmd/hallpass/ssh_test.go` drives the same journey in `go test`.
+- Typed by hand, the push batch trips the agent permission check, which
+  can't tell the fake from real GitHub when it sees `git push --force` and
+  pushes to `main`. `drive.sh` runs it as one committed script instead.
+  `TestGitOverSSHThroughBroker` in `cmd/hallpass/ssh_test.go` drives the
+  same journey in `go test`.

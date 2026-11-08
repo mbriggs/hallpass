@@ -14,9 +14,10 @@ on the allowlist.
 
 ## Driving conventions
 
-- Commands are literal. Run them from any directory except the hallpass
-  checkout, because the checkout's own `origin` would confuse gh's repo
-  detection. `cd /tmp` or `cd "$S/work"`.
+- `scripts/drive.sh S FEATURE` runs each feature's cases, from
+  `scripts/cases/`. Cases run outside the hallpass checkout, because the
+  checkout's own `origin` would confuse gh's repo detection: `drive.sh`
+  starts each feature in `/tmp`.
 - Every refusal reaches the client prefixed `hallpass: `: in gh's error
   (`GraphQL: hallpass: ...` for GraphQL), in git's `remote:` or `! [remote
   rejected]` output, or on stderr. Match on the reason text quoted in each
@@ -43,5 +44,5 @@ on the allowlist.
 - [Status](./status.md): `hallpass status`, `--check`, `--json`, and the
   broker-down error.
 
-The setup commands and the TPM backend aren't mapped, because the scratch
-broker can't reach them. See SKILL.md.
+The setup commands aren't mapped, because the scratch broker can't reach
+them, and the TPM backend needs `HALLPASS_VERIFY_BACKEND=tpm`. See SKILL.md.

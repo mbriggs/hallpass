@@ -180,8 +180,32 @@ git -C "$P" worktree remove --force "$D"
 
 # --- land ---------------------------------------------------------------------
 cd "$A"
+# stamp records a passing drive.sh run for HEAD's tree, as drive.sh does,
+# in the lane's verify scratch dir.
+vprefix=$(sed -n 's/^HALLPASS_VERIFY_PREFIX=//p' "$A/worktree.env")
+stamp() { mkdir -p "$vprefix.test/evidence"; git -C "$A" rev-parse 'HEAD^{tree}' > "$vprefix.test/evidence/verified"; }
+
+# The verify gate, on a branch of its own.
+git checkout -q -b gate
+echo code > gate.go; git add gate.go; git commit -q -m "gate"
+check "land refuses a tree no verify run passed" bash -c "bin/worktree land 2>&1 | grep -q 'no verify-hallpass run passed'"
+echo stale > "$vprefix.test.stale"; mkdir -p "$vprefix.old/evidence"; echo 0000 > "$vprefix.old/evidence/verified"
+check "land ignores a stamp for another tree" bash -c "bin/worktree land 2>&1 | grep -q 'no verify-hallpass run passed'"
+check "land --no-verify needs a reason" bash -c "bin/worktree land --no-verify 2>&1 | grep -q 'needs a reason'"
+check "land --no-verify lands and says why in the PR" \
+  bash -c "bin/worktree land --no-verify 'only a comment changed' >/dev/null && grep -q 'Not verified with verify-hallpass.s drive.sh: only a comment changed' '$T/gh/calls'"
+git checkout -q a; git branch -q -D gate; git push -q origin :gate
+rm -rf "$vprefix.old" "$vprefix.test.stale"
+git checkout -q -b docs
+echo words > notes.md; git add notes.md; git commit -q -m "notes"
+check "land passes a Markdown-only branch without a run" bash -c "bin/worktree land 2>&1 | grep -q 'only Markdown changed'"
+git checkout -q a; git branch -q -D docs; git push -q origin :docs
+
 echo one > one; git add one; git commit -q -m "one"
 echo two > two; git add two; git commit -q -m "two"
+# From here, land passes the gate: this tree has a passing run. The squash
+# below keeps the tree, so the stamp still matches.
+stamp
 check "land refuses several commits" bash -c "bin/worktree land 2>&1 | grep -q 'has 2 commits'"
 echo dirty >> one
 check "land refuses tracked changes" bash -c "! bin/worktree land >/dev/null 2>&1"
@@ -206,6 +230,8 @@ other=$(mktemp -d "$T/other.XXXX"); git clone -q "$T/origin.git" "$other/c"
 (cd "$other/c" && echo x > x && git add x && git commit -q -m other && git push -q origin main)
 check "land refuses a branch behind origin/main" bash -c "bin/worktree land 2>&1 | grep -q 'lacks commits from origin/main'"
 git rebase -q origin/main
+check "land refuses a rebased tree until it's verified again" bash -c "bin/worktree land 2>&1 | grep -q 'no verify-hallpass run passed'"
+stamp
 bin/worktree land >/dev/null || bad "land after rebase"
 landed=$(git rev-parse HEAD)
 
