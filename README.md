@@ -4,20 +4,25 @@ hallpass lets coding agents use git and gh on GitHub without holding a
 credential. A broker runs as its own user and holds up to three: a GitHub
 token, an SSH key, and a signing key. git and gh send their requests through
 the broker's Unix sockets. The broker checks each request against a policy,
-uses the credential itself, and logs the request. Nothing an agent can read holds a
-secret, so code that goes around the broker reaches GitHub with no
-credential.
+uses the credential itself, and logs the request. Nothing hallpass puts in
+an agent's reach holds a secret, so code that goes around the broker reaches
+GitHub with none of hallpass's credentials. Your own credentials are yours to
+lock down; see [Use your own credentials](#use-your-own-credentials).
 
 Each credential is optional and turns on its own features:
 
-| Credential | Kept in | Turns on |
-| --- | --- | --- |
-| Token: a device login or a classic PAT, `repo` scope only | sealed to the TPM where there is one; on macOS, an encrypted file tied to the Mac; otherwise a file only the broker user reads | gh |
-| SSH key, ECDSA P-256 | generated inside the TPM where there is one; on macOS, an encrypted file tied to the Mac; otherwise a file | git |
-| Signing key, ECDSA P-256 | generated inside the TPM where there is one; on macOS, an encrypted file tied to the Mac; otherwise a file | signed commits and tags |
+| Credential | Turns on |
+| --- | --- |
+| Token: a device login or a classic PAT, `repo` scope only | gh, and the check that refuses git under a renamed repo's old name |
+| SSH key, ECDSA P-256 | git |
+| Signing key, ECDSA P-256 | signed commits and tags |
+
+Where each one is kept, and who can reach it, depends on the platform. See
+[Protection by platform](#protection-by-platform).
 
 Every credential acts as you on GitHub, so it works in your repos and your
-orgs' repos without any org approving it. The allowlist in `/etc/hallpass/hallpass.toml` decides which repos
+orgs' repos without an app install. Orgs that restrict OAuth apps reject
+the device login, and [Set up a machine](#set-up-a-machine) covers them. The allowlist in `/etc/hallpass/hallpass.toml` decides which repos
 agents reach.
 
 ## What it prevents and mitigates
@@ -25,7 +30,23 @@ agents reach.
 hallpass assumes code running as you is hostile: a malicious npm
 `postinstall` script, a poisoned dependency, or an agent that was talked into
 something. It aims to keep that code from taking a GitHub credential, and to
-limit what it can do through the broker.
+limit what it can do on GitHub through the broker. How much to limit is your
+call: the policy is set to your risk tolerance. hallpass limits what agents
+do on GitHub. It isn't a network sandbox, and it doesn't limit where data
+goes.
+
+```mermaid
+flowchart LR
+  A[agent, or any code running as you] -->|git, gh| B
+  subgraph B[broker, its own user]
+    P[policy and allowlist] --> C[adds the credential]
+    C --> L[audit log]
+  end
+  B --> G[GitHub]
+  A -. git personal .-> V[your own key, in a vault or behind a passphrase]
+  V -.->|you approve| G
+  A -. anything else .-> N[the network: hallpass doesn't see it]
+```
 
 It prevents these:
 
@@ -33,9 +54,8 @@ It prevents these:
   own user (`hallpass`, or `_hallpass` on macOS). Its files are mode 0600 and
   its state directory is closed to others, so your processes can't read them
   or attach a debugger to the broker. git and gh never see a token or key.
-- **Copying the keys off the machine, even as root.** On Linux with a TPM, the
-  SSH and signing keys are generated inside it and never exist anywhere
-  else. The token is sealed to it, so a copied disk yields nothing.
+  Root can do both. What protects the credentials from root depends on the
+  platform; see [Protection by platform](#protection-by-platform).
 - **Reaching repos you didn't allow.** The broker refuses any repo the
   allowlist doesn't cover, for git, gh, and GraphQL node IDs. GraphQL
   reads that walk from an allowed repo into another one, through an owner,
@@ -48,78 +68,84 @@ It prevents these:
   GitHub what a repo is called now before running git there, and refuses
   an old name. On a machine with only an SSH key it can't ask, so an old
   name that the allowlist covers still reaches the renamed repo.
-- **Merging, approving, and pushing to protected branches.** By default,
-  agents can't merge or approve PRs, push the default branch, add labels,
-  or rerun or dispatch workflows. You can allow each of these everywhere or
-  in one repo. See [Policy](#policy). Whatever the policy says, agents can't
-  push a tag or a protected branch other than the default, or update or
-  delete branches they didn't create. The broker remembers the commit an
-  agent last pushed to each branch. Once you push a commit of your own to
-  the branch, or delete it and make it again at another commit, it's yours.
-  A branch you recreate at the agent's own last commit still counts as the
-  agent's, since it holds only the agent's work.
+- **Merging, approving, and pushing the default branch, unless you allow
+  it.** By default, agents can't merge or approve PRs, push the default
+  branch, add labels, or rerun or dispatch workflows. You can allow each of
+  these everywhere or in one repo. See [Policy](#policy).
+- **Pushing tags, protected branches, and your branches.** No policy allows
+  these. Agents can't push a tag or a branch that `protected_branches`
+  names. The default branch is the one exception: `push.default` alone
+  decides it. Agents also can't update or delete a branch they didn't
+  create. The broker remembers the commit an agent last pushed to each
+  branch. Once you push a commit of your own to the branch with
+  `git personal`, or delete it and make it again at another commit, it's
+  yours. A branch you recreate at the agent's own last commit still counts
+  as the agent's, since it holds only the agent's work.
 - **Workflow injection.** Shai-Hulud committed a workflow to send repo
   secrets out. git goes over SSH, where GitHub doesn't check workflow
   changes, so the broker reads every pushed pack and refuses a branch whose
   new commit changes `.github/workflows`. That check is the only guard: the
   token's missing `workflow` scope doesn't apply, because pushes don't use
-  the token. Through gh, the broker refuses contents writes, and `login` and
-  `install-pat` refuse tokens with `workflow` scope.
+  the token. Through gh, the broker refuses every write to the contents API,
+  and `login` and `install-pat` refuse tokens with `workflow` scope.
 - **Settings, secrets, and admin.** The broker refuses repo settings,
   branch protection, hooks, deploy keys, secrets and their names, release
-  changes, and deletes, and no policy can allow them. It refuses reading
-  rulesets and Actions variables unless the policy allows it. Any request
-  not on its lists is refused, including whatever GitHub adds later.
+  changes, and deletes, and no policy can allow them. It also refuses
+  anything outside an allowed repo's API, such as creating a repo or a gist
+  on your account. It refuses reading rulesets and Actions variables unless
+  the policy allows it. Any request not on its lists is refused, including
+  whatever GitHub adds later.
 - **Commands for bots.** PR and issue text with lines like `/merge` or
   `bors r+` is refused, because bots would take them as your command.
-- **Silent fallback to your credentials.** The git config clears every
-  other credential helper for github.com, so a request that goes around the
-  broker stops instead of falling through to a keyring token or a prompt.
+- **Silent fallback to your credentials.** The git config rewrites every
+  form of github.com remote to SSH and sets `core.sshCommand` to
+  `hallpass ssh`, which sends github.com to the broker, never to your own
+  key. It also clears every credential helper for github.com, so an HTTPS
+  request that slips through stops instead of falling through to a keyring
+  token or a prompt.
 
 It mitigates these:
 
-- **Agent work looks like yours.** PRs, comments, and pushes show as you,
-  so nobody needs to approve anything. Edits are limited to PRs,
-  issues, and comments you wrote, so agents can't rewrite a colleague's.
-- **Credential sweeps on macOS.** macOS has a Secure Enclave, but a launchd
-  daemon can't use it, so the broker encrypts each credential with
-  AES-256-GCM. The key comes from three inputs: a random secret made when you
-  first set up a credential, the Mac's serial number and hardware UUID, and
-  the data volume's UUID. A tool that scans the disk for secrets finds no
-  PEM key or `gho_` token. A copy of `/var/db/hallpass` doesn't open on
-  another Mac. Opening one also takes the volume UUID and the secret, and
-  `system_profiler SPHardwareDataType` prints neither. `install` also excludes `/var/db/hallpass` from Time
-  Machine. Replacing the logic board or erasing the disk means setting the
-  credentials up again. `doctor` warns about credentials made before this,
-  which are still plain files.
+- **Agents changing other people's work as you.** Agent PRs, comments, and
+  pushes show as you, so no org has to approve anything, and nobody can tell
+  them from yours. To keep that from reaching colleagues, agents can edit
+  only PRs, issues, and comments you wrote.
 - **A stolen token.** A PAT expires within a year, and `status` warns from
   14 days out. A device-login token doesn't expire. Run `login` again every
   few months, which revokes the old one.
 - **Not knowing what happened.** The broker logs every request it allows or
   refuses, with the client's uid and process chain, for example
-  `git push origin fix < claude`. Read the log with `journalctl -u hallpass`
-  on Linux, or `/var/log/hallpass.log` on macOS. The client controls its
-  command line, so treat the chain as a lead, not proof.
-- **Signed commits.** With the signing key, commits made through hallpass
-  show as Verified on GitHub. That means "made on this machine through
-  hallpass", not "you reviewed it". Anything running as you can get a commit
-  signed.
+  `git push origin fix < claude`. Read the log with
+  `sudo journalctl -u hallpass` on Linux, or `sudo cat /var/log/hallpass.log`
+  on macOS. The client controls its command line, so treat the chain as a
+  lead, not proof.
+- **Commits made elsewhere in your name.** Anyone can set git's author to
+  you. With the signing key, the git config turns on `commit.gpgsign` and
+  `tag.gpgsign`, so every git on the machine signs every commit and tag
+  with the broker's key, yours included, and GitHub shows them as Verified.
+  A commit in your name from anywhere else doesn't verify, unless another
+  signing key on your GitHub account signed it. Verified means
+  "made on this machine", not "you reviewed it", since anything running as
+  you can get a commit signed. `git personal` commits use your own signing
+  setup, if you have one.
 
 It doesn't protect against these:
 
 - **Hostile code using the broker.** Anything running as you
   can ask the broker for whatever its policy allows, in every allowed repo.
   Keep the allowlist to the repos agents need.
-- **Your own credentials.** If agents can reach your SSH agent, your
-  password manager, or a logged-in gh, they can go around hallpass.
-  `git personal` and your own gh are reachable that way too, gated only by
-  whatever prompt guards them. Run agents in a sandbox that hides those if
-  you need that boundary.
-- **Root.** Root can unseal the token on the running machine and use it
-  until it's revoked or expires. On macOS, malware running as root that was
-  written for hallpass can also decrypt every credential and copy it off the
-  machine, since it can read every input to the key. If that happens, run
-  `login` again, and recreate both keys.
+- **Data leaving the machine.** hallpass keeps the credentials, not your
+  code. An agent can read any allowed repo and send what it read anywhere
+  on the network. It can also write data into an allowed repo, through a
+  branch, a PR, an issue, or a comment, and in a public repo that publishes
+  it. `--read` entries and a short allowlist narrow this. Stopping it takes
+  a network sandbox.
+- **Your own credentials.** If agents can reach your own SSH key, your
+  password manager, or a logged-in gh, they can go around hallpass. See
+  [Use your own credentials](#use-your-own-credentials).
+- **Root.** Root can use every credential on the running machine, and on
+  some platforms copy it off. See
+  [Protection by platform](#protection-by-platform).
 - **A compromised setup session.** Setup runs `sudo` from your shell. If code
   running as you replaced `sudo` on your PATH, or edited the checkout you
   build from, it gets root. Install from an attested release binary, from a
@@ -133,6 +159,33 @@ It doesn't protect against these:
   triggers, not every bot's grammar.
 - **Composite actions.** Like GitHub's, the workflow check covers
   `.github/workflows`, not actions elsewhere in the repo that workflows use.
+
+## Protection by platform
+
+Everywhere, the broker runs as its own user, so code running as you can't
+read the credentials or attach a debugger to the broker. What happens past
+that depends on the platform:
+
+| | Linux with a TPM | Linux without a TPM | macOS |
+| --- | --- | --- | --- |
+| Credentials | keys generated inside the TPM; token sealed to it | plain 0600 files | 0600 files, encrypted under a key tied to the Mac |
+| A root tool sweeping the disk for secrets | finds only TPM-wrapped blobs | finds the keys and the token | finds no PEM key or `gho_` token |
+| A copied disk or backup | opens nothing | holds every credential, unless the disk is encrypted | doesn't open on another Mac, and Time Machine skips it |
+| Root on the running machine | can use every credential and read the token, but can't copy the keys off | can copy every credential | a generic sweep gets only ciphertext, but malware written for hallpass can decrypt and copy every credential |
+
+On macOS, the Secure Enclave would keep the keys from leaving, but a
+launchd daemon can't use it. So the broker encrypts each credential with
+AES-256-GCM, under a key from three inputs: a random secret made when you
+first set up a credential, the Mac's serial number and hardware UUID, and
+the data volume's UUID. A copy of `/var/db/hallpass` lacks the last two, and
+`system_profiler SPHardwareDataType` prints neither the secret nor the volume
+UUID. Root can read all three inputs, so root malware written for hallpass
+can rebuild the key. Replacing the logic board or erasing the disk means setting the
+credentials up again. `doctor` warns about credentials made before this,
+which are still plain files.
+
+If root is compromised on any platform, run `login` again and recreate both
+keys.
 
 ## How it works
 
@@ -263,6 +316,15 @@ git personal push            # git without hallpass's config
 written and your own SSH key and helpers answer. Plain gh, without
 `hallpass gh` or its config dir, uses your own login.
 
+`git personal` is how you step in for what agents can't do, so keep your
+own key behind something that asks you first: a vault's SSH agent, like
+1Password's, or a key encrypted with a passphrase. hallpass can't stop code
+running as you from using your own credentials. An unencrypted key in
+`~/.ssh` or a gh login with no prompt hands agents everything hallpass
+refuses them, and then hallpass isn't doing much. `doctor` warns about each
+SSH agent and gh login it finds. A vault's agent sets off the warning too,
+which is expected: the vault, not hallpass, decides when to ask you.
+
 ## Set up a machine
 
 The `skills/hallpass-setup` skill walks an agent through setup with you. The
@@ -317,6 +379,8 @@ Run `hallpass help` for the full list. Root commands go through
 | `status [--check]` | you | Reports the broker's state. `--check` also asks GitHub |
 | `doctor` | you | Checks this machine's git, gh, and signing setup against the broker |
 | `ledger add OWNER/REPO BRANCH COMMIT` | root | Lets agents update a branch they didn't create, while it points at COMMIT |
+| `ledger list OWNER/REPO` | root | Lists the branches agents may update |
+| `skills` | you | Installs or updates the agent skills; `install` offers this |
 | `gh ARGS` | you | Runs gh through the broker |
 
 ## License
