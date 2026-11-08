@@ -264,7 +264,9 @@ remove it.
 - `push.default` passes even when `protected_branches` names the default
   branch. Agents still can't delete it, but they can force-push it, because
   the broker can't tell a force push from a fast-forward. Turn on GitHub's
-  branch protection if its history matters.
+  branch protection if its history matters. In an empty repo, the first
+  branch pushed becomes the default, so that push may carry only one
+  branch.
 
 A refusal names the operation and the command that would allow it:
 

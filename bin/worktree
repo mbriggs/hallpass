@@ -382,15 +382,26 @@ cmd_sync() {
   before=$(git rev-parse HEAD)
   git merge -q --ff-only origin/main
   after=$(git rev-parse HEAD)
-  if [ "$before" = "$after" ]; then
+  # The marker names the last commit installed, so a sync after an install
+  # that didn't happen tries again, though main hasn't moved.
+  local marker
+  marker="$(git rev-parse --absolute-git-dir)/hallpass-installed"
+  if [ "$(cat "$marker" 2>/dev/null)" = "$after" ]; then
     echo "main is up to date at $(git log -1 --format='%h %s')"
     return
   fi
-  echo "main fast-forwarded to $(git log -1 --format='%h %s')"
-  install_primary
+  if [ "$before" = "$after" ]; then
+    echo "main is at $(git log -1 --format='%h %s'), which the live broker may not run yet"
+  else
+    echo "main fast-forwarded to $(git log -1 --format='%h %s')"
+  fi
+  if install_primary; then
+    echo "$after" > "$marker"
+  fi
 }
 
-# The live broker follows main: install what just merged.
+# The live broker follows main: install what just merged. It fails when
+# nothing got installed.
 install_primary() {
   local k
   # An agent that just left a lane still has its values exported.
@@ -403,6 +414,7 @@ install_primary() {
     make -C "$PRIMARY" install || die "make install failed; the live broker still runs the previous build"
   else
     echo "NOT INSTALLED: sudo needs a password. The user should run 'make install' in $PRIMARY."
+    return 1
   fi
 }
 

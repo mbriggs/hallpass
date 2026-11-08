@@ -248,6 +248,12 @@ check "sync installs after main moves" [ -f "$T/installed" ]
 check "install runs without the lane's variables" bash -c "! grep -q '^WORKTREE_LANE=\|^HALLPASS_VERIFY_PREFIX=' '$T/installed'"
 rm -f "$T/installed"
 check "sync with nothing new skips install" bash -c "bin/worktree sync | grep -q 'up to date' && [ ! -f '$T/installed' ]"
+# An install that didn't happen leaves main where it was, and the next sync
+# tries again.
+rm -f "$(git rev-parse --absolute-git-dir)/hallpass-installed"
+check "sync retries an install that didn't happen" bash -c "bin/worktree sync | grep -q 'may not run yet' && [ -f '$T/installed' ]"
+rm -f "$T/installed"
+check "sync after a retried install skips it" bash -c "bin/worktree sync | grep -q 'up to date' && [ ! -f '$T/installed' ]"
 echo local > local; git add local; git commit -q -m local
 check "sync refuses local commits" bash -c "bin/worktree sync 2>&1 | grep -q 'need a PR'"
 git reset -q --hard origin/main

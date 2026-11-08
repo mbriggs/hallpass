@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -65,7 +66,22 @@ func (s *Server) serveGH(w http.ResponseWriter, r *http.Request) {
 		refuse(http.StatusTooManyRequests, "the token's account is close to GitHub's hourly rate limit, so hallpass is holding the rest for you")
 		return
 	}
+	// Only the body read gets a deadline. A server-wide ReadTimeout would
+	// also cancel long log and artifact downloads.
+	wait := s.bodyWait
+	if wait == 0 {
+		wait = 30 * time.Second
+	}
+	rc := http.NewResponseController(w)
+	_ = rc.SetReadDeadline(time.Now().Add(wait))
 	body, err := io.ReadAll(io.LimitReader(r.Body, 4<<20+1))
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		// Close, rather than wait for the rest of a body that isn't coming.
+		w.Header().Set("Connection", "close")
+		refuse(http.StatusRequestTimeout, "the request body didn't arrive in time")
+		return
+	}
+	_ = rc.SetReadDeadline(time.Time{})
 	if err != nil || len(body) > 4<<20 {
 		refuse(http.StatusRequestEntityTooLarge, "request body is too large")
 		return
@@ -105,17 +121,27 @@ func (s *Server) serveGH(w http.ResponseWriter, r *http.Request) {
 				refuse(http.StatusForbidden, "agents may only read "+rest.Repo.String())
 				return
 			}
+			if rest.Authored != "" {
+				ok, isPR, err := s.authored(r.Context(), rest.Authored)
+				switch {
+				case err != nil:
+					refuse(http.StatusBadGateway, "couldn't check who wrote it: "+err.Error())
+					return
+				case !ok:
+					refuse(http.StatusForbidden, "agents may only change PRs, issues, and comments you wrote")
+					return
+				case isPR:
+					// GitHub serves PRs on the issues routes too, and editing
+					// one there is pr.edit.
+					for i, o := range rest.Ops {
+						if o == op.IssueEdit {
+							rest.Ops[i] = op.PREdit
+						}
+					}
+				}
+			}
 			if err := policy.CheckOps(rest.Ops, rule.Ops, *rest.Repo); err != nil {
 				refuse(http.StatusForbidden, err.Error())
-				return
-			}
-		}
-		if rest.Authored != "" {
-			if ok, err := s.authored(r.Context(), rest.Authored); err != nil {
-				refuse(http.StatusBadGateway, "couldn't check who wrote it: "+err.Error())
-				return
-			} else if !ok {
-				refuse(http.StatusForbidden, "agents may only change PRs, issues, and comments you wrote")
 				return
 			}
 		}
@@ -158,11 +184,16 @@ func (s *Server) serveGH(w http.ResponseWriter, r *http.Request) {
 	copyHeaders(w.Header(), resp.Header, "Content-Type", "Content-Encoding", "ETag", "Last-Modified", "Link",
 		"X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "X-RateLimit-Used", "X-RateLimit-Resource",
 		"X-GitHub-Request-Id", "Location", "Retry-After")
-	if len(strip) > 0 && resp.StatusCode == http.StatusOK && strings.Contains(resp.Header.Get("Content-Type"), "json") {
+	if len(strip) > 0 && resp.StatusCode/100 == 2 && strings.Contains(resp.Header.Get("Content-Type"), "json") {
 		dec := json.NewDecoder(io.LimitReader(resp.Body, 64<<20))
 		dec.UseNumber()
 		var v any
-		if err := dec.Decode(&v); err != nil {
+		if err := dec.Decode(&v); errors.Is(err, io.EOF) {
+			// A write like a dispatch answers with no body.
+			w.WriteHeader(resp.StatusCode)
+			log.Info("allowed", "status", resp.StatusCode)
+			return
+		} else if err != nil {
 			refuse(http.StatusBadGateway, "GitHub's answer wasn't JSON")
 			return
 		}
@@ -305,34 +336,37 @@ func (s *Server) resolve(ctx context.Context, ids []string) (map[string]policy.N
 	return out, nil
 }
 
-// authored reports whether the token's user wrote the object at path.
-func (s *Server) authored(ctx context.Context, path string) (bool, error) {
+// authored reports whether the token's user wrote the object at path, and
+// whether it's a PR, which GitHub also serves on the issues routes.
+func (s *Server) authored(ctx context.Context, path string) (ok, isPR bool, err error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", s.Config.API()+path, nil)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	req.Header.Set("Authorization", "token "+s.Token)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "hallpass")
 	resp, err := s.upstream().Do(req)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return false, errors.New("GitHub answered " + resp.Status)
+		return false, false, errors.New("GitHub answered " + resp.Status)
 	}
 	var obj struct {
 		User struct{ Login string } `json:"user"`
+		// An issue that is a PR has a pull_request object.
+		PullRequest *struct{} `json:"pull_request"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&obj); err != nil {
-		return false, err
+		return false, false, err
 	}
 	login := ""
 	if s.Config.Token != nil {
 		login = s.Config.Token.Login
 	}
-	return login != "" && strings.EqualFold(obj.User.Login, login), nil
+	return login != "" && strings.EqualFold(obj.User.Login, login), obj.PullRequest != nil, nil
 }
 
 // storageHosts are where GitHub redirects downloads of run logs and

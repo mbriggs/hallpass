@@ -199,3 +199,32 @@ func (m *runtimeMem) read() {
 	runtime.ReadMemStats(&s)
 	m.total = s.TotalAlloc
 }
+
+// Every object counts against maxInflated by the size it declares, before
+// any of it inflates, including blobs too big to keep. So a pack can't make
+// the broker inflate more than that, however well its blobs compress.
+func TestReadPackChargesDeclaredSize(t *testing.T) {
+	var b bytes.Buffer
+	b.WriteString("PACK")
+	binary.Write(&b, binary.BigEndian, uint32(2))
+	binary.Write(&b, binary.BigEndian, uint32(1))
+	// A blob that says it's one byte over the budget.
+	size := uint64(maxInflated) + 1
+	hdr := []byte{3<<4 | byte(size&0x0f) | 0x80}
+	for size >>= 4; size > 0; size >>= 7 {
+		c := byte(size & 0x7f)
+		if size > 0x7f {
+			c |= 0x80
+		}
+		hdr = append(hdr, c)
+	}
+	b.Write(hdr)
+	zw := zlib.NewWriter(&b)
+	zw.Write([]byte("x"))
+	zw.Close()
+	sum := sha1.Sum(b.Bytes())
+	b.Write(sum[:])
+	if _, err := readFast(t, b.Bytes()); err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Errorf("ReadPack = %v, want a too-large refusal", err)
+	}
+}
