@@ -29,7 +29,7 @@ export GH_CONFIG_DIR=$S/gh-capture
 
 # A clone of acme/widgets from the fake, with an agent branch pushed.
 W=$(mktemp -d "$S/matrix.XXXX")/widgets
-git clone -q http://github.com/acme/widgets "$W" || exit 1
+git clone -q https://github.com/acme/widgets "$W" || exit 1
 cd "$W"
 git checkout -q -b agent/matrix
 echo matrix > matrix.txt

@@ -11,8 +11,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"golang.org/x/crypto/ssh"
@@ -26,8 +28,9 @@ import (
 )
 
 // fakeGitHubSSH runs real git-upload-pack and git-receive-pack over bare
-// repos in root, for clients that authenticate with clientKey.
-func fakeGitHubSSH(t *testing.T, root string, clientKey ssh.PublicKey) (addr, hostKey string) {
+// repos in root, for clients that authenticate with clientKey. hook, if
+// set, runs before each command with its service and environment.
+func fakeGitHubSSH(t *testing.T, root string, clientKey ssh.PublicKey, hook func(svc string, env []string)) (addr, hostKey string) {
 	t.Helper()
 	hk, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	hs, _ := ssh.NewSignerFromSigner(hk)
@@ -49,13 +52,13 @@ func fakeGitHubSSH(t *testing.T, root string, clientKey ssh.PublicKey) (addr, ho
 			if err != nil {
 				return
 			}
-			go serveSSH(c, cfg, root)
+			go serveSSH(c, cfg, root, hook)
 		}
 	}()
 	return ln.Addr().String(), strings.TrimSpace(string(ssh.MarshalAuthorizedKey(hs.PublicKey())))
 }
 
-func serveSSH(c net.Conn, cfg *ssh.ServerConfig, root string) {
+func serveSSH(c net.Conn, cfg *ssh.ServerConfig, root string, hook func(string, []string)) {
 	_, chans, reqs, err := ssh.NewServerConn(c, cfg)
 	if err != nil {
 		return
@@ -82,6 +85,9 @@ func serveSSH(c net.Conn, cfg *ssh.ServerConfig, root string) {
 					req.Reply(true, nil)
 					svc, repo, err := sshgate.ParseCommand(cmd.C)
 					status := uint32(1)
+					if err == nil && hook != nil {
+						hook(svc, env)
+					}
 					if err == nil {
 						g := exec.Command("git", strings.TrimPrefix(svc, "git-"), filepath.Join(root, repo.Owner, repo.Name+".git"))
 						g.Env = append(os.Environ(), env...)
@@ -147,7 +153,17 @@ func TestGitOverSSHThroughBroker(t *testing.T) {
 
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	pub, _ := ssh.NewPublicKey(&key.PublicKey)
-	addr, hostKey := fakeGitHubSSH(t, root, pub)
+	// flipHead, when set, makes agent/fix the default branch at the
+	// broker's blobless fetch, which comes after it reads a push's pack and
+	// before it forwards the push.
+	var flipHead atomic.Bool
+	addr, hostKey := fakeGitHubSSH(t, root, pub, func(svc string, env []string) {
+		if svc == "git-upload-pack" && slices.Contains(env, "GIT_PROTOCOL=version=2") && flipHead.CompareAndSwap(true, false) {
+			if out, err := exec.Command("git", "-C", bare, "symbolic-ref", "HEAD", "refs/heads/agent/fix").CombinedOutput(); err != nil {
+				t.Errorf("symbolic-ref: %s", out)
+			}
+		}
+	})
 
 	t.Setenv("HALLPASS_RUN_DIR", tmp)
 	ln, err := broker.Listen("ssh", config.Socket("ssh"))
@@ -299,4 +315,16 @@ func TestGitOverSSHThroughBroker(t *testing.T) {
 	}
 	ok("push", "-q", "--force", "origin", "HEAD:agent/fix")
 	ok("push", "-q", "--force", "origin", "HEAD~1:agent/fix")
+
+	// The user makes agent/fix the default branch while an agent's push to
+	// it is in flight. The broker checks the default again after the pack.
+	before, _ := gitIn(bare, plain, "rev-parse", "agent/fix")
+	flipHead.Store(true)
+	refused("agent/fix is the default branch", "push", "origin", "HEAD:agent/fix")
+	if flipHead.Load() {
+		t.Error("the push never reached the broker's blobless fetch")
+	}
+	if after, _ := gitIn(bare, plain, "rev-parse", "agent/fix"); after != before {
+		t.Errorf("agent/fix moved from %s to %s", before, after)
+	}
 }

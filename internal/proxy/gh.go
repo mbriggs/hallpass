@@ -50,6 +50,9 @@ func (s *Server) serveGH(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case !s.Permitted(p):
+		// Close the connection, so another user on the machine can't
+		// keep connections open on the broker.
+		w.Header().Set("Connection", "close")
 		refuse(http.StatusForbidden, "this uid may not use hallpass")
 		return
 	case r.Host != "api.github.com":

@@ -19,6 +19,11 @@ Restart=on-failure
 # journald drops lines past its rate limit, so a flood of cheap refusals
 # could hide a real request. Keep every line instead.
 LogRateLimitIntervalSec=0
+# Each push the broker checks can hold its pack, up to 512 MB, and the
+# commits and trees in it, up to 1 GB. Cap the total, so a client sending
+# many large pushes at once runs the broker out of memory, and systemd
+# restarts it, instead of the kernel killing the user's other processes.
+MemoryMax=4G
 
 NoNewPrivileges=yes
 CapabilityBoundingSet=

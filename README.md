@@ -84,7 +84,9 @@ It prevents these:
 - **Workflow injection.** Shai-Hulud committed a workflow to send repo
   secrets out. git goes over SSH, where GitHub doesn't check workflow
   changes, so the broker reads every pushed pack and refuses a branch whose
-  new commit changes `.github/workflows`. That check is the only guard: the
+  new commit changes `.github/workflows`. It refuses changes to
+  `.github/dependabot.yml` the same way, since a registry that file names
+  gets the Dependabot secrets it references. That check is the only guard: the
   token's missing `workflow` scope doesn't apply, because pushes don't use
   the token. Through gh, the broker refuses every write to the contents API,
   and `login` and `install-pat` refuse tokens with `workflow` scope.
@@ -154,7 +156,12 @@ It doesn't protect against these:
   branch and open a PR for it. Review PRs before you merge them.
 - **Secrets in existing workflows.** Agents can't edit workflows, but a
   workflow that runs on `push` or `pull_request` runs the agent's branch code
-  with the secrets it references.
+  with the secrets it references. That includes a deploy that runs on pushes
+  to a branch name, and an environment whose secrets go to branches matching
+  a pattern: agents can create any branch that `protected_branches` in
+  `/etc/hallpass/hallpass.toml` doesn't name. The broker doesn't read
+  GitHub's rulesets or environments, so add those names there, like
+  `staging` or `deploy/*`.
 - **Bots the filter doesn't know.** The filter covers common
   triggers, not every bot's grammar.
 - **Composite actions.** Like GitHub's, the workflow check covers

@@ -155,6 +155,24 @@ func TestReadPackResolvesReversedRefDeltas(t *testing.T) {
 	}
 }
 
+// A long offset-delta chain on a ref delta whose base comes last resolves in
+// one pass. Walking the chain down to the missing base for every entry took
+// time quadratic in its length.
+func TestReadPackResolvesChainOnLateBase(t *testing.T) {
+	const n = 20000
+	// Each delta turns a one-byte object into another, so the work is in
+	// the visits, not the data.
+	x := []byte{1, 1, 1, 'x'}
+	entries := []packEntry{{typ: 7, data: x, base: objectID("blob", []byte("a"))}}
+	for i := range n {
+		entries = append(entries, packEntry{typ: 6, data: x, ofs: i})
+	}
+	entries = append(entries, packEntry{typ: 3, data: []byte("a")})
+	if _, err := readFast(t, buildPack(t, entries)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // A header that claims millions of objects costs nothing until they arrive.
 func TestReadPackIgnoresClaimedCount(t *testing.T) {
 	var b bytes.Buffer

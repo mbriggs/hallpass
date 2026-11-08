@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"slices"
 )
 
 // Pack is the commits and trees in a git packfile, with their IDs. The
@@ -40,7 +39,7 @@ type rawObject struct {
 	typ  byte
 	data []byte // inflated: content, or delta instructions
 	base string // ref-delta base ID
-	ofs  int64  // ofs-delta base offset, absolute
+	ofs  int64  // base offset, absolute; a ref-delta gets it when its base resolves
 	big  bool   // too large to keep
 }
 
@@ -109,27 +108,34 @@ func ReadPack(r io.Reader) (*Pack, error) {
 	}
 
 	p := &Pack{Objects: map[string]Object{}, Size: cr.n}
-	byID := map[string]int64{}
-	resolved := map[int64]resolvedObject{}
-	// A ref-delta whose base comes later in the pack waits on that base's
-	// ID, and is retried once the base resolves, so each object is tried a
-	// bounded number of times however the pack is ordered.
-	waiting := map[string][]int64{}
-	stack := slices.Clone(order)
-	slices.Reverse(stack)
-	for len(stack) > 0 {
-		off := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-		if _, ok := resolved[off]; ok {
-			continue
+	// Resolve each object once, after its base: whole objects first, then
+	// each delta when the object it builds on resolves. An offset delta
+	// waits on its base's offset, a ref-delta on its base's ID. A crafted
+	// order, like a ref-delta whose base comes last under a long chain of
+	// offset deltas, then costs one visit per object, not one per link.
+	onOffset := map[int64][]int64{}
+	onID := map[string][]int64{}
+	var ready []int64
+	for _, off := range order {
+		switch o := raws[off]; o.typ {
+		case 6:
+			if raws[o.ofs] == nil {
+				return nil, errorf("pack delta points outside the pack")
+			}
+			onOffset[o.ofs] = append(onOffset[o.ofs], off)
+		case 7:
+			onID[o.base] = append(onID[o.base], off)
+		default:
+			ready = append(ready, off)
 		}
-		ro, missing, err := resolve(off, raws, resolved, byID)
+	}
+	resolved := map[int64]resolvedObject{}
+	for len(ready) > 0 {
+		off := ready[len(ready)-1]
+		ready = ready[:len(ready)-1]
+		ro, err := resolve(raws[off], resolved)
 		if err != nil {
 			return nil, err
-		}
-		if missing != "" {
-			waiting[missing] = append(waiting[missing], off)
-			continue
 		}
 		// Deltas expand to new data, which counts against the same bound
 		// as the entries, so a small pack can't make the broker hold a lot.
@@ -139,16 +145,20 @@ func ReadPack(r io.Reader) (*Pack, error) {
 			}
 		}
 		resolved[off] = ro
+		ready = append(ready, onOffset[off]...)
+		delete(onOffset, off)
 		if ro.known {
-			byID[ro.id] = off
 			if ro.typ == "commit" || ro.typ == "tree" {
 				p.Objects[ro.id] = Object{Type: ro.typ, Data: ro.data}
 			}
-			stack = append(stack, waiting[ro.id]...)
-			delete(waiting, ro.id)
+			for _, d := range onID[ro.id] {
+				raws[d].ofs = off
+				ready = append(ready, d)
+			}
+			delete(onID, ro.id)
 		}
 	}
-	if len(waiting) > 0 {
+	if len(resolved) < len(order) {
 		return nil, errorf("pack has a delta whose base isn't in the pack")
 	}
 	return p, nil
@@ -163,51 +173,32 @@ type resolvedObject struct {
 
 var typeNames = map[byte]string{1: "commit", 2: "tree", 3: "blob", 4: "tag"}
 
-// resolve returns the object at off. When it's a ref-delta whose base, or
-// whose chain's base, isn't resolved yet, it returns that base's ID as
-// missing instead. ReadPack resolves in pack order, and an offset delta's
-// base comes earlier, so the recursion is one level deep in practice.
-func resolve(off int64, raws map[int64]*rawObject, done map[int64]resolvedObject, byID map[string]int64) (resolvedObject, string, error) {
-	if r, ok := done[off]; ok {
-		return r, "", nil
-	}
-	o := raws[off]
-	if o == nil {
-		return resolvedObject{}, "", errorf("pack delta points outside the pack")
-	}
+// resolve returns object o. For a delta, ReadPack has resolved its base,
+// at o.ofs, first.
+func resolve(o *rawObject, done map[int64]resolvedObject) (resolvedObject, error) {
 	if name, ok := typeNames[o.typ]; ok {
 		if o.big {
 			if name != "blob" {
-				return resolvedObject{}, "", errorf("this push has a %s too large for hallpass to check", name)
+				return resolvedObject{}, errorf("this push has a %s too large for hallpass to check", name)
 			}
-			return resolvedObject{typ: name}, "", nil
+			return resolvedObject{typ: name}, nil
 		}
-		return resolvedObject{typ: name, data: o.data, id: objectID(name, o.data), known: true}, "", nil
+		return resolvedObject{typ: name, data: o.data, id: objectID(name, o.data), known: true}, nil
 	}
-	baseOff := o.ofs
-	if o.typ == 7 {
-		var ok bool
-		if baseOff, ok = byID[o.base]; !ok {
-			return resolvedObject{}, o.base, nil
-		}
-	}
-	base, missing, err := resolve(baseOff, raws, done, byID)
-	if err != nil || missing != "" {
-		return resolvedObject{}, missing, err
-	}
+	base := done[o.ofs]
 	if o.big || !base.known {
 		// Too large to keep. Only a blob gets this big; anything else
 		// can't be checked.
 		if base.typ != "blob" {
-			return resolvedObject{}, "", errorf("this push has a %s too large for hallpass to check", base.typ)
+			return resolvedObject{}, errorf("this push has a %s too large for hallpass to check", base.typ)
 		}
-		return resolvedObject{typ: base.typ}, "", nil
+		return resolvedObject{typ: base.typ}, nil
 	}
 	data, err := applyDelta(base.data, o.data)
 	if err != nil {
-		return resolvedObject{}, "", err
+		return resolvedObject{}, err
 	}
-	return resolvedObject{typ: base.typ, data: data, id: objectID(base.typ, data), known: true}, "", nil
+	return resolvedObject{typ: base.typ, data: data, id: objectID(base.typ, data), known: true}, nil
 }
 
 func objectID(typ string, data []byte) string {

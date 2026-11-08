@@ -105,6 +105,6 @@ If a property no longer says what hallpass promises, take that to the user. Don'
 ## Coverage and sync
 
 - Covered files and their hashes: `verify/branch-ledger/covered.sha256`, written by `check.sh --resync`.
-- Last confirmed: 2026-11-08, at `f47de42`, with `--deep`. Since `6523544`, which added the rename check in `handle()`, the covered code has changed only in `main.go`'s usage text. The rename check refuses before `relayPush` runs and changes no model action. This sync also started hashing `cmd/hallpass/main.go` and the two `internal/system` files that define `Restart`, which the table already mapped.
+- Last confirmed: 2026-11-08, on `ae3599b` plus the change that checks the default branch again after the pack. When the default changed, `relayPush` runs `CheckPush` a second time before the forward. A push goes upstream only when every check passed, and the second check's `Tip` reads are later reads of the same ledger, so `BrokerChecksPush` still describes it. `ae3599b` was confirmed with `--deep` and started hashing `cmd/hallpass/main.go` and the two `internal/system` files that define `Restart`.
 
 Run `check.sh --resync` and move the date forward only after you've read the covered code at the new state and confirmed that every action still describes it. Write the commit you confirmed against here, so `git diff <commit> -- <covered files>` shows what changed since the model was last true.
