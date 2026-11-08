@@ -25,6 +25,9 @@ covered=(
   internal/sshgate/ledger.go
   internal/sshgate/gate.go
   cmd/hallpass/ledger.go
+  cmd/hallpass/main.go
+  internal/system/system_linux.go
+  internal/system/system_darwin.go
 )
 
 if [[ "${1:-}" == "--resync" ]]; then

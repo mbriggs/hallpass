@@ -29,9 +29,9 @@ Check the model when a diff changes any of these:
 | `relayPush` in `internal/sshgate/gate.go`: the `CheckPush` call, the forward to GitHub, the `Ledger.Record` loop | `BrokerChecksPush`, `GitHubAnswers`, `BrokerRecords` |
 | `Ledger.Tip`, `Ledger.Record`, `OpenLedger` in `internal/sshgate/ledger.go` | `Allowed`, `BrokerRecords`, `BrokerRestarts` |
 | the `OpenLedger` call in `serve`, `cmd/hallpass/main.go` | `BrokerRestarts` |
-| `ledger add` in `cmd/hallpass/ledger.go`, and the `system.Restart` it calls | `UserAddsLedgerEntry`, then `BrokerRestarts` |
+| `ledger add` in `cmd/hallpass/ledger.go`, and the `system.Restart` it calls in `internal/system/system_linux.go` and `system_darwin.go` | `UserAddsLedgerEntry`, then `BrokerRestarts` |
 
-A change elsewhere in those files, such as path parsing, the default-branch rule, or the workflow check, doesn't touch the model. `check.sh` flags any edit to the hashed files anyway. Read the diff and decide.
+A change elsewhere in those files, such as path parsing, the default-branch rule, the workflow check, or most of `serve` and the install code, doesn't touch the model. `check.sh` flags any edit to the hashed files anyway. Read the diff and decide.
 
 Each action in the `.tla` file names its code in a comment. The model treats these as one atomic step each, because each is one in the code:
 - GitHub's answer to one push, with a compare-and-swap on each ref
@@ -105,6 +105,6 @@ If a property no longer says what hallpass promises, take that to the user. Don'
 ## Coverage and sync
 
 - Covered files and their hashes: `verify/branch-ledger/covered.sha256`, written by `check.sh --resync`.
-- Last confirmed: 2026-11-08, at `6523544`. That commit added the rename check in `handle()`, which refuses before `relayPush` runs and changes no model action.
+- Last confirmed: 2026-11-08, at `f47de42`, with `--deep`. Since `6523544`, which added the rename check in `handle()`, the covered code has changed only in `main.go`'s usage text. The rename check refuses before `relayPush` runs and changes no model action. This sync also started hashing `cmd/hallpass/main.go` and the two `internal/system` files that define `Restart`, which the table already mapped.
 
 Run `check.sh --resync` and move the date forward only after you've read the covered code at the new state and confirmed that every action still describes it. Write the commit you confirmed against here, so `git diff <commit> -- <covered files>` shows what changed since the model was last true.
