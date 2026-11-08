@@ -20,8 +20,9 @@ SSH key.
   - `ssh:      ` and the key in `$S/keys/ssh.pub`
   - `signing:  ` and the key in `$S/keys/signing.pub`
   - `repos:    acme/widgets, acme/readonly (read), acme/gadgets`
-  - `audit:    journalctl -u hallpass`, which names the live broker's
-    journal even here. The scratch broker logs to `$S/evidence/broker.log`.
+  - `audit:    journalctl -u hallpass` on Linux, or
+    `audit:    /var/log/hallpass.log` on macOS. Either way it names the
+    live broker's log, even here. The scratch broker logs to `$S/evidence/broker.log`.
 
   There's no `policy:` line, because the scratch config sets no global
   allow or deny.

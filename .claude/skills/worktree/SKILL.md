@@ -1,6 +1,6 @@
 ---
 name: worktree
-description: Work in a hallpass lane, a linked git worktree with its own build and scratch brokers. Use before the first write in the primary checkout, when the user asks for a parallel session, or when the working directory is under .claude/worktrees/.
+description: Work in a hallpass lane, a git worktree with its own build and scratch brokers. Use before the first write in the primary checkout, for a parallel session, or when working under .claude/worktrees/.
 ---
 
 # Work in a lane

@@ -22,9 +22,10 @@ Verification runs a second broker, not the installed one:
 - The token, SSH key, and signing key are scratch files (`file:` backend).
   No TPM.
 
-The installed broker (`/run/hallpass`, systemd `hallpass.service`, real
-GitHub token) belongs to the user. Never restart it, rewrite its config, or
-send mutating requests through it. Two scratch brokers can run side by side;
+The installed broker belongs to the user. It runs under systemd with its
+sockets in `/run/hallpass` on Linux, or under launchd with them in
+`/var/db/hallpass/run` on macOS, and it holds the real GitHub token. Never
+restart it, rewrite its config, or send mutating requests through it. Two scratch brokers can run side by side;
 each gets its own dir.
 
 **This machine aliases `gh` to `/opt/hallpass/bin/hallpass gh`, the live
@@ -111,7 +112,8 @@ deletes the rest of `$S`.
   pid, and process chain first and then the request's own fields, as in
   `msg=refused via=gh uid=1000 pid=... procs=... reason=...`. Match on
   `msg=refused` and the reason separately. These are the lines
-  `journalctl -u hallpass` shows for the live broker.
+  the live broker writes to `journalctl -u hallpass` on Linux and
+  `/var/log/hallpass.log` on macOS.
 - `github-requests.jsonl`: every request that reached the fake, with
   method, path, body, and `auth` (`token-ok`, `key-ok`, `wrong`, `none`). git
   shows up as method `SSH` with the git command as the path. This is the
@@ -125,13 +127,10 @@ deletes the rest of `$S`.
 For each case, capture the command, its output and exit code, the broker's
 log line, and the fake's request log, and name the feature ID beside them.
 An allowed API write shows up in `github-requests.jsonl` with `token-ok`.
-A refused API write doesn't show up there at all. For git, compare refs,
-because the broker opens a receive-pack session even for a push it then
-refuses. Some
-refusals need a read first (the author check GETs the issue), and that
-read does appear. For pushes, also compare the fake's refs before and
-after with
-`GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -C "$S/gh-root/acme/widgets.git" for-each-ref`.
+A refused API write doesn't show up there at all, though some refusals
+need a read first (the author check GETs the issue), and that read does
+appear. A refused push does show up, so compare the fake's refs instead,
+as `features/git-ssh.md` does.
 
 The fake stands in for GitHub only. Policy, proxies, signing, and sockets
 are the real binary. What GitHub itself enforces (branch protection,
