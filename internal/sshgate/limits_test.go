@@ -4,6 +4,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,10 +14,23 @@ import (
 	"github.com/mbriggs/hallpass/internal/peer"
 )
 
+// socketPath is a path for a test's Unix socket. macOS caps socket paths at
+// 104 bytes, and t.TempDir() there is a long path under /var/folders, so
+// the directory goes under /tmp.
+func socketPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "hpgate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return filepath.Join(dir, "ssh.sock")
+}
+
 // serveLimited starts a gate on a Unix socket with tight limits and returns
 // a way to connect to it.
 func serveLimited(t *testing.T, conns int, wait time.Duration) func() net.Conn {
-	sock := filepath.Join(t.TempDir(), "ssh.sock")
+	sock := socketPath(t)
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)
