@@ -56,9 +56,10 @@ It prevents these:
   SSH, GitHub doesn't check, so the broker refuses a pushed branch whose new
   commit changes `.github/workflows`.
 - **Settings, secrets, and admin.** The broker refuses repo settings,
-  rulesets, hooks, deploy keys, secrets and their names, release changes, and
-  deletes, and no policy can allow them. Any request not on its lists is
-  refused, including whatever GitHub adds later.
+  branch protection, hooks, deploy keys, secrets and their names, release
+  changes, and deletes, and no policy can allow them. It refuses reading
+  rulesets and Actions variables unless the policy allows it. Any request
+  not on its lists is refused, including whatever GitHub adds later.
 - **Commands for bots.** PR and issue text with lines like `/merge` or
   `bors r+` is refused, because bots would take them as your command.
 - **Silent fallback to your credentials.** The git config clears every
@@ -161,7 +162,7 @@ the git push. Denying `pr.merge` refuses `gh pr merge` and
 
 | On by default | Off by default |
 | --- | --- |
-| `pr.create`, `pr.edit`, `pr.request-review`, `issue.create`, `issue.edit`, `assign`, `comment`, `review.comment` | `push.default`, `review.approve`, `review.request-changes`, `pr.merge`, `pr.automerge`, `labels`, `workflow.rerun`, `workflow.dispatch` |
+| `pr.create`, `pr.edit`, `pr.request-review`, `issue.edit`, `comment`, `review.comment` | `issue.create`, `assign`, `push.default`, `review.approve`, `review.request-changes`, `pr.merge`, `pr.automerge`, `labels`, `workflow.rerun`, `workflow.dispatch` |
 
 Change them for every repo, or for one allowlist entry:
 
@@ -221,9 +222,11 @@ hallpass: hallpass doesn't allow reading repos/{repo}/deployments in acme/widget
 ```
 
 No name adds a write, and none opens secrets and their names, Actions
-variables and permissions, environment secrets, Dependabot, Codespaces,
-hooks, deploy keys, invitations, rulesets, security findings, or
-`Repository.tempCloneToken`.
+permissions and runners, environment secrets and variables, branch
+protection, Dependabot, Codespaces, hooks, deploy keys, invitations,
+security findings, or `Repository.tempCloneToken`. Rulesets
+(`read:rulesets`) and Actions variables (`read:actions/variables`) are
+off by default, and a policy can open them.
 
 The broker checks each client's uid against `uids` in the config, from the
 kernel's peer credentials. The git config applies to everyone on the machine,

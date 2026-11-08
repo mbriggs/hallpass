@@ -360,7 +360,7 @@ func (w *walker) selections(f *ast.Field, v view, depth int) error {
 			}
 			return nil
 		}
-		next, err := w.edgeView(v, owner, c.Name, child)
+		next, err := w.edgeView(v, owner, c.Name, child, len(c.Definition.Arguments) > 0)
 		if err != nil {
 			return err
 		}
@@ -368,13 +368,17 @@ func (w *walker) selections(f *ast.Field, v view, depth int) error {
 	})
 }
 
-// edgeView decides the view below an object-typed field.
-func (w *walker) edgeView(v view, owner, field string, child *ast.Definition) (view, error) {
+// edgeView decides the view below an object-typed field. lookup is set when
+// the field takes arguments, like User.repository(name:), which finds an
+// object rather than following one.
+func (w *walker) edgeView(v view, owner, field string, child *ast.Definition, lookup bool) (view, error) {
 	if v == identity {
 		// Identity reads may only hop to an owner's name, or list the
 		// members of a connection they were already given, like a PR's
-		// assignees. They can't enter a new connection.
-		if (field == "owner" || field == "organization") && !isConnection(child) {
+		// assignees. They can't enter a new connection. The repo an object
+		// belongs to, like a sub-issue's parent's, is an identity read too,
+		// but not a repo looked up by name.
+		if (field == "owner" || field == "organization" || field == "repository") && !isConnection(child) && !lookup {
 			return identity, nil
 		}
 		// The default branch's name, for gh pr create on a fork. Its
@@ -530,7 +534,7 @@ func init() {
 		Repository.pullRequest Repository.pullRequests Repository.issue Repository.issues
 		Repository.issueOrPullRequest Repository.object Repository.ref Repository.refs
 		Repository.defaultBranchRef Repository.labels Repository.label Repository.milestones
-		Repository.milestone
+		Repository.milestone Repository.releases Repository.release Repository.latestRelease
 		PullRequest.commits PullRequest.comments PullRequest.reviews PullRequest.latestReviews
 		PullRequest.latestOpinionatedReviews PullRequest.reviewThreads PullRequest.reviewRequests
 		PullRequest.baseRef PullRequest.mergeCommit PullRequest.potentialMergeCommit

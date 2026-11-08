@@ -1,11 +1,59 @@
 package policy
 
 import (
+	"bufio"
+	"encoding/json"
+	"os"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/mbriggs/hallpass/internal/op"
 )
+
+// refusedREST are corpus requests hallpass refuses, and why that's fine.
+var refusedREST = map[string]string{
+	"GET /?per_page=100": "in the original 2.98 capture, against a stub that answered {}; hallpass has always refused it and no gh command has needed it since",
+}
+
+// Every REST request gh sent in the corpus classifies, so a route gh
+// depends on can't drop out of the tables unnoticed. Whether an operation
+// is on is the config's call, checked later.
+func TestRESTCorpus(t *testing.T) {
+	t.Parallel()
+	f, err := os.Open("testdata/gh-2.98.0-capture.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(nil, 1<<20)
+	n := 0
+	for sc.Scan() {
+		var rec struct{ Head, Body string }
+		json.Unmarshal(sc.Bytes(), &rec)
+		line, _, _ := strings.Cut(rec.Head, "\r\n")
+		method, rest, _ := strings.Cut(line, " ")
+		target, _, _ := strings.Cut(rest, " ")
+		if target == "/graphql" {
+			continue
+		}
+		n++
+		_, err := ClassifyREST(method, target, []byte(rec.Body), nil)
+		if why, ok := refusedREST[method+" "+target]; ok {
+			if err == nil {
+				t.Errorf("%s %s classifies now; drop it from refusedREST (%s)", method, target, why)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("refused gh's own request %s %s: %v", method, target, err)
+		}
+	}
+	if n < 20 {
+		t.Fatalf("only %d REST requests in the corpus", n)
+	}
+}
 
 // Each write names every operation the config must allow for it.
 func TestRESTOps(t *testing.T) {

@@ -97,6 +97,7 @@ func TestPolicyLayers(t *testing.T) {
 	}{
 		{"mbriggs/dots", op.PRCreate, true, "default"},
 		{"mbriggs/dots", op.PRMerge, false, "default"},
+		{"mbriggs/dots", op.Assign, false, "default"},
 		{"mbriggs/dots", op.WorkflowRerun, true, "global"},
 		{"mbriggs/dots", op.IssueCreate, false, "global"},
 		{"mbriggs/dots", op.Labels, true, "global"},

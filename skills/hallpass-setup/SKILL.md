@@ -32,6 +32,9 @@ exist, start at Install. Otherwise
   `sudo /opt/hallpass/bin/hallpass ssh-key remove` or `signing-key remove`,
   then creates it again.
 - **No `repos`.** Go to Allow repos.
+- **Repos, but no `policy` and no entry in `repos` with changes like
+  `(+pr.merge)`.** Ask whether the user has chosen what agents may do. If
+  not, go to Choose what agents may do.
 - **Every credential the user wants is set and checked.** Go to Check git
   and gh.
 
@@ -128,11 +131,38 @@ sudo /opt/hallpass/bin/hallpass allow OWNER/REPO
 
 `'OWNER/*'` covers every current and future repo of an owner. Quote it, or
 zsh fails the glob before hallpass runs. `--read` lets agents read but not
-write. `--via ssh` sends git for every repo of that owner over SSH.
-`hallpass policy` turns operations like `pr.merge` or `push.default` on or
-off, everywhere or for one repo. For an org repo, suggest the user run
-`/hallpass-repo` instead, which checks what an agent's branch could trigger
-there before suggesting any policy change.
+write. `--via ssh` sends git for every repo of that owner over SSH. For an
+org repo, suggest the user run `/hallpass-repo` instead, which checks what
+an agent's branch could trigger there before suggesting any policy change.
+
+## Choose what agents may do
+
+Interview the user about the work their agents do, repo by repo, before
+anyone runs `policy allow`. Ask about the work, not the operation names:
+does an agent open issues when it finds a bug, merge its own PR once CI
+passes, rerun a flaky job, push straight to the default branch, debug
+deploys? Map each answer to operations, and show the user each one's
+default and warning from `/opt/hallpass/bin/hallpass policy show` before
+they choose it. The defaults let agents open and edit their own PRs,
+comment, and review without approving. Everything else is off.
+
+Settle with the user, for each operation they want:
+
+- **Where.** Everywhere, one owner (`--repo 'OWNER/*'`), or one repo. Merge,
+  rerun, and pushing the default branch usually belong on one repo whose
+  CI and deploys the user knows, not everywhere.
+- **What it triggers.** `workflow.rerun` and `workflow.dispatch` run
+  workflows with their secrets, and a deploy workflow deploys. `pr.merge`
+  with a release-on-merge workflow ships with nobody reviewing.
+- **Reads beyond the defaults.** Agents debugging deploys or CI may need
+  `read:environments`, `read:deployments`, `read:actions/variables`, or
+  `read:rulesets`. These are reads, so the risk is what they reveal.
+  Actions logs are on by default, and can show secrets that masking missed.
+
+Then give the user one `sudo /opt/hallpass/bin/hallpass policy allow ...`
+line per scope, and run `policy show OWNER/REPO` with them afterward to
+confirm. Tell them they can start narrow: every refusal prints the exact
+`policy allow` command that would permit it.
 
 ## Check git and gh
 
