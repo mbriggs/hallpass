@@ -6,9 +6,11 @@ commands, and expected output.
 ## Fixture
 
 The fake has `acme/widgets` with branches `main` and `colleague` and a
-`.github/workflows/ci.yml`. PR and
-issue 1 are by `verifier` (the token's login), and 2 is by `colleague`.
-`acme/secret` isn't on the allowlist.
+`.github/workflows/ci.yml`. PR and issue 1 are by `verifier` (the token's
+login), and 2 is by `colleague`. `acme/readonly` is a git copy of widgets,
+allowlisted read-only. `acme/gadgets` is allowlisted but the fake answers
+it as widgets's old name, so git under it is refused. `acme/secret` isn't
+on the allowlist.
 
 ## Driving conventions
 
@@ -29,12 +31,14 @@ issue 1 are by `verifier` (the token's login), and 2 is by `colleague`.
 ## Features
 
 - [gh REST](./gh-rest.md): `gh api` reads and writes, the allowlist,
-  read-only repos, refused routes, and the author check.
+  read-only repos, operations and reads that are off by default, refused
+  routes, and the author check.
 - [gh PR commands and GraphQL](./gh-graphql.md): `gh pr comment`, refused
-  `merge` and `approve`, and the ChatOps filter.
-- [git over SSH](./git-ssh.md): clone, fetch, and push to agent branches.
-  Refused default, protected, colleague, tag, and workflow pushes, and
-  `push.default`.
+  `merge` and `approve`, the allowlist, the author check, and the ChatOps
+  filter.
+- [git over SSH](./git-ssh.md): clone and push to agent branches. Refused
+  default, protected, colleague, tag, workflow, and read-only pushes, the
+  renamed-repo check, and `push.default`.
 - [Signed commits](./signing.md): `git commit -S` through `hallpass-sign`.
 - [Status](./status.md): `hallpass status`, `--check`, `--json`, and the
   broker-down error.

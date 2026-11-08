@@ -145,7 +145,8 @@ func main() {
 
 // api answers the calls gh and the broker make. acme/widgets exists, with
 // PR and issue 1 written by the token's account and PR and issue 2 by a
-// colleague; every other repo is a 404.
+// colleague. acme/readonly answers its repo lookup only, and acme/gadgets
+// redirects as a repo renamed to acme/widgets. Every other repo is a 404.
 func api(w http.ResponseWriter, r *http.Request, path, body string) {
 	w.Header().Set("Content-Type", "application/json")
 	reply := func(code int, s string) {
@@ -165,8 +166,15 @@ func api(w http.ResponseWriter, r *http.Request, path, body string) {
 		reply(200, `{"login":"`+login+`"}`)
 	case path == "/graphql":
 		graphql(reply, body)
-	case path == "/repos/acme/widgets":
+	case path == "/repos/acme/widgets" || path == "/repositories/1":
 		reply(200, repo)
+	case path == "/repos/acme/readonly":
+		reply(200, `{"id":2,"node_id":"R_2","name":"readonly","full_name":"acme/readonly","owner":{"login":"acme"},"default_branch":"main","private":true}`)
+	case path == "/repos/acme/gadgets":
+		// acme/gadgets was renamed to acme/widgets: GitHub redirects the old
+		// name to the repo's ID, which the broker's current-name check follows.
+		w.Header().Set("Location", "http://"+r.Host+"/api/repositories/1")
+		reply(301, `{"message":"Moved Permanently"}`)
 	case path == "/search/issues":
 		reply(200, `{"total_count":0,"incomplete_results":false,"items":[]}`)
 	case strings.HasPrefix(path, "/repos/acme/widgets/"):

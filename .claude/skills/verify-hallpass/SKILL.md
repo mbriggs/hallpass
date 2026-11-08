@@ -44,11 +44,12 @@ S=$(.claude/skills/verify-hallpass/scripts/up.sh | tail -1)
 `up.sh [DIR]` builds `bin/hallpass` with `make build`, copies it to `$S/bin`,
 builds the fake, makes a token and P-256 SSH and signing keys, seeds the
 bare repo `acme/widgets` (branches `main` and `colleague`, and
-`.github/workflows/ci.yml`), and starts both processes. It prints the
-scratch dir once the broker logs `msg=serving` with
-`token=true ssh=true signing=true`, and fails loudly otherwise. The
-allowlist is `acme/widgets` (write) and `acme/readonly` (read), and
-`protected_branches = ["release/*"]`.
+`.github/workflows/ci.yml`) and a copy of it as `acme/readonly`, and starts
+both processes. It prints the scratch dir once the broker logs
+`msg=serving` with `token=true ssh=true signing=true`, and fails loudly
+otherwise. The allowlist is `acme/widgets` (write), `acme/readonly` (read),
+and `acme/gadgets`, which the fake answers as widgets's old name. The config
+also sets `protected_branches = ["release/*"]`.
 
 Each shell that drives it needs:
 
@@ -162,7 +163,7 @@ skips refusals by design:
 python3 -I .claude/skills/verify-hallpass/scripts/gh-matrix-corpus.py tmp/matrix.jsonl internal/policy/testdata/gh-2.98.0-capture.jsonl
 ```
 
-`TestGraphQLCorpus` and `TestRESTCorpus` then require every one to
+`TestGHCorpus` (`make corpus` runs it) and `TestRESTCorpus` then require every one to
 classify. For a new gh version, start a new corpus file named for it.
 
 ## Cleanup
