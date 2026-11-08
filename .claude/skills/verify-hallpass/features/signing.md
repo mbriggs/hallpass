@@ -14,38 +14,28 @@ signing key and the namespace is `git`. Everything else goes to the real
 - `sign-namespace` never signs for a namespace other than `git`.
 - `sign-tag-merge` signs tags and merge commits that carry a signed tag.
 
-## Driving it with git
+## Driving it
 
-Preconditions: a repo at `$S/sign`. Signing needs no remote:
-`git init -q "$S/sign" && cd "$S/sign"`.
+`scripts/drive.sh "$S" signing` runs these cases from
+`scripts/cases/signing.sh` in `$S/sign`, with no remote:
 
-- **Sign.** `echo s > README && git add README && git commit -q -S -m signed`
-  exits 0. `git cat-file commit HEAD` contains `-----BEGIN SSH SIGNATURE-----`.
-  `broker.log` has a `msg=signed` line ending in `object="commit \"signed\""`.
-  The uid, pid, and procs fields come between them, so match the two parts
-  separately.
-- **Verify.** `echo "verify@example.com $(cat "$S/keys/signing.pub")" > "$S/evidence/allowed_signers" && git -c gpg.ssh.allowedSignersFile="$S/evidence/allowed_signers" verify-commit HEAD`
-  prints `Good "git" signature for verify@example.com`.
-- **Passthrough.** `ssh-keygen -q -t ed25519 -N "" -f "$S/other" && echo hi > "$S/msg" && hallpass-sign -Y sign -n git -f "$S/other.pub" "$S/msg"`
-  writes `$S/msg.sig`, with no new `msg=signed` line in `broker.log`.
-- **Refuse data.** `echo hi > "$S/data" && hallpass-sign -Y sign -n git -f "$S/keys/signing.pub" "$S/data"`
-  exits 1 with `hallpass: hallpass only signs unsigned git commits and tags`.
-- **Refuse forged.** A commit header with a line git never writes:
-  `printf "tree %s\nauthor a <a@x> 1 +0000\ncommitter a <a@x> 1 +0000\nx-evil yes\n\nforged\n" "$(git rev-parse HEAD^{tree})" > "$S/fake2" && hallpass-sign -Y sign -n git -f "$S/keys/signing.pub" "$S/fake2"`
-  exits 1 with the same message. `broker.log` has a `msg=refused` line
-  with `op=sign reason="hallpass only signs unsigned git commits and tags"`.
-- **Other namespace.** `hallpass-sign -Y sign -n file -f "$S/keys/signing.pub" "$S/data"`
-  passes through to `ssh-keygen`, which has no private key for it, so it
-  exits 1 with `No private key found` and `hallpass: exit status 255`. No
-  `msg=signed` line.
-- **Tags and merges.** The merge needs a branch that forks before the
-  tagged commit:
-  `git branch side && echo t > tagged && git add tagged && git commit -q -S -m tagged && git tag -s -m release v1`,
-  then `git checkout -q side && git merge -q -S --no-ff -m "merge v1" v1`.
-  `git cat-file commit HEAD` has a `mergetag` header. `broker.log` has
-  `msg=signed` lines with `object="tag \"release\""` and
-  `object="commit \"merge v1\""`, and `verify-tag v1` and `verify-commit HEAD`
-  (with the allowed signers file above) print `Good "git" signature`.
+- `sign-commit`: `git commit -S` gives a commit with an SSH signature,
+  `broker.log` has `msg=signed` for `object="commit \"signed\""`, and
+  `verify-commit` prints `Good "git" signature for verify@example.com`.
+- `sign-passthrough`: a key that isn't the broker's signs through
+  `ssh-keygen`, with no `msg=signed` in `broker.log`.
+- `sign-refuse-data`: plain data is refused with `hallpass only signs
+  unsigned git commits and tags`.
+- `sign-refuse-forged`: a commit header with a line git never writes is
+  refused the same way, and `broker.log` has `op=sign reason="hallpass only
+  signs unsigned git commits and tags"`.
+- `sign-other-namespace`: `-n file` passes through to `ssh-keygen`, which
+  has no private key for the broker's public key and fails with `No private
+  key found`. Nothing is signed.
+- `sign-tag-merge`: a signed tag, and a signed merge of it from a branch
+  that forks before it, which writes a `mergetag` header. `broker.log` has
+  `object="tag \"release\""` and `object="commit \"merge v1\""`, and
+  `verify-tag` and `verify-commit` print `Good "git" signature`.
 
 ## Gotchas
 

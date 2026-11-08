@@ -19,8 +19,13 @@ Verification runs a second broker, not the installed one:
   `git-receive-pack`. The API returns 401 to any request without the
   scratch token, and SSH accepts only the broker's key, so a success there
   shows the broker added its credential.
-- The token, SSH key, and signing key are scratch files (`file:` backend).
-  No TPM.
+- The token, SSH key, and signing key are scratch credentials in
+  `$S/keys/broker`, made by `scripts/scratchcreds` with the platform's
+  backend: `sealed:` on macOS, `file:` elsewhere. That's what the installed
+  broker uses, except on Linux with a TPM, which gets `file:` because the
+  scratch broker runs as you. Set `HALLPASS_VERIFY_BACKEND=file`, `sealed`,
+  or `tpm` before `up.sh` to pick another. The fake reads the plain token in
+  `$S/keys/token`.
 
 The installed broker belongs to the user. It runs under systemd with its
 sockets in `/run/hallpass` on Linux, or under launchd with them in
@@ -35,12 +40,14 @@ broker and real GitHub.
 
 ## Launch
 
-Run `up.sh`, `doctor.sh`, and `down.sh` from the repo root, and drive from
-anywhere else (see `features/README.md`):
+Run `up.sh`, `doctor.sh`, `drive.sh`, and `down.sh` from the repo root:
 
 ```sh
-S=$(.claude/skills/verify-hallpass/scripts/up.sh | tail -1)
+.claude/skills/verify-hallpass/scripts/up.sh
 ```
+
+It prints the scratch dir, `$S`, on its last line. Pass that path literally
+to the other scripts. In a lane, the harness refuses `S=$(...)`.
 
 `up.sh [DIR]` builds `bin/hallpass` with `make build`, copies it to `$S/bin`,
 builds the fake, makes a token and P-256 SSH and signing keys, seeds the
@@ -52,18 +59,13 @@ otherwise. The allowlist is `acme/widgets` (write), `acme/readonly` (read),
 and `acme/gadgets`, which the fake answers as widgets's old name. The config
 also sets `protected_branches = ["release/*"]`.
 
-Each shell that drives it needs:
-
-```sh
-. "$S/env"
-```
-
-That sets `HALLPASS_RUN_DIR`, puts `$S/bin` first on PATH, sets
+`$S/env` is what points git and gh at the scratch broker. It sets
+`HALLPASS_RUN_DIR`, puts `$S/bin` first on PATH, sets
 `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=$S/gitconfig` (the system git
 config routes github.com to the live broker), sets `GH_CONFIG_DIR=$S/gh`
 (`http_unix_socket` is the scratch gh socket), and unsets `GH_TOKEN`,
-`GITHUB_TOKEN`, and `SSH_AUTH_SOCK`. Bash tool calls don't keep shell
-state, so source it at the start of each call.
+`GITHUB_TOKEN`, and `SSH_AUTH_SOCK`. `drive.sh` sources it. Don't source it
+in a Bash call yourself: in a lane the harness refuses that.
 
 After rebuilding, run `down.sh` and then `up.sh` again. The broker runs the
 copy in `$S/bin`, and doctor flags it when that copy differs from the
@@ -89,8 +91,31 @@ status` (no `--check` unless the user asks; `--check` calls real GitHub).
 
 ## Drive
 
-`features/README.md` maps each feature to a file with its exact commands
-and expected output. How each client reaches the scratch broker:
+```sh
+.claude/skills/verify-hallpass/scripts/drive.sh S all
+.claude/skills/verify-hallpass/scripts/drive.sh S rest graphql signing status
+```
+
+`drive.sh S FEATURE...` runs the committed cases in `scripts/cases/` for
+`rest`, `graphql`, `ssh`, `push-default`, `signing`, `status`, or `all`.
+Each case prints its command, output, and exit, then `ok` or `FAIL` against
+the expected exit and text, and against the fake's request log and
+`broker.log` where that matters. It writes everything to
+`$S/evidence/transcript.txt`, ends with `#### N failed`, and exits 1 if any
+check failed. It refuses to run unless gh is the plain binary pointed at
+`$S/gh`. `features/README.md` maps each feature to a file that says what
+each case proves.
+
+To check something no case covers, add a case to the feature's file in
+`scripts/cases/` and run it with `drive.sh`. Don't type git and gh commands
+against the scratch broker by hand. In a lane, the harness refuses sourcing
+`$S/env`, env-prefixed git, compound commands, and arguments that look like
+git, and the permission check refuses force pushes and pushes to `main`
+even when they go to the fake. Agents who type them end up improvising
+scripts in `tmp/` or skipping the check. A committed case gets reviewed
+with the change and runs as one plain command.
+
+How each client reaches the scratch broker, for writing a case:
 
 - gh: plain `gh ...` after sourcing `$S/env`. Don't use `hallpass gh`: it
   sets `GH_CONFIG_DIR=/etc/hallpass/gh`, which points at the live broker.
@@ -120,17 +145,15 @@ deletes the rest of `$S`.
   side-effect record.
 - `github-refs-at-teardown.txt`: the refs on the fake's `acme/widgets` when
   `down.sh` ran.
-- Your transcript: tee each driven command and its output to
-  `$S/evidence/transcript.txt`, e.g.
-  `{ echo '$ gh api repos/acme/secret'; gh api repos/acme/secret; echo "exit=$?"; } >> "$S/evidence/transcript.txt" 2>&1`.
+- `transcript.txt`: every case `drive.sh` ran, with its command, output,
+  exit, and checks.
 
-For each case, capture the command, its output and exit code, the broker's
-log line, and the fake's request log, and name the feature ID beside them.
-An allowed API write shows up in `github-requests.jsonl` with `token-ok`.
-A refused API write doesn't show up there at all, though some refusals
-need a read first (the author check GETs the issue), and that read does
-appear. A refused push does show up, so compare the fake's refs instead,
-as `features/git-ssh.md` does.
+Cite the case names from the transcript as the evidence. A new case should
+check what the existing ones do. An allowed API write shows up in
+`github-requests.jsonl` with `token-ok`. A refused API write doesn't show
+up there at all, though some refusals need a read first (the author check
+GETs the issue), and that read does appear. A refused push does show up,
+so compare the fake's refs instead, as `scripts/cases/git-ssh.sh` does.
 
 The fake stands in for GitHub only. Policy, proxies, signing, and sockets
 are the real binary. What GitHub itself enforces (branch protection,
@@ -183,4 +206,5 @@ still name `$S`. Then it records the fake's refs and deletes everything in
   `install-pat`, `ssh-key`, `signing-key`, `allow`, `disallow`, `policy`, `ledger`,
   `logout`, `uninstall`). They write `/etc/hallpass` and the live install.
   Ask the user before running any of them.
-- **The TPM backend.** Scratch keys are `file:`.
+- **The TPM backend**, unless you run `up.sh` with
+  `HALLPASS_VERIFY_BACKEND=tpm` and can open `/dev/tpmrm0`.

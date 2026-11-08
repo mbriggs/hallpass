@@ -27,22 +27,27 @@ chmod 700 "$S/keys"
 # The binary under test: the checkout, built the way the Makefile builds it.
 make -C "$repo" -s build
 cp "$repo/bin/hallpass" "$S/bin/hallpass"
+# Which tree the broker came from, for bin/worktree land: a commit's tree
+# when nothing is uncommitted, and "dirty" otherwise, which nothing lands on.
+if [ -z "$(git -C "$repo" status --porcelain)" ]; then
+  git -C "$repo" rev-parse 'HEAD^{tree}' > "$S/built-from"
+else
+  echo dirty > "$S/built-from"
+fi
 ln -sf hallpass "$S/bin/hallpass-sign"
 (cd "$here/fakegithub" && go build -o "$S/bin/fakegithub" main.go)
+(cd "$here/scratchcreds" && go build -o "$S/bin/scratchcreds" main.go)
 
-# Credentials, all file-backed and fake. The token only works on the fake.
+# Credentials, all fake. The token only works on the fake, which reads the
+# plain copy in $S/keys/token. The broker's copies live in $S/keys/broker,
+# made with the platform's backend (sealed on macOS, file elsewhere), so the
+# broker under test loads credentials the way the installed one does.
+# HALLPASS_VERIFY_BACKEND=file, sealed, or tpm picks another.
 [ -s "$S/keys/token" ] || { printf 'hpverify_%s' "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')" > "$S/keys/token"; chmod 600 "$S/keys/token"; }
-if [ ! -s "$S/keys/signing.pem" ]; then
-  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$S/keys/signing.pem" 2>/dev/null
-  chmod 600 "$S/keys/signing.pem"
-fi
-ssh-keygen -y -f "$S/keys/signing.pem" > "$S/keys/signing.pub"
-# The broker's SSH key, which the fake accepts for git.
-if [ ! -s "$S/keys/ssh.pem" ]; then
-  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$S/keys/ssh.pem" 2>/dev/null
-  chmod 600 "$S/keys/ssh.pem"
-fi
-ssh-keygen -y -f "$S/keys/ssh.pem" > "$S/keys/ssh.pub"
+backend=$("$S/bin/scratchcreds" -backend "${HALLPASS_VERIFY_BACKEND:-}" "$S/keys/broker" "$S/keys/token")
+# The public keys: the fake accepts ssh.pub for git, and the client config
+# names signing.pub.
+cp "$S/keys/broker/ssh.pub" "$S/keys/broker/signing.pub" "$S/keys/"
 
 # Seed GitHub's side: acme/widgets with main and a colleague's branch, and a
 # workflow file for the workflow check to guard.
@@ -89,17 +94,17 @@ ssh_addr = "$ssh_addr"
 ssh_host_keys = ["$ssh_host_key"]
 
 [token]
-secret = "file:$S/keys/token"
+secret = "$backend:$S/keys/broker/token"
 source = "pat"
 login = "verifier"
 created = $(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 [ssh]
-key = "file:$S/keys/ssh.pem"
+key = "$backend:$S/keys/broker/ssh"
 public = "$(cat "$S/keys/ssh.pub")"
 
 [signing]
-key = "file:$S/keys/signing.pem"
+key = "$backend:$S/keys/broker/signing"
 public = "$(cat "$S/keys/signing.pub")"
 
 [[repo]]

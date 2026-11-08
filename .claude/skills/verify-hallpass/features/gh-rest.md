@@ -16,42 +16,34 @@ the routes its policy allows in allowlisted repos, and returns 403 with a
 - `rest-author` allows edits to your own issues and refuses a colleague's.
 - `rest-token` adds the token: gh holds only a placeholder.
 
-## Driving it with gh
+## Driving it
 
-Preconditions: `cd /tmp`.
+`scripts/drive.sh "$S" rest` runs these cases from `scripts/cases/gh-rest.sh`:
 
-- **Read.** `gh api repos/acme/widgets --jq .full_name` prints
-  `acme/widgets` and exits 0. The fake log has
-  `GET /api/repos/acme/widgets` with `auth":"token-ok"`.
-- **Allowlist.** `gh api repos/acme/secret` exits 1 with
-  `gh: hallpass: acme/secret isn't in hallpass's allowlist. To allow it: sudo /opt/hallpass/bin/hallpass allow acme/secret (HTTP 403)`.
-  The fake log has no `acme/secret` request.
-- **Read-only repo.** `gh api -X POST repos/acme/readonly/issues -f title=x`
-  exits 1 with `hallpass: agents may only read acme/readonly`.
-- **Operation off.** `gh api -X PUT repos/acme/widgets/pulls/1/merge` exits 1
-  with `hallpass: agents may not merge PRs, add them to the merge queue, or turn auto-merge on or off in acme/widgets. To allow it: sudo /opt/hallpass/bin/hallpass policy allow pr.merge --repo acme/widgets`.
-  No `PUT` reaches the fake.
-  `gh api -X POST repos/acme/widgets/issues -f title=x` exits 1 with
-  `hallpass: agents may not open issues in acme/widgets. To allow it: sudo /opt/hallpass/bin/hallpass policy allow issue.create --repo acme/widgets`.
-- **Refused route.** `gh api repos/acme/widgets/actions/secrets` exits 1 with
-  `hallpass: hallpass never allows reading repos/{repo}/actions/secrets: no policy opens secrets, settings, keys, hooks, or security findings`.
-- **Read off by default.** `gh api repos/acme/widgets/actions/variables`
-  exits 1 with
-  `hallpass: hallpass doesn't allow reading repos/{repo}/actions/variables in acme/widgets. Reads are limited to code, PRs, issues, checks, and Actions runs. To allow it: sudo /opt/hallpass/bin/hallpass policy allow read:actions/variables --repo acme/widgets`.
-  No `actions/` request reaches the fake.
-- **Author check, colleague's issue.** `gh api -X PATCH repos/acme/widgets/issues/2 -f title=x`
-  exits 1 with `hallpass: agents may only change PRs, issues, and comments you wrote`.
-  The fake log has `GET .../issues/2` and no `PATCH`.
-- **Author check, own issue.** `gh api -X PATCH repos/acme/widgets/issues/1 -f title=x`
-  exits 0 and prints `{"id":101,"user":{"login":"verifier"}}`. The fake log has the `GET` and then the
-  `PATCH` with body `{"title":"x"}`.
-- **Token.** `grep oauth_token "$S/gh/hosts.yml"` shows only
-  `hallpass-brokered`, while every fake log entry for these calls has
-  `token-ok`.
+- `rest-read`: `gh api repos/acme/widgets` prints `acme/widgets`, and the
+  fake logs the GET with `token-ok`.
+- `rest-allowlist`: `acme/secret` is refused with `isn't in hallpass's
+  allowlist`, and no request reaches the fake.
+- `rest-readonly`: a POST to `acme/readonly` is refused with `agents may
+  only read acme/readonly`.
+- `rest-op`: the merge route is refused with `agents may not merge PRs`,
+  and opening an issue with `agents may not open issues`. No PUT or POST
+  reaches the fake.
+- `rest-route`: `actions/secrets` is refused with `hallpass never allows
+  reading repos/{repo}/actions/secrets`.
+- `rest-read-off`: `actions/variables` is refused with the command that
+  opens it, `policy allow read:actions/variables --repo acme/widgets`, and
+  no `actions/` request reaches the fake.
+- `rest-author-colleague`: a PATCH to colleague's issue 2 is refused with
+  `agents may only change PRs, issues, and comments you wrote`. The fake
+  sees the GET but no PATCH.
+- `rest-author-own`: a PATCH to your issue 1 passes and reaches the fake.
+- `rest-token`: `$S/gh/hosts.yml` holds only `hallpass-brokered`.
 
 ## Gotchas
 
-- If you forgot `. "$S/env"`, the refusals still look right but come from
-  the live broker. Check `broker.log` for your pid, or `type gh`.
+- A gh that reaches the live broker gives refusals that look right.
+  `drive.sh` refuses to run unless gh is the plain binary and
+  `GH_CONFIG_DIR` is `$S/gh`.
 - The fake returns `[]` for any GET under `acme/widgets/` it doesn't know.
   An allowed read with an empty body is the fake, not a broker bug.

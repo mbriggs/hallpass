@@ -288,9 +288,34 @@ cmd_teardown() {
 
 # --- land and sync (PR policy) -----------------------------------------------
 
+# verified_tree checks that verify-hallpass's drive.sh passed every feature
+# against a scratch broker built from HEAD's tree, unless the branch changes
+# only Markdown or skip gives a reason. A rebase changes the tree, so it
+# needs a fresh run: what lands is what was verified.
+verified_tree() {
+  local skip=$1 tree prefix f
+  if ! git diff --name-only origin/main...HEAD | grep -qv '\.md$'; then
+    echo "only Markdown changed, so no verify run is needed"
+    return
+  fi
+  if [ -n "$skip" ]; then
+    echo "not verified: $skip"
+    return
+  fi
+  tree=$(git rev-parse 'HEAD^{tree}')
+  prefix=$(env_value "$ROOT" HALLPASS_VERIFY_PREFIX)
+  for f in "$prefix".*/evidence/verified; do
+    if [ "$(cat "$f" 2>/dev/null)" = "$tree" ]; then
+      echo "verified: drive.sh passed all features in $(dirname "$(dirname "$f")")"
+      return
+    fi
+  done
+  die "no verify-hallpass run passed for this commit's tree. With nothing uncommitted, run .claude/skills/verify-hallpass/scripts/up.sh, then scripts/drive.sh S all, then land again. If the change can't affect the broker, pass --no-verify REASON, and the reason goes in the PR description."
+}
+
 cmd_land() {
   require_lane land
-  local msg= bodyfile= branch count subject body pr
+  local msg= bodyfile= skip= branch count subject body pr
   while [ $# -gt 0 ]; do
     case "$1" in
       --message|--body)
@@ -299,7 +324,10 @@ cmd_land() {
         f=$(cd "$(dirname "$2")" && pwd -P)/$(basename "$2")
         if [ "$1" = --message ]; then msg=$f; else bodyfile=$f; fi
         shift 2 ;;
-      *) die "usage: bin/worktree land [--message FILE] [--body FILE]" ;;
+      --no-verify)
+        [ -n "${2:-}" ] || die "--no-verify needs a reason"
+        skip=$2; shift 2 ;;
+      *) die "usage: bin/worktree land [--message FILE] [--body FILE] [--no-verify REASON]" ;;
     esac
   done
   cd "$ROOT"
@@ -311,6 +339,7 @@ cmd_land() {
     || die "$branch lacks commits from origin/main. Rebase onto origin/main so CI tests what will merge."
   count=$(git rev-list --count origin/main..HEAD)
   [ "$count" -gt 0 ] || die "$branch has no commits beyond origin/main"
+  verified_tree "$skip"
   if [ -n "$msg" ]; then
     git reset -q --soft origin/main
     git commit -q -F "$msg"
@@ -322,6 +351,9 @@ cmd_land() {
   subject=$(git log -1 --format=%s)
   # The PR description, if given, is its own document; else the commit body.
   if [ -n "$bodyfile" ]; then body=$(cat "$bodyfile"); else body=$(git log -1 --format=%b); fi
+  [ -n "$skip" ] && body="$body
+
+Not verified with verify-hallpass's drive.sh: $skip"
   pr=$(gh_ pr list --head "$branch" --state open --json number --jq '.[0].number // empty')
   if [ -n "$pr" ]; then
     # REST, not gh pr edit: that also reads org teams and projects, which
