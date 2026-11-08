@@ -105,6 +105,6 @@ If a property no longer says what hallpass promises, take that to the user. Don'
 ## Coverage and sync
 
 - Covered files and their hashes: `verify/branch-ledger/covered.sha256`, written by `check.sh --resync`.
-- Last confirmed: 2026-11-08, at the commit that landed the commit-based ledger. `git log -1 --format=%h --grep='^Land the commit-based branch ledger'` prints its hash. Write the hash here the next time you confirm.
+- Last confirmed: 2026-11-08, at `6523544`. That commit added the rename check in `handle()`, which refuses before `relayPush` runs and changes no model action.
 
 Run `check.sh --resync` and move the date forward only after you've read the covered code at the new state and confirmed that every action still describes it. Write the commit you confirmed against here, so `git diff <commit> -- <covered files>` shows what changed since the model was last true.
