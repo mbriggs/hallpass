@@ -59,7 +59,7 @@ func (s *Server) CurrentName(ctx context.Context, repo github.Repo) (github.Repo
 }
 
 func (s *Server) getRepo(ctx context.Context, url string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}

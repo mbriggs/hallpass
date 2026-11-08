@@ -130,7 +130,10 @@ func machineSecret(dir string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	st := fi.Sys().(*syscall.Stat_t)
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return nil, fmt.Errorf("can't read the owner of %s", dir)
+	}
 	if err := os.Lchown(path, int(st.Uid), int(st.Gid)); err != nil {
 		return nil, err
 	}

@@ -26,7 +26,7 @@ func Listen(name, path string) (net.Listener, error) {
 			}
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil { //nolint:gosec // clients run as any user and must reach the socket directory; the broker checks each peer
 		return nil, err
 	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {

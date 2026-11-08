@@ -17,6 +17,7 @@ import (
 	"flag"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -46,14 +47,14 @@ func main() {
 	var mu sync.Mutex
 	refusal := regexp.MustCompile(`hallpass: [^"]*`)
 
-	os.Remove(*listen)
+	_ = os.Remove(*listen)
 	ln, err := net.Listen("unix", *listen)
 	if err != nil {
 		log.Fatal(err)
 	}
 	log.Fatal(http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		req, _ := http.NewRequest(r.Method, "http://"+r.Host+r.URL.RequestURI(), bytes.NewReader(body))
+		req, _ := http.NewRequestWithContext(r.Context(), r.Method, "http://"+r.Host+r.URL.RequestURI(), bytes.NewReader(body))
 		req.Header = r.Header.Clone()
 		resp, err := client.Do(req)
 		if err != nil {
@@ -69,14 +70,12 @@ func main() {
 		}
 		b, _ := json.Marshal(rec)
 		mu.Lock()
-		f.Write(append(b, '\n'))
+		_, _ = f.Write(append(b, '\n'))
 		mu.Unlock()
 
-		for k, v := range resp.Header {
-			w.Header()[k] = v
-		}
+		maps.Copy(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
-		w.Write(respBody)
+		_, _ = w.Write(respBody)
 	})))
 }
 

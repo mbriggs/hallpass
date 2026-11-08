@@ -111,7 +111,7 @@ func ReadPush(r *bufio.Reader) (Push, error) {
 				return Push{}, errorf("push has no capability list")
 			}
 			line = cmd
-			for _, c := range strings.Fields(string(caps)) {
+			for c := range strings.FieldsSeq(string(caps)) {
 				name, _, _ := strings.Cut(c, "=")
 				if name == "agent" || name == "session-id" {
 					p.Capabilities = append(p.Capabilities, c)
@@ -306,7 +306,7 @@ func validBranch(b string) bool {
 		strings.Contains(b, "@{") || strings.HasPrefix(b, "-") {
 		return false
 	}
-	for _, part := range strings.Split(b, "/") {
+	for part := range strings.SplitSeq(b, "/") {
 		if strings.HasPrefix(part, ".") || strings.HasSuffix(part, ".lock") {
 			return false
 		}

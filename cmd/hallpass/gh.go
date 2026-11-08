@@ -18,11 +18,11 @@ func gh(args []string) error {
 	if _, err := os.Stat(system.GHConfig + "/config.yml"); err != nil {
 		return fmt.Errorf("gh through hallpass needs a token, and this machine has none. Get one: sudo %s login", system.Binary)
 	}
-	real, err := realGH()
+	bin, err := realGH()
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(real, args...)
+	cmd := exec.Command(bin, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	cmd.Env = ghEnv(os.Environ())
 	return cmd.Run()

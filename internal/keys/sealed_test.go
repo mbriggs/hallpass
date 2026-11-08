@@ -12,6 +12,7 @@ import (
 // useFingerprint makes the sealed backend see fp as this machine's
 // fingerprint for the rest of the test.
 func useFingerprint(t *testing.T, fp string) {
+	t.Helper()
 	old := fingerprint
 	fingerprint = func() ([]byte, error) { return []byte(fp), nil }
 	t.Cleanup(func() { fingerprint = old })

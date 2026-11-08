@@ -21,6 +21,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -86,7 +87,7 @@ func main() {
 	record := func(e entry) {
 		b, _ := json.Marshal(e)
 		mu.Lock()
-		lf.Write(append(b, '\n'))
+		_, _ = lf.Write(append(b, '\n'))
 		mu.Unlock()
 	}
 
@@ -112,12 +113,12 @@ func main() {
 			record(entry{Time: now(), Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery, Auth: auth, Status: rec.status, Body: b})
 		}()
 		if !strings.HasPrefix(r.URL.Path, "/api/") {
-			rec.WriteHeader(404)
+			rec.WriteHeader(http.StatusNotFound)
 			return
 		}
 		if auth != "token-ok" {
-			rec.WriteHeader(401)
-			io.WriteString(rec, `{"message":"Bad credentials"}`)
+			rec.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(rec, `{"message":"Bad credentials"}`)
 			return
 		}
 		api(rec, r, strings.TrimPrefix(r.URL.Path, "/api"), string(body))
@@ -151,7 +152,7 @@ func api(w http.ResponseWriter, r *http.Request, path, body string) {
 	w.Header().Set("Content-Type", "application/json")
 	reply := func(code int, s string) {
 		w.WriteHeader(code)
-		io.WriteString(w, s)
+		_, _ = io.WriteString(w, s)
 	}
 	repo := `{"id":1,"node_id":"R_1","name":"widgets","full_name":"acme/widgets","owner":{"login":"acme"},"default_branch":"main","private":true}`
 	author := func(n string) string {
@@ -184,13 +185,13 @@ func api(w http.ResponseWriter, r *http.Request, path, body string) {
 			return
 		}
 		switch {
-		case r.Method == "GET" && len(rest) == 2 && (rest[0] == "issues" || rest[0] == "pulls"):
+		case r.Method == http.MethodGet && len(rest) == 2 && (rest[0] == "issues" || rest[0] == "pulls"):
 			reply(200, fmt.Sprintf(`{"number":%s,"title":"fake %s %s","state":"open","user":{"login":"%s"}}`, rest[1], rest[0], rest[1], author(rest[1])))
-		case r.Method == "GET" && len(rest) == 3 && rest[0] == "issues" && rest[1] == "comments":
+		case r.Method == http.MethodGet && len(rest) == 3 && rest[0] == "issues" && rest[1] == "comments":
 			reply(200, fmt.Sprintf(`{"id":%s,"body":"fake comment","user":{"login":"%s"}}`, rest[2], author(rest[2])))
-		case r.Method == "GET":
+		case r.Method == http.MethodGet:
 			reply(200, `[]`)
-		case r.Method == "POST":
+		case r.Method == http.MethodPost:
 			reply(201, `{"id":101,"html_url":"https://github.com/acme/widgets/issues/1#issuecomment-101","user":{"login":"`+login+`"}}`)
 		default:
 			reply(200, `{"id":101,"user":{"login":"`+login+`"}}`)
@@ -245,8 +246,8 @@ func runLogs() string {
 	var b bytes.Buffer
 	z := zip.NewWriter(&b)
 	w, _ := z.Create("test/1_build.txt")
-	io.WriteString(w, "2026-01-01T00:00:00Z build ok\n")
-	z.Close()
+	_, _ = io.WriteString(w, "2026-01-01T00:00:00Z build ok\n")
+	_ = z.Close()
 	return b.String()
 }
 
@@ -277,7 +278,9 @@ func nodes(body string) string {
 			IDs []string `json:"ids"`
 		} `json:"variables"`
 	}
-	json.Unmarshal([]byte(body), &req)
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		return `{"errors":[{"message":"malformed body"}]}`
+	}
 	var out []map[string]any
 	for _, id := range req.Variables.IDs {
 		typ := "PullRequest"
@@ -316,7 +319,7 @@ func serveGitSSH(root, clientKey string, record func(entry)) (addr, hostKey stri
 	cfg := &ssh.ServerConfig{PublicKeyCallback: func(_ ssh.ConnMetadata, k ssh.PublicKey) (*ssh.Permissions, error) {
 		if !bytes.Equal(k.Marshal(), want.Marshal()) {
 			record(entry{Time: now(), Method: "SSH", Path: "auth", Auth: "wrong", Status: 1})
-			return nil, fmt.Errorf("unknown key")
+			return nil, errors.New("unknown key")
 		}
 		return nil, nil
 	}}
@@ -355,28 +358,34 @@ func serveSSHConn(c net.Conn, cfg *ssh.ServerConfig, root string, record func(en
 				switch req.Type {
 				case "env":
 					var kv struct{ K, V string }
-					ssh.Unmarshal(req.Payload, &kv)
+					if ssh.Unmarshal(req.Payload, &kv) != nil {
+						_ = req.Reply(false, nil)
+						continue
+					}
 					env = append(env, kv.K+"="+kv.V)
-					req.Reply(true, nil)
+					_ = req.Reply(true, nil)
 				case "exec":
 					var cmd struct{ C string }
-					ssh.Unmarshal(req.Payload, &cmd)
-					req.Reply(true, nil)
+					if ssh.Unmarshal(req.Payload, &cmd) != nil {
+						_ = req.Reply(false, nil)
+						continue
+					}
+					_ = req.Reply(true, nil)
 					status := runGit(cmd.C, root, env, ch)
 					record(entry{Time: now(), Method: "SSH", Path: cmd.C, Auth: "key-ok", Status: int(status)})
 					var b [4]byte
 					binary.BigEndian.PutUint32(b[:], status)
-					ch.SendRequest("exit-status", false, b[:])
+					_, _ = ch.SendRequest("exit-status", false, b[:])
 					return
 				case "shell":
 					// What GitHub says to ssh -T, which status --check reads.
-					req.Reply(true, nil)
-					io.WriteString(ch.Stderr(), "Hi "+login+"! You've successfully authenticated, but GitHub does not provide shell access.\n")
+					_ = req.Reply(true, nil)
+					_, _ = io.WriteString(ch.Stderr(), "Hi "+login+"! You've successfully authenticated, but GitHub does not provide shell access.\n")
 					record(entry{Time: now(), Method: "SSH", Path: "shell", Auth: "key-ok", Status: 1})
-					ch.SendRequest("exit-status", false, []byte{0, 0, 0, 1})
+					_, _ = ch.SendRequest("exit-status", false, []byte{0, 0, 0, 1})
 					return
 				default:
-					req.Reply(false, nil)
+					_ = req.Reply(false, nil)
 				}
 			}
 		}()

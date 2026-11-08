@@ -60,7 +60,7 @@ func (r repo) pack(tip, base string) *Pack {
 func (r repo) fetch(commits []string) (map[string]Object, error) {
 	list := r.git(strings.Join(commits, "\n")+"\n", "rev-list", "--objects", "--no-walk", "--filter=blob:none", "--stdin")
 	var ids []string
-	for _, line := range strings.Split(strings.TrimSpace(list), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(list), "\n") {
 		ids = append(ids, strings.Fields(line)[0])
 	}
 	raw := r.git(strings.Join(ids, "\n")+"\n", "pack-objects", "--stdout")

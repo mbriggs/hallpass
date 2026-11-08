@@ -17,6 +17,8 @@ package policy
 // the config references, so an agent allowed push.default could send them
 // to a server of its own.
 
+import "maps"
+
 // guarded are the entries of .github a push may not change.
 var guarded = []string{"workflows", "dependabot.yml", "dependabot.yaml"}
 
@@ -78,12 +80,8 @@ func WorkflowChanges(p *Pack, updates []RefUpdate, defaultHead string, fetch Fet
 			return nil, err
 		}
 		merged := make(map[string]Object, len(objs)+len(extra))
-		for k, v := range extra {
-			merged[k] = v
-		}
-		for k, v := range objs {
-			merged[k] = v
-		}
+		maps.Copy(merged, extra)
+		maps.Copy(merged, objs)
 		objs = merged
 	}
 

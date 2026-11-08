@@ -174,7 +174,10 @@ must refuse, through `scripts/capture`, which records each request with the
 broker's verdict. The report lists each command's refusals and exit. A
 failure with no refusal is usually the fake's canned data, not hallpass:
 gh got an answer it didn't expect after the broker allowed the request.
-Extend `fakegithub` when a command stops before its main request.
+Extend `fakegithub` when a command stops before its main request, then
+run `make lint`. It is the only check that covers `scripts/fakegithub`
+and `scripts/capture`: `go vet ./...` and `go test ./...` skip them
+because `.claude` starts with a dot.
 
 Sort each refusal: a bug (a read gh needs, refused), an operation that's
 off by default, or a refusal by design. After fixing the bugs, append the

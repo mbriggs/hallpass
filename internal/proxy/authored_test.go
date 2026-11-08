@@ -28,7 +28,7 @@ func TestIssueEditOfAPRNeedsPREdit(t *testing.T) {
 	t.Cleanup(up.Close)
 	client := ghClient(t, up.URL, config.Repo{Match: "acme/widgets", Deny: []config.Grant{"pr.edit"}})
 	for n, want := range map[string]int{"7": 403, "8": 200} {
-		req, _ := http.NewRequest("PATCH", "http://api.github.com/repos/acme/widgets/issues/"+n, strings.NewReader(`{"title":"changed"}`))
+		req, _ := http.NewRequest(http.MethodPatch, "http://api.github.com/repos/acme/widgets/issues/"+n, strings.NewReader(`{"title":"changed"}`))
 		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatal(err)

@@ -31,16 +31,17 @@ func Dirs(home string) []string {
 // on purpose, and Install leaves it alone.
 func Current(dir string) bool {
 	ok := true
-	walk(func(name string, data []byte) {
+	err := walk(func(name string, data []byte) error {
 		if linked(dir, name) {
-			return
+			return nil
 		}
 		got, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil || !bytes.Equal(got, data) {
 			ok = false
 		}
+		return nil
 	})
-	return ok
+	return ok && err == nil
 }
 
 // Install replaces each skill in dir with this binary's copy, skipping skills
@@ -59,21 +60,21 @@ func Install(dir string) error {
 			return err
 		}
 	}
-	var werr error
-	walk(func(name string, data []byte) {
-		if werr != nil || linked(dir, name) {
-			return
+	return walk(func(name string, data []byte) error {
+		if linked(dir, name) {
+			return nil
 		}
 		p := filepath.Join(dir, name)
-		if werr = os.MkdirAll(filepath.Dir(p), 0o755); werr == nil {
-			werr = os.WriteFile(p, data, 0o644)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil { //nolint:gosec // skills are read by agents running as the user who installed them
+			return err
 		}
+		return os.WriteFile(p, data, 0o644) //nolint:gosec // skills are read by agents running as the user who installed them
 	})
-	return werr
 }
 
-func walk(fn func(name string, data []byte)) {
-	fs.WalkDir(files, ".", func(p string, d fs.DirEntry, err error) error {
+// walk calls fn with each embedded file, and stops at the first error.
+func walk(fn func(name string, data []byte) error) error {
+	return fs.WalkDir(files, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
@@ -81,8 +82,7 @@ func walk(fn func(name string, data []byte)) {
 		if err != nil {
 			return err
 		}
-		fn(filepath.FromSlash(p), data)
-		return nil
+		return fn(filepath.FromSlash(p), data)
 	})
 }
 

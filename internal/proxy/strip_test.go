@@ -78,7 +78,7 @@ func ghClient(t *testing.T, api string, repo config.Repo) *http.Client {
 	srv := &Server{
 		Config:    &config.Config{Token: &config.Token{Login: "mbriggs"}, Repos: []config.Repo{repo}, APIURL: api},
 		Token:     testToken,
-		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Log:       slog.New(slog.DiscardHandler),
 		Permitted: func(p peer.Peer) bool { return p.Known && p.UID == uint32(os.Getuid()) },
 	}
 	go srv.ServeGH(ln)

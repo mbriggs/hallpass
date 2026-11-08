@@ -129,14 +129,22 @@ func main() {
 		os.Exit(2)
 	}
 	if err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
+		if ee, ok := errors.AsType[*exec.ExitError](err); ok {
 			os.Exit(ee.ExitCode())
+		}
+		if code, ok := errors.AsType[exitStatusError](err); ok {
+			os.Exit(int(code))
 		}
 		fmt.Fprintln(os.Stderr, "hallpass:", err)
 		os.Exit(1)
 	}
 }
+
+// exitStatusError makes hallpass exit with a status a remote command gave,
+// without printing anything: the command already wrote its own message.
+type exitStatusError int
+
+func (e exitStatusError) Error() string { return fmt.Sprintf("exit status %d", int(e)) }
 
 func serve(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)

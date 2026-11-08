@@ -1,7 +1,6 @@
 package main
 
 import (
-	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -61,7 +60,7 @@ func TestGitSignsThroughBroker(t *testing.T) {
 	srv := &broker.Server{
 		Config: &config.Config{UIDs: []uint32{uint32(os.Getuid())}, Signing: &config.Key{Public: line}},
 		Creds:  broker.Creds{Signing: signer},
-		Log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Log:    slog.New(slog.DiscardHandler),
 	}
 	go srv.Serve(ln)
 

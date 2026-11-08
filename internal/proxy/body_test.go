@@ -28,7 +28,7 @@ func TestBodyThatNeverArrives(t *testing.T) {
 	srv := &Server{
 		Config:    &config.Config{Token: &config.Token{Login: "mbriggs"}},
 		Token:     testToken,
-		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Log:       slog.New(slog.DiscardHandler),
 		Permitted: func(p peer.Peer) bool { return p.Known && p.UID == uint32(os.Getuid()) },
 		bodyWait:  100 * time.Millisecond,
 	}

@@ -22,11 +22,12 @@ func withTrailer(body []byte) []byte {
 // fuzzRepo builds a repo whose history has deltas of both kinds and a
 // workflow edit. It returns the repo, the base commit, a commit that changes
 // only code, and one that changes a workflow.
-func fuzzRepo(t testing.TB) (r repo, base, code, evil string) {
+func fuzzRepo(tb testing.TB) (r repo, base, code, evil string) {
+	tb.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("no git")
+		tb.Skip("no git")
 	}
-	r = repo{t, t.TempDir()}
+	r = repo{tb, tb.TempDir()}
 	r.git("", "init", "-q", "-b", "main")
 	// A large file edited twice gives pack-objects something to delta.
 	big := strings.Repeat("line of code\n", 400)

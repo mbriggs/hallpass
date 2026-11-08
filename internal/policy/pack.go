@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/zlib"
-	"crypto/sha1"
+	"crypto/sha1" //nolint:gosec // git object IDs are SHA-1; this checks them, it doesn't protect anything with them
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -69,7 +69,7 @@ func (c *countingReader) ReadByte() (byte, error) {
 // stream may continue after it.
 func ReadPack(r io.Reader) (*Pack, error) {
 	cr := &countingReader{r: bufio.NewReaderSize(r, 64<<10)}
-	h := sha1.New()
+	h := sha1.New() //nolint:gosec // git object IDs are SHA-1
 	var hdr [12]byte
 	if _, err := io.ReadFull(cr, hdr[:]); err != nil {
 		return nil, errorf("truncated pack")
@@ -206,7 +206,7 @@ func resolve(o *rawObject, done map[int64]resolvedObject) (resolvedObject, error
 }
 
 func objectID(typ string, data []byte) string {
-	h := sha1.New()
+	h := sha1.New() //nolint:gosec // git object IDs are SHA-1
 	fmt.Fprintf(h, "%s %d\x00", typ, len(data))
 	h.Write(data)
 	return hex.EncodeToString(h.Sum(nil))
@@ -283,9 +283,11 @@ func readEntry(cr *countingReader, h io.Writer, off int64, inflate *uint64) (*ra
 			return nil, errorf("pack object size doesn't match")
 		}
 	} else {
+		// Stopping at the declared size means an object can't inflate past
+		// what its header claims; the read below catches any excess.
 		o.big = true
 		n, err := io.Copy(io.Discard, io.LimitReader(zr, int64(size)+1))
-		if err != nil || uint64(n) != size {
+		if err != nil || uint64(n) != size { //nolint:gosec // io.Copy never returns a negative count
 			return nil, errorf("malformed pack data")
 		}
 	}
@@ -307,14 +309,14 @@ type hashingReader struct {
 
 func (t *hashingReader) Read(p []byte) (int, error) {
 	n, err := t.cr.Read(p)
-	t.h.Write(p[:n])
+	_, _ = t.h.Write(p[:n])
 	return n, err
 }
 
 func (t *hashingReader) ReadByte() (byte, error) {
 	b, err := t.cr.ReadByte()
 	if err == nil {
-		t.h.Write([]byte{b})
+		_, _ = t.h.Write([]byte{b})
 	}
 	return b, err
 }

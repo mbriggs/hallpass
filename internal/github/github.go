@@ -56,7 +56,7 @@ var ErrBadToken = errors.New("GitHub rejected the token")
 
 // CheckToken asks GitHub who the token belongs to and what it may do.
 func CheckToken(ctx context.Context, client *http.Client, api, token string) (TokenInfo, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", api+"/user", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, api+"/user", nil)
 	if err != nil {
 		return TokenInfo{}, err
 	}
@@ -78,7 +78,7 @@ func CheckToken(ctx context.Context, client *http.Client, api, token string) (To
 		return TokenInfo{}, err
 	}
 	info := TokenInfo{Login: user.Login}
-	for _, s := range strings.Split(resp.Header.Get("X-OAuth-Scopes"), ",") {
+	for s := range strings.SplitSeq(resp.Header.Get("X-OAuth-Scopes"), ",") {
 		if s = strings.TrimSpace(s); s != "" {
 			info.Scopes = append(info.Scopes, s)
 		}
@@ -101,7 +101,7 @@ func CheckToken(ctx context.Context, client *http.Client, api, token string) (To
 // authentication, and GitHub emails the token's owner.
 func Revoke(ctx context.Context, client *http.Client, api, token string) error {
 	b, _ := json.Marshal(map[string][]string{"credentials": {token}})
-	req, err := http.NewRequestWithContext(ctx, "POST", api+"/credentials/revoke", bytes.NewReader(b))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, api+"/credentials/revoke", bytes.NewReader(b))
 	if err != nil {
 		return err
 	}
@@ -179,7 +179,7 @@ func FinishDeviceLogin(ctx context.Context, client *http.Client, web string, dc 
 }
 
 func form(ctx context.Context, client *http.Client, u string, v url.Values, out any) error {
-	req, err := http.NewRequestWithContext(ctx, "POST", u, strings.NewReader(v.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader(v.Encode()))
 	if err != nil {
 		return err
 	}

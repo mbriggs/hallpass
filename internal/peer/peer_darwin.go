@@ -33,7 +33,7 @@ func Of(conn net.Conn) Peer {
 		}
 		p.Known, p.UID = true, cred.Uid
 		if pid, err := unix.GetsockoptInt(int(fd), unix.SOL_LOCAL, unix.LOCAL_PEERPID); err == nil {
-			p.PID = int32(pid)
+			p.PID = int32(pid) //nolint:gosec // macOS pids stay below 100000
 		}
 	}); err != nil {
 		return Peer{}

@@ -310,7 +310,7 @@ func keyCommand(kind string, args []string) error {
 // restarts the broker so it loads the change.
 func commit(cfg *config.Config) error {
 	if err := cfg.Write(config.Path); err != nil {
-		return errNotWritten{err}
+		return notWrittenError{err}
 	}
 	if err := system.WriteClientConfig(cfg); err != nil {
 		return fmt.Errorf("%w. The config is saved; rerun sudo %s install", err, system.Binary)
@@ -321,17 +321,16 @@ func commit(cfg *config.Config) error {
 	return nil
 }
 
-// errNotWritten means commit failed before the config changed.
-type errNotWritten struct{ error }
+// notWrittenError means commit failed before the config changed.
+type notWrittenError struct{ error }
 
-func (e errNotWritten) Unwrap() error { return e.error }
+func (e notWrittenError) Unwrap() error { return e.error }
 
 // removeIfUnused deletes a new credential file when commit failed before the
 // config pointed at it. After that, the config needs the file.
 func removeIfUnused(path string, err error) {
-	var nw errNotWritten
-	if errors.As(err, &nw) {
-		os.Remove(path)
+	if _, ok := errors.AsType[notWrittenError](err); ok {
+		_ = os.Remove(path)
 	}
 }
 

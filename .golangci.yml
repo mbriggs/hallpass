@@ -1,0 +1,176 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - asasalint
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - containedctx
+    - copyloopvar
+    - durationcheck
+    - errcheck
+    - errname
+    - errorlint
+    - exhaustive
+    - exptostd
+    - fatcontext
+    - forbidigo
+    - forcetypeassert
+    - gocheckcompilerdirectives
+    - gocritic
+    - gomoddirectives
+    - goprintffuncname
+    - gosec
+    - govet
+    - ineffassign
+    - intrange
+    - iotamixing
+    - makezero
+    - mirror
+    - misspell
+    - modernize
+    - nakedret
+    - nilerr
+    - nilnesserr
+    - noctx
+    - nolintlint
+    - nosprintfhostport
+    - perfsprint
+    - predeclared
+    - recvcheck
+    - revive
+    - sloglint
+    - staticcheck
+    - testableexamples
+    - thelper
+    - unconvert
+    - unparam
+    - unused
+    - usestdlibvars
+    - usetesting
+    - wastedassign
+    - whitespace
+  settings:
+    errcheck:
+      # Closing a handle or writing a message to the terminal has no failure
+      # the caller could act on.
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (net.Conn).Close
+        - (net.Listener).Close
+        - (golang.org/x/crypto/ssh.Conn).Close
+        - (*golang.org/x/crypto/ssh.Session).Close
+        - (golang.org/x/crypto/ssh.Channel).Close
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (*text/tabwriter.Writer).Flush
+        # Every FlagSet is ExitOnError, so Parse exits instead of returning.
+        - (*flag.FlagSet).Parse
+    exhaustive:
+      # A default branch is how hallpass refuses what it doesn't recognize.
+      default-signifies-exhaustive: true
+    forbidigo:
+      forbid:
+        - pattern: ^(os\.Exit|log\.Fatal.*)$
+          msg: return an error; only main decides when the process exits
+        - pattern: ^http\.(DefaultClient|Get|Head|Post|PostForm)$
+          msg: build an http.Client with a Timeout
+    modernize:
+      disable:
+        # It rewrites a short += loop into a strings.Builder named for its
+        # line number.
+        - stringsbuilder
+    perfsprint:
+      concat-loop: false
+    staticcheck:
+      checks:
+        - all
+        # The defaults golangci-lint turns off: doc and naming style.
+        - -ST1000
+        - -ST1003
+        - -ST1016
+        - -ST1020
+        - -ST1021
+        - -ST1022
+        # hallpass's errors are sentences a person reads, some with usage
+        # text after them.
+        - -ST1005
+        # c.Conn.Read beside c.Conn.SetDeadline names the conn being wrapped.
+        - -QF1008
+    gocritic:
+      disabled-checks:
+        # The pack parser's bit tests read better as if/else.
+        - ifElseChain
+    usetesting:
+      # Tests that open unix sockets make their dir under /tmp, because
+      # t.TempDir's path on macOS is longer than a socket path may be.
+      os-mkdir-temp: false
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    revive:
+      rules:
+        - name: context-as-argument
+          disabled: true
+        - name: exported
+          disabled: true
+        - name: unused-parameter
+          disabled: true
+        - name: var-declaration
+          disabled: true
+        - name: var-naming
+          disabled: true
+  exclusions:
+    generated: strict
+    rules:
+      # A test that ignores an error fails on the assertion after it. Test
+      # fixtures write temp files and run git, which gosec would flag on
+      # every line.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - forcetypeassert
+          - gosec
+          - noctx
+          - unparam
+      # tools/ and the verify-hallpass fakes run on a developer's machine
+      # against local fixtures and never ship.
+      - path: ^(tools|\.claude)/
+        linters:
+          - gosec
+      # Every subcommand has the signature func(args []string) error, so the
+      # dispatch table can hold them all.
+      - path: ^cmd/hallpass/
+        linters:
+          - unparam
+        text: "args is unused"
+      # Code outside internal/ is a command, and exiting is how a command
+      # reports failure.
+      - path-except: ^internal/
+        linters:
+          - forbidigo
+      # G104 repeats errcheck. hallpass runs git, gh, ssh, and ssh-keygen by
+      # design (G204, G702), reads files at paths from its config and flags
+      # (G304, G703), and forwards requests to the API URL in its config
+      # (G704). These rules can't tell an argument an attacker controls from
+      # one hallpass chose, so the policy code and its tests own that.
+      - linters:
+          - gosec
+        text: "G104|G204|G304|G702|G703|G704"
+      # noctx is here for outbound HTTP. The local commands, socket dials,
+      # and listeners it also flags have timeouts or end with the process.
+      - linters:
+          - noctx
+        text: "os/exec\\.Command |net\\.(Listen|Dial|DialTimeout) "
+
+formatters:
+  enable:
+    - gofmt
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
