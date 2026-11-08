@@ -96,8 +96,8 @@ func (s *Server) Serve(ln net.Listener) error {
 				defer c.Close()
 				_ = c.SetDeadline(time.Now().Add(5 * time.Second))
 				s.Log.Warn("refused", "via", "ssh", "reason", "too many git connections")
-				WriteFrame(c, FrameStderr, []byte("hallpass: the broker is handling too many git connections; try again\n"))
-				WriteFrame(c, FrameExit, []byte{1})
+				_ = WriteFrame(c, FrameStderr, []byte("hallpass: the broker is handling too many git connections; try again\n"))
+				_ = WriteFrame(c, FrameExit, []byte{1})
 			}()
 		}
 	}
@@ -164,8 +164,8 @@ func (s *Server) handle(conn net.Conn, lim limits) {
 	o := &out{w: conn}
 	fail := func(msg string, attrs ...any) {
 		log.Warn("refused", append([]any{"reason", msg}, attrs...)...)
-		o.frame(FrameStderr, []byte("hallpass: "+msg+"\n"))
-		o.frame(FrameExit, []byte{1})
+		_ = o.frame(FrameStderr, []byte("hallpass: "+msg+"\n"))
+		_ = o.frame(FrameExit, []byte{1})
 	}
 	if !s.Permitted(p) {
 		fail("this uid may not use hallpass")
@@ -241,26 +241,25 @@ func (s *Server) handle(conn net.Conn, lim limits) {
 
 	if write {
 		if !s.relayPush(client, repo, rule.Ops, in, stdin, stdout, o, log, p.Procs) {
-			o.frame(FrameExit, []byte{0})
+			_ = o.frame(FrameExit, []byte{0})
 			return
 		}
 	} else {
 		go func() {
-			io.Copy(stdin, in)
+			_, _ = io.Copy(stdin, in)
 			stdin.Close()
 		}()
-		io.Copy(o.writer(FrameStdout), stdout)
+		_, _ = io.Copy(o.writer(FrameStdout), stdout)
 	}
 	code := byte(0)
 	if err := sess.Wait(); err != nil {
-		var ee *ssh.ExitError
-		if errors.As(err, &ee) {
-			code = byte(ee.ExitStatus())
+		if ee, ok := errors.AsType[*ssh.ExitError](err); ok {
+			code = byte(ee.ExitStatus()) //nolint:gosec // ssh exit statuses are 0-255
 		} else {
 			code = 1
 		}
 	}
-	o.frame(FrameExit, []byte{code})
+	_ = o.frame(FrameExit, []byte{code})
 	log.Info("allowed", "exit", code)
 }
 
@@ -271,10 +270,10 @@ func (s *Server) relayPush(client *ssh.Client, repo github.Repo, ops op.Set, in 
 	up := bufio.NewReader(stdout)
 	adv, err := readAdvertisement(up)
 	if err != nil {
-		o.frame(FrameStderr, []byte("hallpass: couldn't read GitHub's ref list: "+err.Error()+"\n"))
+		_ = o.frame(FrameStderr, []byte("hallpass: couldn't read GitHub's ref list: "+err.Error()+"\n"))
 		return false
 	}
-	o.frame(FrameStdout, noThin(adv))
+	_ = o.frame(FrameStdout, noThin(adv))
 
 	// Ask for the default branch while git sends its commands, so the round
 	// trip to GitHub overlaps with git's.
@@ -291,18 +290,18 @@ func (s *Server) relayPush(client *ssh.Client, repo github.Repo, ops op.Set, in 
 	push, err := policy.ReadPush(in)
 	if err != nil {
 		log.Warn("refused", "reason", err.Error())
-		o.frame(FrameStderr, []byte("hallpass: "+err.Error()+"\n"))
+		_ = o.frame(FrameStderr, []byte("hallpass: "+err.Error()+"\n"))
 		return false
 	}
 	if push.Probe || len(push.Updates) == 0 {
-		stdin.Write([]byte("0000"))
+		_, _ = stdin.Write([]byte("0000"))
 		stdin.Close()
-		io.Copy(o.writer(FrameStdout), up)
+		_, _ = io.Copy(o.writer(FrameStdout), up)
 		return true
 	}
 	def := <-defCh
 	if def.err != nil {
-		o.frame(FrameStderr, []byte("hallpass: couldn't check the default branch: "+def.err.Error()+"\n"))
+		_ = o.frame(FrameStderr, []byte("hallpass: couldn't check the default branch: "+def.err.Error()+"\n"))
 		return false
 	}
 	check := func(def string) map[string]string {
@@ -321,9 +320,9 @@ func (s *Server) relayPush(client *ssh.Client, repo github.Repo, ops op.Set, in 
 		// first. Nothing of it goes to GitHub. A push of only deletes has
 		// no pack, and git waits for the answer with stdin still open.
 		if push.HasPack() {
-			io.Copy(io.Discard, io.LimitReader(in, 1<<30))
+			_, _ = io.Copy(io.Discard, io.LimitReader(in, 1<<30))
 		}
-		o.frame(FrameStdout, policy.RefusePush(push, refused))
+		_ = o.frame(FrameStdout, policy.RefusePush(push, refused))
 		return false
 	}
 	if len(refused) > 0 {
@@ -363,14 +362,14 @@ func (s *Server) relayPush(client *ssh.Client, repo github.Repo, ops op.Set, in 
 		}
 	}
 
-	stdin.Write(push.Raw)
-	stdin.Write(pack.Bytes())
+	_, _ = stdin.Write(push.Raw)
+	_, _ = stdin.Write(pack.Bytes())
 	go func() {
-		io.Copy(stdin, in)
+		_, _ = io.Copy(stdin, in)
 		stdin.Close()
 	}()
 	var report bytes.Buffer
-	io.Copy(io.MultiWriter(o.writer(FrameStdout), &capped{&report, 1 << 20}), up)
+	_, _ = io.Copy(io.MultiWriter(o.writer(FrameStdout), &capped{&report, 1 << 20}), up)
 	accepted := policy.ReportStatus(report.Bytes(), push.SideBand())
 	// Record where each accepted branch now points, so agents can go on
 	// from there and from nowhere else. The default branch stays out:
@@ -432,13 +431,13 @@ func readAdvertisement(r *bufio.Reader) ([]byte, error) {
 		buf.Write(hdr[:])
 		var n int
 		if _, err := fmt.Sscanf(string(hdr[:]), "%04x", &n); err != nil {
-			return nil, fmt.Errorf("malformed pkt-line")
+			return nil, errors.New("malformed pkt-line")
 		}
 		if n == 0 {
 			return buf.Bytes(), nil
 		}
 		if n < 4 || n > 65520 {
-			return nil, fmt.Errorf("malformed pkt-line")
+			return nil, errors.New("malformed pkt-line")
 		}
 		if _, err := io.CopyN(&buf, r, int64(n-4)); err != nil {
 			return nil, err
@@ -460,7 +459,7 @@ func (s *Server) defaultBranch(client *ssh.Client, repo github.Repo) (string, er
 		return "", err
 	}
 	adv, err := readAdvertisement(bufio.NewReader(stdout))
-	stdin.Write([]byte("0000"))
+	_, _ = stdin.Write([]byte("0000"))
 	stdin.Close()
 	if err != nil {
 		return "", err
@@ -515,7 +514,7 @@ func (s *Server) Check() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	go io.Copy(io.Discard, stdout)
+	go func() { _, _ = io.Copy(io.Discard, stdout) }()
 	_ = sess.Shell()
 	// "Hi mbriggs! You've successfully authenticated, but GitHub does not
 	// provide shell access."

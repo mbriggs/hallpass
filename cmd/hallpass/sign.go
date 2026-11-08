@@ -29,7 +29,7 @@ func signCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(file+".sig", []byte(resp.Signature), 0o644)
+	return os.WriteFile(file+".sig", []byte(resp.Signature), 0o644) //nolint:gosec // the signature sits beside the signed file, like ssh-keygen's own .sig files
 }
 
 // parseKeygen reads the parts of an ssh-keygen command line hallpass cares

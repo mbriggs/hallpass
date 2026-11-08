@@ -43,11 +43,11 @@ type checkup struct {
 	st     *broker.Status
 }
 
-func (d *checkup) ok(format string, a ...any) { fmt.Fprintf(d.out, "ok    "+format+"\n", a...) }
-func (d *checkup) warn(format string, a ...any) {
+func (d *checkup) okf(format string, a ...any) { fmt.Fprintf(d.out, "ok    "+format+"\n", a...) }
+func (d *checkup) warnf(format string, a ...any) {
 	fmt.Fprintf(d.out, "warn  "+format+"\n", a...)
 }
-func (d *checkup) fail(fix, format string, a ...any) {
+func (d *checkup) failf(fix, format string, a ...any) {
 	d.failed++
 	fmt.Fprintf(d.out, "FAIL  "+format+"\n", a...)
 	if fix != "" {
@@ -57,12 +57,12 @@ func (d *checkup) fail(fix, format string, a ...any) {
 
 func (d *checkup) run() {
 	if _, err := os.Stat(system.Binary); err != nil {
-		d.fail("sudo ./hallpass install", "hallpass isn't installed: %s is missing", system.Binary)
+		d.failf("sudo ./hallpass install", "hallpass isn't installed: %s is missing", system.Binary)
 		return
 	}
 	cfg, err := config.Load(config.Path)
 	if err != nil {
-		d.fail("", "can't read %s: %v", config.Path, err)
+		d.failf("", "can't read %s: %v", config.Path, err)
 		return
 	}
 	d.cfg = cfg
@@ -79,30 +79,30 @@ func (d *checkup) run() {
 func (d *checkup) broker() bool {
 	resp, err := client.Ask(config.Socket("hallpass"), broker.Request{Op: "status"})
 	if err != nil {
-		d.fail("rerun sudo "+system.Binary+" install, then check "+system.LogHint(), "the broker doesn't answer: %v", err)
+		d.failf("rerun sudo "+system.Binary+" install, then check "+system.LogHint(), "the broker doesn't answer: %v", err)
 		return false
 	}
 	d.st = resp.Status
-	d.ok("the broker answers at %s", config.Socket("hallpass"))
+	d.okf("the broker answers at %s", config.Socket("hallpass"))
 	if want := fileHash(system.Binary); d.st.Binary != "" && want != "" && d.st.Binary != want {
-		d.fail("sudo "+system.Binary+" install", "the running broker is an older build than %s", system.Binary)
+		d.failf("sudo "+system.Binary+" install", "the running broker is an older build than %s", system.Binary)
 	}
 	for _, name := range []string{"gh", "ssh"} {
 		c, err := net.DialTimeout("unix", config.Socket(name), 2*time.Second)
 		if err != nil {
-			d.fail("rerun sudo "+system.Binary+" install", "the %s socket doesn't answer: %v", name, err)
+			d.failf("rerun sudo "+system.Binary+" install", "the %s socket doesn't answer: %v", name, err)
 			continue
 		}
 		c.Close()
 	}
 	for name, c := range map[string]*broker.CredStatus{"token": d.st.Token, "ssh key": d.st.SSH, "signing key": d.st.Signing} {
 		if c != nil && c.Problem != "" {
-			d.fail("hallpass status explains; set the credential up again", "the %s didn't load: %s", name, c.Problem)
+			d.failf("hallpass status explains; set the credential up again", "the %s didn't load: %s", name, c.Problem)
 		}
 	}
 	d.plainCredentials()
 	if d.st.Token == nil && d.st.SSH == nil && d.st.Signing == nil {
-		d.warn("the broker has no credentials yet, so nothing goes through it. See %s help", system.Binary)
+		d.warnf("the broker has no credentials yet, so nothing goes through it. See %s help", system.Binary)
 	}
 	return true
 }
@@ -119,14 +119,14 @@ func (d *checkup) plainCredentials() {
 		if t.Source == "pat" {
 			cmd = "install-pat"
 		}
-		d.warn("the token is a plain file that secret scanners recognize. Seal it by setting it up again: sudo %s %s", system.Binary, cmd)
+		d.warnf("the token is a plain file that secret scanners recognize. Seal it by setting it up again: sudo %s %s", system.Binary, cmd)
 	}
 	for _, k := range []struct {
 		kind string
 		key  *config.Key
 	}{{"ssh", d.cfg.SSH}, {"signing", d.cfg.Signing}} {
 		if k.key != nil && plain(k.key.Key) {
-			d.warn("the %s key is a plain file that secret scanners recognize. Seal it by making a new one: sudo %s %s-key remove, then %s-key create, and replace it on GitHub", k.kind, system.Binary, k.kind, k.kind)
+			d.warnf("the %s key is a plain file that secret scanners recognize. Seal it by making a new one: sudo %s %s-key remove, then %s-key create, and replace it on GitHub", k.kind, system.Binary, k.kind, k.kind)
 		}
 	}
 }
@@ -139,16 +139,16 @@ func (d *checkup) gits() {
 	}
 	gits := findGits()
 	if len(gits) == 0 {
-		d.fail("install git", "there's no git on PATH")
+		d.failf("install git", "there's no git on PATH")
 		return
 	}
 	for _, git := range gits {
 		out, _ := exec.Command(git, "config", "--system", "--get-all", "include.path").Output()
 		if !strings.Contains("\n"+string(out), "\n"+system.GitConfig+"\n") {
-			d.fail("sudo "+git+" config --system --add include.path "+system.GitConfig, "%s doesn't include %s", git, system.GitConfig)
+			d.failf("sudo "+git+" config --system --add include.path "+system.GitConfig, "%s doesn't include %s", git, system.GitConfig)
 			continue
 		}
-		d.ok("%s reads hallpass's config", git)
+		d.okf("%s reads hallpass's config", git)
 	}
 }
 
@@ -172,31 +172,31 @@ func (d *checkup) overrides() {
 	expect := func(what, want, fix string, args ...string) {
 		got, from := get(args...)
 		if got == want {
-			d.ok("%s comes from hallpass", what)
+			d.okf("%s comes from hallpass", what)
 			return
 		}
-		d.fail(fix, "%s is %q from %s, not hallpass's %q", what, got, orNowhere(from), want)
+		d.failf(fix, "%s is %q from %s, not hallpass's %q", what, got, orNowhere(from), want)
 	}
 	if d.cfg.Token != nil || d.cfg.SSH != nil {
 		const remote, want = "https://github.com/hallpass-doctor/check", "ssh://git@github.com/hallpass-doctor/check"
 		out, _ := exec.Command(git, "ls-remote", "--get-url", remote).Output()
 		if got := strings.TrimSpace(string(out)); got != want {
-			d.fail("remove url.*.insteadOf entries for github.com from your own git config", "git rewrites %s to %s, not %s", remote, got, want)
+			d.failf("remove url.*.insteadOf entries for github.com from your own git config", "git rewrites %s to %s, not %s", remote, got, want)
 		} else {
-			d.ok("git sends github.com remotes to the broker")
+			d.okf("git sends github.com remotes to the broker")
 		}
 		expect("core.sshCommand", system.Binary+" ssh", "remove core.sshCommand from your own git config", "--get", "core.sshCommand")
 		if d.cfg.SSH == nil {
-			d.warn("git goes over SSH only, and there's no SSH key, so the broker refuses git. Create one: sudo %s ssh-key create", system.Binary)
+			d.warnf("git goes over SSH only, and there's no SSH key, so the broker refuses git. Create one: sudo %s ssh-key create", system.Binary)
 		}
 		cmd := exec.Command(git, "credential", "fill")
 		cmd.Stdin = strings.NewReader("protocol=https\nhost=github.com\npath=x/y\n\n")
 		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=", "SSH_ASKPASS=")
 		out, _ = cmd.CombinedOutput()
 		if strings.Contains(string(out), "password=") {
-			d.fail("remove credential helpers for github.com from your own git config", "a credential helper other than hallpass's answers for github.com, so git could go around the broker")
+			d.failf("remove credential helpers for github.com from your own git config", "a credential helper other than hallpass's answers for github.com, so git could go around the broker")
 		} else {
-			d.ok("no other credential helper answers for github.com")
+			d.okf("no other credential helper answers for github.com")
 		}
 	}
 	if d.cfg.Signing != nil {
@@ -211,21 +211,21 @@ func (d *checkup) gh() {
 		return
 	}
 	if _, err := os.Stat(system.GHConfig + "/config.yml"); err != nil {
-		d.fail("rerun sudo "+system.Binary+" install", "%s/config.yml is missing", system.GHConfig)
+		d.failf("rerun sudo "+system.Binary+" install", "%s/config.yml is missing", system.GHConfig)
 		return
 	}
 	if _, err := realGH(); err != nil {
-		d.warn("gh isn't on PATH, so hallpass gh has nothing to run")
+		d.warnf("gh isn't on PATH, so hallpass gh has nothing to run")
 	} else {
-		d.ok("hallpass gh can run gh through the broker")
+		d.okf("hallpass gh can run gh through the broker")
 	}
 	for _, v := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN"} {
 		if os.Getenv(v) != "" {
-			d.warn("%s is set. hallpass gh drops it, but plain gh would use it instead of the broker", v)
+			d.warnf("%s is set. hallpass gh drops it, but plain gh would use it instead of the broker", v)
 		}
 	}
 	if dir := os.Getenv("GH_CONFIG_DIR"); dir != "" && dir != system.GHConfig {
-		d.warn("GH_CONFIG_DIR is %s, so plain gh uses that config, not the broker", dir)
+		d.warnf("GH_CONFIG_DIR is %s, so plain gh uses that config, not the broker", dir)
 	}
 }
 
@@ -234,31 +234,31 @@ func (d *checkup) signing() {
 		return
 	}
 	if _, err := exec.LookPath("ssh-keygen"); err != nil {
-		d.fail("install OpenSSH", "ssh-keygen isn't on PATH; git needs it to verify signatures")
+		d.failf("install OpenSSH", "ssh-keygen isn't on PATH; git needs it to verify signatures")
 	}
 	b, err := os.ReadFile(system.SigningPub)
 	if err != nil {
-		d.fail("rerun sudo "+system.Binary+" install", "%s is missing", system.SigningPub)
+		d.failf("rerun sudo "+system.Binary+" install", "%s is missing", system.SigningPub)
 		return
 	}
 	file, _, _, _, err1 := ssh.ParseAuthorizedKey(b)
 	have, _, _, _, err2 := ssh.ParseAuthorizedKey([]byte(d.st.Signing.Public))
 	if err1 != nil || err2 != nil || !bytes.Equal(file.Marshal(), have.Marshal()) {
-		d.fail("rerun sudo "+system.Binary+" install", "%s isn't the broker's signing key", system.SigningPub)
+		d.failf("rerun sudo "+system.Binary+" install", "%s isn't the broker's signing key", system.SigningPub)
 		return
 	}
-	d.ok("git signs with the broker's key")
+	d.okf("git signs with the broker's key")
 }
 
 // otherCredentials names credentials agents could use to go around the
 // broker. Hiding them is a sandbox's job, so these are warnings.
 func (d *checkup) otherCredentials() {
 	if s := os.Getenv("SSH_AUTH_SOCK"); s != "" {
-		d.warn("an SSH agent is reachable at %s. Agents can use its keys directly", s)
+		d.warnf("an SSH agent is reachable at %s. Agents can use its keys directly", s)
 	}
 	home, _ := os.UserHomeDir()
 	if b, err := os.ReadFile(filepath.Join(home, ".config", "gh", "hosts.yml")); err == nil && bytes.Contains(b, []byte("oauth_token:")) {
-		d.warn("~/.config/gh/hosts.yml holds a gh login. Agents running plain gh use it")
+		d.warnf("~/.config/gh/hosts.yml holds a gh login. Agents running plain gh use it")
 	}
 }
 

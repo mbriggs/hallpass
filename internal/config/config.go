@@ -377,12 +377,12 @@ func (c *Config) Write(path string) error {
 	if err := c.Validate(); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dirOf(path), 0o755); err != nil {
+	if err := os.MkdirAll(dirOf(path), 0o755); err != nil { //nolint:gosec // clients read the config as any user; it holds no secrets
 		return err
 	}
 	tmp := path + ".tmp"
 	_ = os.Remove(tmp)
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644) //nolint:gosec // clients read the config as any user; it holds no secrets
 	if err != nil {
 		return err
 	}

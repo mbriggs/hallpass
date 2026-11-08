@@ -41,9 +41,9 @@ func sshCmd(args []string) error {
 		return err
 	}
 	go func() {
-		io.Copy(conn, os.Stdin)
+		_, _ = io.Copy(conn, os.Stdin)
 		if uc, ok := conn.(*net.UnixConn); ok {
-			uc.CloseWrite()
+			_ = uc.CloseWrite()
 		}
 	}()
 	for {
@@ -53,12 +53,12 @@ func sshCmd(args []string) error {
 		}
 		switch kind {
 		case sshgate.FrameStdout:
-			os.Stdout.Write(data)
+			_, _ = os.Stdout.Write(data)
 		case sshgate.FrameStderr:
-			os.Stderr.Write(data)
+			_, _ = os.Stderr.Write(data)
 		case sshgate.FrameExit:
 			if len(data) == 1 && data[0] != 0 {
-				os.Exit(int(data[0]))
+				return exitStatusError(data[0])
 			}
 			return nil
 		}

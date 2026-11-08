@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -23,7 +24,7 @@ func TestParseRepo(t *testing.T) {
 func TestCheckToken(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "token good" {
-			w.WriteHeader(401)
+			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
 		w.Header().Set("X-OAuth-Scopes", "repo, read:org")
@@ -35,7 +36,7 @@ func TestCheckToken(t *testing.T) {
 	if err != nil || info.Login != "mbriggs" || len(info.Scopes) != 2 || info.Scopes[0] != "read:org" || info.Expires.Year() != 2027 {
 		t.Fatalf("CheckToken = %+v, %v", info, err)
 	}
-	if _, err := CheckToken(context.Background(), nil, srv.URL, "bad"); err != ErrBadToken {
+	if _, err := CheckToken(context.Background(), nil, srv.URL, "bad"); !errors.Is(err, ErrBadToken) {
 		t.Fatalf("bad token: %v", err)
 	}
 }

@@ -1,11 +1,11 @@
-# Build hallpass, run its tests, or cross-build release binaries.
+# Build hallpass, run its tests or lint, or cross-build release binaries.
 VERSION ?= dev
 # The guard checks the checkout that holds this Makefile, not the directory
 # make runs from.
 WORKTREE := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))bin/worktree
 GOBUILD := CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$(VERSION)"
 
-.PHONY: build test fuzz schema install dist
+.PHONY: build test lint fuzz schema install dist
 
 build:
 	$(GOBUILD) -o bin/hallpass ./cmd/hallpass
@@ -14,6 +14,20 @@ test:
 	go vet ./...
 	GOOS=darwin go vet ./...
 	go test -count=1 ./...
+
+# golangci-lint must be built with this module's Go to load its packages, so
+# make builds the pinned version into bin/ rather than using one on PATH.
+# ./... skips the verify-hallpass fakes because their directory starts with
+# a dot, so they're named here.
+GOLANGCI_LINT_VERSION := v2.15.0
+GOLANGCI_LINT := bin/golangci-lint-$(GOLANGCI_LINT_VERSION)
+lint: $(GOLANGCI_LINT)
+	$(GOLANGCI_LINT) run ./... ./.claude/skills/verify-hallpass/scripts/...
+	GOOS=darwin $(GOLANGCI_LINT) run ./...
+
+$(GOLANGCI_LINT):
+	GOBIN=$(abspath tmp/golangci-lint) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	mv tmp/golangci-lint/golangci-lint $@
 
 # Fuzzes the push checks, the only guard against workflow edits over git,
 # for FUZZTIME each. go test runs the seeds on every make test.

@@ -35,18 +35,18 @@ func (s *Server) ServeGH(ln net.Listener) error {
 func (s *Server) serveGH(w http.ResponseWriter, r *http.Request) {
 	p := peerFrom(r.Context())
 	log := s.Log.With("via", "gh", "uid", p.UID, "pid", p.PID, "procs", p.Procs)
-	graphql := r.Method == "POST" && r.RequestURI == "/graphql"
-	refuse := func(status int, msg string, attrs ...any) {
-		log.Warn("refused", append([]any{"reason", msg}, attrs...)...)
+	graphql := r.Method == http.MethodPost && r.RequestURI == "/graphql"
+	refuse := func(status int, msg string) {
+		log.Warn("refused", "reason", msg)
 		w.Header().Set("Content-Type", "application/json")
 		if graphql {
 			// gh prints GraphQL errors as "GraphQL: <message>".
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]any{"errors": []map[string]string{{"type": "FORBIDDEN", "message": "hallpass: " + msg}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"errors": []map[string]string{{"type": "FORBIDDEN", "message": "hallpass: " + msg}}})
 			return
 		}
 		w.WriteHeader(status)
-		json.NewEncoder(w).Encode(map[string]string{"message": "hallpass: " + msg})
+		_ = json.NewEncoder(w).Encode(map[string]string{"message": "hallpass: " + msg})
 	}
 
 	switch {
@@ -201,7 +201,7 @@ func (s *Server) serveGH(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(resp.StatusCode)
 		enc := json.NewEncoder(w)
 		enc.SetEscapeHTML(false)
-		enc.Encode(v)
+		_ = enc.Encode(v)
 		log.Info("allowed", "status", resp.StatusCode)
 		return
 	}
@@ -285,7 +285,7 @@ const resolveQuery = `query($ids:[ID!]!){nodes(ids:$ids){__typename
 func (s *Server) resolve(ctx context.Context, ids []string) (map[string]policy.Node, error) {
 	out := map[string]policy.Node{}
 	b, _ := json.Marshal(map[string]any{"query": resolveQuery, "variables": map[string]any{"ids": ids}})
-	req, err := http.NewRequestWithContext(ctx, "POST", s.Config.API()+"/graphql", bytes.NewReader(b))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.Config.API()+"/graphql", bytes.NewReader(b))
 	if err != nil {
 		return nil, err
 	}
@@ -331,7 +331,7 @@ func (s *Server) resolve(ctx context.Context, ids []string) (map[string]policy.N
 		if err != nil {
 			continue
 		}
-		out[ids[i]] = policy.Node{Type: n.Typename, Repo: repo, Authored: n.ViewerDidAuthor}
+		out[ids[i]] = policy.Node{Type: n.Typename, Repo: repo, Authored: n.ViewerDidAuthor} //nolint:gosec // the length check above makes len(ids) == len(r.Data.Nodes)
 	}
 	return out, nil
 }
@@ -339,7 +339,7 @@ func (s *Server) resolve(ctx context.Context, ids []string) (map[string]policy.N
 // authored reports whether the token's user wrote the object at path, and
 // whether it's a PR, which GitHub also serves on the issues routes.
 func (s *Server) authored(ctx context.Context, path string) (ok, isPR bool, err error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", s.Config.API()+path, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.Config.API()+path, nil)
 	if err != nil {
 		return false, false, err
 	}
@@ -385,7 +385,7 @@ func (s *Server) followStorage(ctx context.Context, loc string) (*http.Response,
 	if !ok && !strings.HasPrefix(loc, s.Config.API()) {
 		return nil, errors.New("GitHub redirected to " + u.Hostname() + ", which hallpass doesn't follow")
 	}
-	req, err := http.NewRequestWithContext(ctx, "GET", loc, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, loc, nil)
 	if err != nil {
 		return nil, err
 	}

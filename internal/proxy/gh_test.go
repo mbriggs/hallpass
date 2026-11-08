@@ -28,7 +28,7 @@ func TestResolveQueryMatchesSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, errs := gqlparser.LoadQuery(s, resolveQuery); len(errs) > 0 {
+	if _, errs := gqlparser.LoadQueryWithRules(s, resolveQuery, nil); len(errs) > 0 {
 		t.Fatal(errs)
 	}
 }
@@ -44,7 +44,7 @@ type fakeAPI struct {
 
 func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("Authorization") != "token "+testToken {
-		w.WriteHeader(401)
+		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
 	body, _ := io.ReadAll(r.Body)
@@ -95,7 +95,7 @@ func TestGHThroughBroker(t *testing.T) {
 		srv := &Server{
 			Config:    &config.Config{Token: &config.Token{Login: "mbriggs"}, Repos: repos, APIURL: up.URL},
 			Token:     testToken,
-			Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+			Log:       slog.New(slog.DiscardHandler),
 			Permitted: func(p peer.Peer) bool { return p.Known && p.UID == uint32(os.Getuid()) },
 		}
 		go srv.ServeGH(ln)

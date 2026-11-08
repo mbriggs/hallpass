@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net"
 	"strings"
@@ -32,7 +31,7 @@ func TestGateRefusesOldName(t *testing.T) {
 	s := &Server{
 		Config:    &config.Config{SSH: &config.Key{}, Repos: []config.Repo{{Match: "acme/old"}, {Match: "acme/down"}}},
 		Signer:    key,
-		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Log:       slog.New(slog.DiscardHandler),
 		Permitted: func(peer.Peer) bool { return true },
 		Addr:      "127.0.0.1:1", // never dialed: every case refuses first
 		CurrentName: func(_ context.Context, r github.Repo) (github.Repo, error) {

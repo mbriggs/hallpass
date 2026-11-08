@@ -21,7 +21,7 @@ func TestCurrentName(t *testing.T) {
 	var api string
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "token "+testToken {
-			w.WriteHeader(401)
+			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
 		switch r.URL.Path {
@@ -42,12 +42,12 @@ func TestCurrentName(t *testing.T) {
 			w.Header().Set("Location", "https://evil.example/repositories/7")
 			w.WriteHeader(http.StatusMovedPermanently)
 		default:
-			w.WriteHeader(404)
+			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	defer up.Close()
 	api = up.URL + "/api"
-	s := &Server{Config: &config.Config{APIURL: api}, Token: testToken, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	s := &Server{Config: &config.Config{APIURL: api}, Token: testToken, Log: slog.New(slog.DiscardHandler)}
 	name := func(r string) (string, error) {
 		repo, _ := github.ParseRepo(r)
 		cur, err := s.CurrentName(context.Background(), repo)

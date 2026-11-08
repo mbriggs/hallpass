@@ -12,6 +12,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -65,8 +66,13 @@ func main() {
 }
 
 func fetch(url string) ([]byte, error) {
-	c := &http.Client{Timeout: time.Minute}
-	resp, err := c.Get(url)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

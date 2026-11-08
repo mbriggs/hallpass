@@ -25,15 +25,15 @@ var schemaSDL string
 var (
 	schemaOnce sync.Once
 	schema     *ast.Schema
-	schemaErr  error
+	errSchema  error
 )
 
 // Schema is GitHub's public GraphQL schema, embedded at build time.
 func Schema() (*ast.Schema, error) {
 	schemaOnce.Do(func() {
-		schema, schemaErr = gqlparser.LoadSchema(&ast.Source{Name: "github.graphql", Input: schemaSDL})
+		schema, errSchema = gqlparser.LoadSchema(&ast.Source{Name: "github.graphql", Input: schemaSDL})
 	})
-	return schema, schemaErr
+	return schema, errSchema
 }
 
 var (
@@ -598,7 +598,7 @@ func noRenames(f *ast.Field) error {
 var sameRepo = map[string]bool{}
 
 func init() {
-	for _, e := range strings.Fields(`
+	for e := range strings.FieldsSeq(`
 		Repository.pullRequest Repository.pullRequests Repository.issue Repository.issues
 		Repository.issueOrPullRequest Repository.object Repository.ref Repository.refs
 		Repository.defaultBranchRef Repository.labels Repository.label Repository.milestones
@@ -640,7 +640,7 @@ func SearchRepo(q string) (github.Repo, error) {
 		return github.Repo{}, errorf("hallpass doesn't allow quotes in searches")
 	}
 	var repo string
-	for _, tok := range strings.Fields(strings.NewReplacer("(", " ", ")", " ").Replace(q)) {
+	for tok := range strings.FieldsSeq(strings.NewReplacer("(", " ", ")", " ").Replace(q)) {
 		low := strings.ToLower(tok)
 		switch {
 		case low == "or" || low == "and" || low == "not":
@@ -807,7 +807,8 @@ func normalizeNumbers(v map[string]any) map[string]any {
 	if v == nil {
 		return map[string]any{}
 	}
-	return conv(v).(map[string]any)
+	conv(v)
+	return v
 }
 
 // strictObject checks that body is one JSON object with only the given

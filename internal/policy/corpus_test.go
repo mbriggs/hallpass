@@ -44,6 +44,7 @@ var optIn = map[string]op.Op{
 }
 
 func checkCapture(t *testing.T, file string) {
+	t.Helper()
 	f, err := os.Open(file)
 	if err != nil {
 		t.Fatal(err)
@@ -84,6 +85,7 @@ func checkCapture(t *testing.T, file string) {
 }
 
 func checkGraphQL(t *testing.T, cmd, body string) {
+	t.Helper()
 	// The stub answered {}, so gh sent empty IDs where real GitHub would
 	// have given it some.
 	body = strings.ReplaceAll(body, `"id":""`, `"id":"PR_x"`)

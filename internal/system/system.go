@@ -109,7 +109,7 @@ func RootControlled(dir string) error {
 // LinkDir when that is safe.
 func installBinary() error {
 	for _, d := range []string{"/opt", "/opt/hallpass", Dir} {
-		if err := os.Mkdir(d, 0o755); err != nil && !os.IsExist(err) {
+		if err := os.Mkdir(d, 0o755); err != nil && !os.IsExist(err) { //nolint:gosec // every user runs the binaries under these directories
 			return err
 		}
 	}
@@ -117,7 +117,7 @@ func installBinary() error {
 		if err := os.Lchown(d, 0, 0); err != nil {
 			return err
 		}
-		if err := os.Chmod(d, 0o755); err != nil {
+		if err := os.Chmod(d, 0o755); err != nil { //nolint:gosec // every user runs the binaries under these directories
 			return err
 		}
 	}
@@ -164,7 +164,7 @@ func copyRoot(src, dst string) error {
 	defer in.Close()
 	tmp := dst + ".new"
 	_ = os.Remove(tmp)
-	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o755)
+	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o755) //nolint:gosec // the installed binary must be executable by every user
 	if err != nil {
 		return err
 	}

@@ -70,9 +70,9 @@ func TestRootOwnedFile(t *testing.T) {
 	if rootOwnedFile(link) == nil {
 		t.Errorf("trusted the symlink %s", link)
 	}
-	if real, err := filepath.EvalSymlinks("/bin/sh"); err == nil && RootControlled(filepath.Dir(real)) == nil {
-		if err := rootOwnedFile(real); err != nil {
-			t.Errorf("distrusted %s: %v", real, err)
+	if sh, err := filepath.EvalSymlinks("/bin/sh"); err == nil && RootControlled(filepath.Dir(sh)) == nil {
+		if err := rootOwnedFile(sh); err != nil {
+			t.Errorf("distrusted %s: %v", sh, err)
 		}
 	}
 }

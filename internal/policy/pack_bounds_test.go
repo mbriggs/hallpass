@@ -15,10 +15,11 @@ import (
 // packEntry is one object for buildPack: a whole object (typ 1-3), an
 // offset delta against an earlier entry (typ 6), or a ref delta (typ 7).
 type packEntry struct {
-	typ  byte
-	data []byte // content, or delta instructions
-	ofs  int    // for typ 6: index of the base entry
-	base string // for typ 7: base object ID
+	typ   byte
+	data  []byte // content, or delta instructions
+	ofs   int    // for typ 6: index of the base entry
+	base  string // for typ 7: base object ID
+	claim int    // if set, the size the header declares instead of len(data)
 }
 
 // buildPack writes entries as a version 2 pack with its trailer.
@@ -32,6 +33,9 @@ func buildPack(t *testing.T, entries []packEntry) []byte {
 	for i, e := range entries {
 		offs[i] = b.Len()
 		size := len(e.data)
+		if e.claim != 0 {
+			size = e.claim
+		}
 		hdr := []byte{e.typ<<4 | byte(size&0x0f)}
 		size >>= 4
 		for size > 0 {
@@ -114,6 +118,20 @@ func TestReadPackRefusesDeltaExpansion(t *testing.T) {
 	}
 	if _, err := readFast(t, raw); err == nil || !strings.Contains(err.Error(), "too large") {
 		t.Errorf("ReadPack = %v, want a too-large refusal", err)
+	}
+}
+
+// An object too large to keep is still read to its declared size, and one
+// that inflates past its declared size is refused.
+func TestReadPackBigObjectSize(t *testing.T) {
+	big := bytes.Repeat([]byte("b"), maxKept+1)
+	if _, err := readFast(t, buildPack(t, []packEntry{{typ: 3, data: big}})); err != nil {
+		t.Errorf("ReadPack of a big blob = %v, want nil", err)
+	}
+	// Declares maxKept+1 bytes and inflates to 64 MB.
+	bomb := packEntry{typ: 3, data: bytes.Repeat([]byte("b"), 64<<20), claim: maxKept + 1}
+	if _, err := readFast(t, buildPack(t, []packEntry{bomb})); err == nil {
+		t.Error("ReadPack accepted an object that inflates past its header")
 	}
 }
 

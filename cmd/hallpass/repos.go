@@ -54,8 +54,8 @@ func allow(args []string) error {
 		access = "read"
 	}
 	fmt.Fprintf(os.Stderr, "Agents may now %s %s.\n", access, match)
-	if strings.HasSuffix(match, "/*") {
-		fmt.Fprintln(os.Stderr, "That covers every current and future repo of "+strings.TrimSuffix(match, "/*")+".")
+	if before, ok := strings.CutSuffix(match, "/*"); ok {
+		fmt.Fprintln(os.Stderr, "That covers every current and future repo of "+before+".")
 	}
 	return nil
 }

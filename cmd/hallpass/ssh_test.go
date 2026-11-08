@@ -179,7 +179,7 @@ func TestGitOverSSHThroughBroker(t *testing.T) {
 		},
 		Signer:    key,
 		Ledger:    sshgate.OpenLedger(""),
-		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Log:       slog.New(slog.DiscardHandler),
 		Permitted: func(p peer.Peer) bool { return p.Known && p.UID == uint32(os.Getuid()) },
 		Addr:      addr,
 		HostKeys:  []string{hostKey},
@@ -195,7 +195,7 @@ func TestGitOverSSHThroughBroker(t *testing.T) {
 [ssh]
 	variant = ssh
 `), 0o644)
-	env := append(plain[2:], "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+gc, "HALLPASS_AS_MAIN=1", "HALLPASS_RUN_DIR="+tmp)
+	env := slices.Concat(plain[2:], []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + gc, "HALLPASS_AS_MAIN=1", "HALLPASS_RUN_DIR=" + tmp})
 	work := filepath.Join(tmp, "work")
 	if out, err := gitIn(tmp, env, "clone", "-q", "https://github.com/acme/widgets", work); err != nil {
 		t.Fatalf("clone: %s", out)

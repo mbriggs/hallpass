@@ -2,6 +2,7 @@ package system
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -65,7 +66,7 @@ func Install(cfg *config.Config) error {
 		fmt.Fprintf(os.Stderr, "Couldn't exclude /var/db/hallpass from Time Machine (%v: %s). Run: sudo tmutil addexclusion /var/db/hallpass\n", err, bytes.TrimSpace(out))
 	}
 	const logPath = "/var/log/hallpass.log"
-	logf, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
+	logf, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640) //nolint:gosec // the broker's own user and group read the audit log; nobody else can
 	if err != nil {
 		return err
 	}
@@ -75,7 +76,7 @@ func Install(cfg *config.Config) error {
 	}
 	// The audit log gets a line per request, so rotate it: 10 MB, five
 	// compressed copies.
-	if err := os.WriteFile(newsyslog, []byte("# Written by hallpass install.\n"+logPath+"\t"+user+":"+user+"\t640\t5\t10240\t*\tZ\n"), 0o644); err != nil {
+	if err := os.WriteFile(newsyslog, []byte("# Written by hallpass install.\n"+logPath+"\t"+user+":"+user+"\t640\t5\t10240\t*\tZ\n"), 0o644); err != nil { //nolint:gosec // newsyslog reads its config files as root; 0644 is what macOS ships them with
 		return err
 	}
 	if err := writeUnit("hallpass.plist", plist, 0o644); err != nil {
@@ -167,7 +168,7 @@ func freeID() (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		for _, line := range strings.Split(string(out), "\n") {
+		for line := range strings.SplitSeq(string(out), "\n") {
 			f := strings.Fields(line)
 			if len(f) == 2 {
 				if n, err := strconv.Atoi(f[1]); err == nil {
@@ -181,5 +182,5 @@ func freeID() (int, error) {
 			return id, nil
 		}
 	}
-	return 0, fmt.Errorf("no free system uid between 300 and 499")
+	return 0, errors.New("no free system uid between 300 and 499")
 }

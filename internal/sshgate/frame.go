@@ -13,8 +13,10 @@ package sshgate
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"regexp"
 	"strings"
 
@@ -36,9 +38,12 @@ const (
 
 // WriteFrame writes one frame.
 func WriteFrame(w io.Writer, kind byte, data []byte) error {
+	if len(data) > math.MaxUint32 {
+		return errors.New("frame too large")
+	}
 	var hdr [5]byte
 	hdr[0] = kind
-	binary.BigEndian.PutUint32(hdr[1:], uint32(len(data)))
+	binary.BigEndian.PutUint32(hdr[1:], uint32(len(data))) //nolint:gosec // the check above keeps len(data) within 32 bits
 	if _, err := w.Write(hdr[:]); err != nil {
 		return err
 	}
@@ -54,7 +59,7 @@ func ReadFrame(r io.Reader) (byte, []byte, error) {
 	}
 	n := binary.BigEndian.Uint32(hdr[1:])
 	if n > 1<<20 {
-		return 0, nil, fmt.Errorf("frame too large")
+		return 0, nil, errors.New("frame too large")
 	}
 	data := make([]byte, n)
 	_, err := io.ReadFull(r, data)

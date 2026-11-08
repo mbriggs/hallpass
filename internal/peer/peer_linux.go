@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 
 	"golang.org/x/sys/unix"
@@ -68,7 +69,10 @@ func proc(pid int) (cmd string, ppid int, ok bool) {
 	if len(fields) < 2 {
 		return "", 0, false
 	}
-	fmt.Sscan(fields[1], &ppid)
+	ppid, err = strconv.Atoi(fields[1])
+	if err != nil {
+		return "", 0, false
+	}
 
 	cmdline, _ := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
 	cmd = strings.TrimSpace(strings.ReplaceAll(string(cmdline), "\x00", " "))

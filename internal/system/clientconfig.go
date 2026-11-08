@@ -116,7 +116,7 @@ github.com:
 // WriteClientConfig writes the git and gh config for cfg and includes the git
 // config from git's system config.
 func WriteClientConfig(cfg *config.Config) error {
-	if err := os.MkdirAll(filepath.Dir(GitConfig), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(GitConfig), 0o755); err != nil { //nolint:gosec // the client config is read by every user
 		return err
 	}
 	if err := writeRoot(GitConfig, GitConfigText(cfg)); err != nil {
@@ -134,7 +134,7 @@ func WriteClientConfig(cfg *config.Config) error {
 		_ = os.Remove(AllowedSigners)
 	}
 	if cfg.Token != nil {
-		if err := os.MkdirAll(GHConfig, 0o755); err != nil {
+		if err := os.MkdirAll(GHConfig, 0o755); err != nil { //nolint:gosec // the gh config is read by every user; the token stays in the broker
 			return err
 		}
 		if err := writeRoot(GHConfig+"/config.yml", GHConfigText()); err != nil {
@@ -191,7 +191,7 @@ func includeGitConfig(git string) error {
 		return nil
 	}
 	out, _ := get.Output()
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		if strings.TrimSpace(line) == GitConfig {
 			return nil
 		}
@@ -213,13 +213,13 @@ func includeGitConfig(git string) error {
 // Homebrew's, runs as the user who ran sudo: its system config is in a
 // directory that user can write, so root adds nothing there.
 func gitCommand(git string, args ...string) (*exec.Cmd, error) {
-	real, err := filepath.EvalSymlinks(git)
+	resolved, err := filepath.EvalSymlinks(git)
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(real, args...)
+	cmd := exec.Command(resolved, args...)
 	cmd.Env = []string{"PATH=" + rootPath}
-	if os.Geteuid() != 0 || rootOwnedFile(real) == nil {
+	if os.Geteuid() != 0 || rootOwnedFile(resolved) == nil {
 		return cmd, nil
 	}
 	uid, err := sudoID("SUDO_UID")
@@ -257,7 +257,7 @@ func rootOwnedFile(path string) error {
 func writeRoot(path, content string) error {
 	tmp := path + ".new"
 	_ = os.Remove(tmp)
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644) //nolint:gosec // writeRoot makes world-readable files on purpose
 	if err != nil {
 		return err
 	}

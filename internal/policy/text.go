@@ -60,7 +60,7 @@ func leading(r rune) bool {
 
 // CheckText refuses PR, issue, and comment text with lines bots act on.
 func CheckText(s string) error {
-	for _, line := range strings.Split(lineBreaks.Replace(s), "\n") {
+	for line := range strings.SplitSeq(lineBreaks.Replace(s), "\n") {
 		trimmed := strings.TrimLeftFunc(line, leading)
 		for _, re := range chatOps {
 			if re.MatchString(trimmed) {

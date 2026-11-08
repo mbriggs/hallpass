@@ -1,7 +1,6 @@
 package sshgate
 
 import (
-	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -30,6 +29,7 @@ func socketPath(t *testing.T) string {
 // serveLimited starts a gate on a Unix socket with tight limits and returns
 // a way to connect to it.
 func serveLimited(t *testing.T, conns int, wait time.Duration) func() net.Conn {
+	t.Helper()
 	sock := socketPath(t)
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
@@ -38,7 +38,7 @@ func serveLimited(t *testing.T, conns int, wait time.Duration) func() net.Conn {
 	t.Cleanup(func() { ln.Close() })
 	s := &Server{
 		Config:    &config.Config{},
-		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Log:       slog.New(slog.DiscardHandler),
 		Permitted: func(peer.Peer) bool { return true },
 		limits:    limits{conns: conns, headerWait: wait},
 	}

@@ -3,6 +3,7 @@ package sshgate
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -70,7 +71,7 @@ func fetchTrees(client *ssh.Client, repo github.Repo, commits []string) (map[str
 		caps[k] = v
 	}
 	if !strings.Contains(" "+caps["fetch"]+" ", " filter ") || !strings.Contains(" "+caps["fetch"]+" ", " shallow ") {
-		return nil, fmt.Errorf("GitHub's fetch doesn't offer filter and shallow")
+		return nil, errors.New("GitHub's fetch doesn't offer filter and shallow")
 	}
 	var req bytes.Buffer
 	put := func(s string) { fmt.Fprintf(&req, "%04x%s", len(s)+4, s) }
@@ -116,7 +117,7 @@ func fetchTrees(client *ssh.Client, repo github.Repo, commits []string) (map[str
 			case 1:
 				pack.Write(line[1:])
 				if pack.Len() > 1<<30 {
-					return nil, fmt.Errorf("GitHub's answer is too large")
+					return nil, errors.New("GitHub's answer is too large")
 				}
 			case 3:
 				return nil, fmt.Errorf("GitHub: %s", strings.TrimSpace(string(line[1:])))
@@ -140,7 +141,7 @@ func pkt(r io.Reader) ([]byte, int, error) {
 	}
 	n, err := strconv.ParseUint(string(hdr[:]), 16, 16)
 	if err != nil {
-		return nil, 0, fmt.Errorf("malformed pkt-line")
+		return nil, 0, errors.New("malformed pkt-line")
 	}
 	switch {
 	case n == 0:
@@ -148,7 +149,7 @@ func pkt(r io.Reader) ([]byte, int, error) {
 	case n == 1:
 		return nil, delim, nil
 	case n < 4:
-		return nil, 0, fmt.Errorf("malformed pkt-line")
+		return nil, 0, errors.New("malformed pkt-line")
 	}
 	buf := make([]byte, n-4)
 	_, err = io.ReadFull(r, buf)
