@@ -13,7 +13,7 @@ bad() { echo "FAIL  $*"; fail=1; }
 # dir, so a recycled pid or someone else's broker never passes.
 ours() {
   local pid; pid=$(cat "$S/$1.pid" 2>/dev/null) || return 1
-  tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -qF "$S/"
+  ps -ww -o command= -p "$pid" 2>/dev/null | grep -qF "$S/"
 }
 ours fake   && ok "fakegithub pid $(cat "$S/fake.pid") is ours" || bad "fakegithub isn't running from $S"
 ours broker && ok "broker pid $(cat "$S/broker.pid") is ours"   || bad "broker isn't running from $S"

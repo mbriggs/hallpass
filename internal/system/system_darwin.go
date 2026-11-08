@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mbriggs/hallpass/internal/config"
 )
@@ -73,8 +74,26 @@ func Install(cfg *config.Config) error {
 	if err := writeUnit("hallpass.plist", plist, 0o644); err != nil {
 		return err
 	}
+	return reload()
+}
+
+// reload unloads the daemon if it's loaded, then loads it from the plist.
+// bootout can return before launchd has torn the service down, and a
+// bootstrap in that window fails with "5: Input/output error", which leaves
+// no broker running. So wait for the service to go, and retry the load.
+func reload() error {
 	_ = exec.Command("launchctl", "bootout", label).Run()
-	return run("launchctl", "bootstrap", "system", plist)
+	for i := 0; i < 50 && exec.Command("launchctl", "print", label).Run() == nil; i++ {
+		time.Sleep(200 * time.Millisecond)
+	}
+	var err error
+	for range 5 {
+		if err = run("launchctl", "bootstrap", "system", plist); err == nil {
+			return nil
+		}
+		time.Sleep(time.Second)
+	}
+	return fmt.Errorf("%w. Load it again with: sudo launchctl bootstrap system %s", err, plist)
 }
 
 func Restart() error { return run("launchctl", "kickstart", "-k", label) }

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Worktree lanes"
+  short_description: "Work in a provisioned git worktree, land it as one PR, then clean it up"
+  default_prompt: "Use $worktree to make this change in its own lane and land it as a PR."

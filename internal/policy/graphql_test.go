@@ -90,6 +90,12 @@ func TestGraphQLRefusesEscapes(t *testing.T) {
 		"duplicate key":           []byte(`{"query":"{viewer{login}}","query":"{viewer{login}}"}`),
 		"trailing data":           []byte(`{"query":"{viewer{login}}"}{"query":"x"}`),
 		"unknown field":           gql(`{repository(owner:"acme",name:"widgets"){secretSauce}}`, nil),
+		"parent branch target":    gql(`{repository(owner:"acme",name:"widgets"){parent{defaultBranchRef{target{oid}}}}}`, nil),
+		"parent branch prefix":    gql(`{repository(owner:"acme",name:"widgets"){parent{defaultBranchRef{prefix}}}}`, nil),
+		"parent issues":           gql(`{repository(owner:"acme",name:"widgets"){parent{issues(first:1){nodes{title}}}}}`, nil),
+		"parent readme":           gql(`{repository(owner:"acme",name:"widgets"){parent{object(expression:"HEAD:README"){id}}}}`, nil),
+		"org description":         gql(`{repository(owner:"acme",name:"widgets"){owner{... on Organization{description}}}}`, nil),
+		"viewer branch":           gql(`{viewer{repository(name:"secret"){defaultBranchRef{name}}}}`, nil),
 	}
 	for name, body := range cases {
 		if g, err := ClassifyGraphQL(body); err == nil {
