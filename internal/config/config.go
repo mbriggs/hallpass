@@ -49,7 +49,7 @@ func RunDir() string {
 }
 
 // Socket is where clients find one of the broker's sockets: "hallpass",
-// "git", "gh", or "ssh". HALLPASS_RUN_DIR overrides the directory, which only
+// "gh", or "ssh". HALLPASS_RUN_DIR overrides the directory, which only
 // changes where that client looks.
 func Socket(name string) string {
 	dir := RunDir()
@@ -78,9 +78,11 @@ type Config struct {
 
 	Repos []Repo `toml:"repo"`
 
-	// APIURL and GitURL point the broker at a fake GitHub in tests.
-	APIURL string `toml:"api_url,omitempty"`
-	GitURL string `toml:"git_url,omitempty"`
+	// APIURL, SSHAddr, and SSHHostKeys point the broker at a fake GitHub in
+	// tests. SSHHostKeys are authorized_keys lines that replace GitHub's.
+	APIURL      string   `toml:"api_url,omitempty"`
+	SSHAddr     string   `toml:"ssh_addr,omitempty"`
+	SSHHostKeys []string `toml:"ssh_host_keys,omitempty"`
 }
 
 // Token is the GitHub token the broker uses for HTTPS git and gh.
@@ -108,8 +110,6 @@ type Repo struct {
 	Match string `toml:"match"`
 	// Access is "write", the default, or "read".
 	Access string `toml:"access,omitempty"`
-	// Via is "https", the default when there is a token, or "ssh".
-	Via string `toml:"via,omitempty"`
 	// Allow and Deny override the global lists for the repos this entry
 	// covers. An exact entry's lists override an "owner/*" entry's.
 	Allow []Grant `toml:"allow,omitempty"`
@@ -159,7 +159,6 @@ func (g Grant) Check() error {
 // Rule is what the config says about one repo.
 type Rule struct {
 	Write bool
-	Via   string // "https" or "ssh"
 	// Ops is what agents may do there, when Write is set.
 	Ops op.Set
 }
@@ -172,8 +171,8 @@ type Decision struct {
 	From string
 }
 
-// Allowed returns the rule for repo. For access and via, an exact entry
-// wins over "owner/*".
+// Allowed returns the rule for repo. For access, an exact entry wins over
+// "owner/*".
 func (c *Config) Allowed(repo github.Repo) (Rule, bool) {
 	wild, exact := c.entries(repo)
 	best := exact
@@ -189,7 +188,7 @@ func (c *Config) Allowed(repo github.Repo) (Rule, bool) {
 			ops[d.Op] = true
 		}
 	}
-	return Rule{Write: best.Access != "read", Via: c.via(best), Ops: ops}, true
+	return Rule{Write: best.Access != "read", Ops: ops}, true
 }
 
 // Decide explains what agents may do in repo, one Decision per operation in
@@ -247,44 +246,11 @@ func (c *Config) entries(repo github.Repo) (wild, exact *Repo) {
 	return wild, exact
 }
 
-func (c *Config) via(e *Repo) string {
-	switch {
-	case e.Via != "":
-		return e.Via
-	case c.Token == nil && c.SSH != nil:
-		return "ssh"
-	default:
-		return "https"
-	}
-}
-
-// SSHOwners lists owners whose entries route over SSH while a token exists.
-// The generated git config sends them to SSH instead of HTTPS.
-func (c *Config) SSHOwners() []string {
-	var out []string
-	seen := map[string]bool{}
-	for i := range c.Repos {
-		owner, _, _ := strings.Cut(c.Repos[i].Match, "/")
-		if c.via(&c.Repos[i]) == "ssh" && !seen[strings.ToLower(owner)] {
-			seen[strings.ToLower(owner)] = true
-			out = append(out, owner)
-		}
-	}
-	return out
-}
-
 func (c *Config) API() string {
 	if c.APIURL != "" {
 		return strings.TrimRight(c.APIURL, "/")
 	}
 	return "https://api.github.com"
-}
-
-func (c *Config) Git() string {
-	if c.GitURL != "" {
-		return strings.TrimRight(c.GitURL, "/")
-	}
-	return "https://github.com"
 }
 
 // Load reads the config. A missing file is an empty config: the broker runs
@@ -339,9 +305,6 @@ func (c *Config) Validate() error {
 		}
 		if err := checkGrants("repo "+r.Match, r.Allow, r.Deny, false); err != nil {
 			return err
-		}
-		if r.Via != "" && r.Via != "https" && r.Via != "ssh" {
-			return fmt.Errorf("repo %s: via must be https or ssh", r.Match)
 		}
 	}
 	return nil

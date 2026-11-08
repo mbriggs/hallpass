@@ -27,7 +27,7 @@ Preconditions: `cd /tmp`.
 - **Read-only repo.** `gh api -X POST repos/acme/readonly/issues -f title=x`
   exits 1 with `hallpass: agents may only read acme/readonly`.
 - **Operation off.** `gh api -X PUT repos/acme/widgets/pulls/1/merge` exits 1
-  with `hallpass: agents may not merge PRs or add them to the merge queue in acme/widgets. To allow it: sudo /opt/hallpass/bin/hallpass policy allow pr.merge --repo acme/widgets`.
+  with `hallpass: agents may not merge PRs, add them to the merge queue, or turn auto-merge on or off in acme/widgets. To allow it: sudo /opt/hallpass/bin/hallpass policy allow pr.merge --repo acme/widgets`.
   No `PUT` reaches the fake.
 - **Refused route.** `gh api repos/acme/widgets/actions/secrets` exits 1 with
   `hallpass: hallpass doesn't allow reading repos/{repo}/actions/secrets. Reads are limited to code, PRs, issues, checks, and Actions runs`.

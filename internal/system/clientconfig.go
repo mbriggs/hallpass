@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/mbriggs/hallpass/internal/config"
 )
@@ -26,7 +27,6 @@ func GitConfigText(cfg *config.Config) string {
 	b.WriteString("# Written by hallpass from " + config.Path + ". Don't edit; rerun\n")
 	b.WriteString("# sudo " + Binary + " install after changing credentials.\n")
 	b.WriteString("# Included from git's system config.\n")
-	run := config.RunDir()
 
 	forms := func(base string) string {
 		return fmt.Sprintf("\tinsteadOf = https://github.com/%s\n\tinsteadOf = git@github.com:%s\n\tinsteadOf = ssh://git@github.com/%s\n", base, base, base)
@@ -37,22 +37,11 @@ func GitConfigText(cfg *config.Config) string {
 # credentials and checks every request.
 `)
 	}
-	if cfg.Token != nil {
-		b.WriteString(`
-# HTTPS: the URL is http:// because the broker, not git, makes the TLS
-# connection to GitHub.
-[url "http://github.com/"]
-` + forms("") + `[http "http://github.com/"]
-	proxy = socks5h://localhost` + run + `/git.sock
-	followRedirects = false
-`)
-		for _, owner := range cfg.SSHOwners() {
-			b.WriteString("\n# " + owner + " goes over SSH.\n[url \"ssh://git@github.com/" + owner + "/\"]\n" + forms(owner+"/"))
-		}
-	} else if cfg.SSH != nil {
+	// git reaches GitHub over SSH only. With a token and no SSH key, git
+	// still goes to the broker, which refuses it and says to create a key,
+	// so it can't fall through to the user's own credentials.
+	if cfg.Token != nil || cfg.SSH != nil {
 		b.WriteString("\n[url \"ssh://git@github.com/\"]\n" + forms(""))
-	}
-	if cfg.SSH != nil {
 		b.WriteString(`
 # The wrapper sends github.com to the broker and runs ssh for other hosts.
 [core]
@@ -166,9 +155,6 @@ func WriteClientConfig(cfg *config.Config) error {
 		if err := includeGitConfig(git); err != nil {
 			return err
 		}
-		if cfg.Token != nil && !gitAtLeast(git, 2, 47) {
-			fmt.Fprintf(os.Stderr, "%s is older than 2.47, which git over HTTPS through hallpass needs. Its github.com remotes will fail to connect. Use a newer git.\n", git)
-		}
 	}
 	return nil
 }
@@ -189,7 +175,7 @@ func gitBinaries() []string {
 	if runtime.GOOS == "darwin" {
 		// /usr/bin/git is a shim. Without the Command Line Tools it opens
 		// their installer instead of running.
-		if exec.Command("xcode-select", "-p").Run() == nil {
+		if exec.Command("/usr/bin/xcode-select", "-p").Run() == nil {
 			add("/usr/bin/git")
 		}
 		add("/opt/homebrew/bin/git")
@@ -199,33 +185,72 @@ func gitBinaries() []string {
 }
 
 func includeGitConfig(git string) error {
-	out, _ := exec.Command(git, "config", "--system", "--get-all", "include.path").Output()
+	get, err := gitCommand(git, "config", "--system", "--get-all", "include.path")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Skipped %s: %v. Add this to its system config:\n  [include]\n  \tpath = %s\n", git, err, GitConfig)
+		return nil
+	}
+	out, _ := get.Output()
 	for _, line := range strings.Split(string(out), "\n") {
 		if strings.TrimSpace(line) == GitConfig {
 			return nil
 		}
 	}
-	if err := run(git, "config", "--system", "--add", "include.path", GitConfig); err != nil {
+	add, err := gitCommand(git, "config", "--system", "--add", "include.path", GitConfig)
+	if err != nil {
 		return err
+	}
+	add.Stdout, add.Stderr = os.Stderr, os.Stderr
+	if err := add.Run(); err != nil {
+		return fmt.Errorf("%s config --system --add include.path: %w", git, err)
 	}
 	fmt.Fprintf(os.Stderr, "Included %s from the system config of %s.\n", GitConfig, git)
 	return nil
 }
 
-// gitAtLeast reports whether git's version is at least major.minor.
-func gitAtLeast(git string, major, minor int) bool {
-	out, err := exec.Command(git, "version").Output()
+// gitCommand prepares git to run from a root command. It runs as root only
+// when root controls the binary. A git the user could replace, such as
+// Homebrew's, runs as the user who ran sudo: its system config is in a
+// directory that user can write, so root adds nothing there.
+func gitCommand(git string, args ...string) (*exec.Cmd, error) {
+	real, err := filepath.EvalSymlinks(git)
 	if err != nil {
-		return false
+		return nil, err
 	}
-	// "git version 2.50.1 (Apple Git-155)"
-	f := strings.Fields(string(out))
-	if len(f) < 3 {
-		return false
+	cmd := exec.Command(real, args...)
+	cmd.Env = []string{"PATH=" + rootPath}
+	if os.Geteuid() != 0 || rootOwnedFile(real) == nil {
+		return cmd, nil
 	}
-	var ma, mi int
-	fmt.Sscanf(f[2], "%d.%d", &ma, &mi)
-	return ma > major || (ma == major && mi >= minor)
+	uid, err := sudoID("SUDO_UID")
+	if err != nil {
+		return nil, fmt.Errorf("root doesn't control it and %w", err)
+	}
+	gid, err := sudoID("SUDO_GID")
+	if err != nil {
+		return nil, fmt.Errorf("root doesn't control it and %w", err)
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uid, Gid: gid, Groups: []uint32{}}}
+	return cmd, nil
+}
+
+// rootOwnedFile checks that only root can change the file at path or swap it
+// for another.
+func rootOwnedFile(path string) error {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	switch {
+	case !fi.Mode().IsRegular():
+		return fmt.Errorf("%s is not a regular file", path)
+	case !ok || st.Uid != 0:
+		return fmt.Errorf("%s is not owned by root", path)
+	case fi.Mode().Perm()&0o022 != 0:
+		return fmt.Errorf("%s is writable by users other than root", path)
+	}
+	return RootControlled(filepath.Dir(path))
 }
 
 // writeRoot replaces path with a root-owned, world-readable file.

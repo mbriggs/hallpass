@@ -33,6 +33,8 @@ func TestResolveQueryMatchesSchema(t *testing.T) {
 	}
 }
 
+const testToken = "ghp_testtoken"
+
 // fakeAPI answers the GraphQL and REST calls gh and the broker make, and
 // records what reached it.
 type fakeAPI struct {
@@ -93,7 +95,6 @@ func TestGHThroughBroker(t *testing.T) {
 		srv := &Server{
 			Config:    &config.Config{Token: &config.Token{Login: "mbriggs"}, Repos: repos, APIURL: up.URL},
 			Token:     testToken,
-			Ledger:    OpenLedger(""),
 			Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 			Permitted: func(p peer.Peer) bool { return p.Known && p.UID == uint32(os.Getuid()) },
 		}
@@ -130,8 +131,8 @@ func TestGHThroughBroker(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"pr", "merge", "1", "-R", "acme/widgets", "--squash"}, "hallpass: agents may not merge PRs or add them to the merge queue in acme/widgets. To allow it: sudo /opt/hallpass/bin/hallpass policy allow pr.merge --repo acme/widgets"},
-		{[]string{"pr", "review", "1", "-R", "acme/widgets", "--approve"}, "hallpass: agents may not approve PRs in acme/widgets"},
+		{[]string{"pr", "merge", "1", "-R", "acme/widgets", "--squash"}, "hallpass: agents may not merge PRs, add them to the merge queue, or turn auto-merge on or off in acme/widgets. To allow it: sudo /opt/hallpass/bin/hallpass policy allow pr.merge --repo acme/widgets"},
+		{[]string{"pr", "review", "1", "-R", "acme/widgets", "--approve"}, "hallpass: agents may not approve PRs or request changes in acme/widgets. To allow it: sudo /opt/hallpass/bin/hallpass policy allow review.verdict --repo acme/widgets"},
 		{[]string{"pr", "comment", "1", "-R", "acme/widgets", "-b", "/merge"}, "bots act on lines like it"},
 		{[]string{"api", "repos/acme/secret"}, "isn't in hallpass's allowlist"},
 		{[]string{"api", "-X", "PUT", "repos/acme/widgets/pulls/1/merge"}, "hallpass: agents may not merge PRs"},
@@ -167,4 +168,28 @@ func TestGHThroughBroker(t *testing.T) {
 		}
 	}
 	_ = json.Valid
+}
+
+// A node's repo can change when someone transfers the repo, so the broker
+// must ask again on every request rather than trust an earlier answer.
+func TestResolveAsksEveryTime(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	repo := "acme/widgets"
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		io.WriteString(w, `{"data":{"nodes":[{"__typename":"Issue","repository":{"nameWithOwner":"`+repo+`"},"viewerDidAuthor":true}]}}`)
+	}))
+	t.Cleanup(up.Close)
+	s := &Server{Config: &config.Config{APIURL: up.URL}, Token: testToken}
+	if n, err := s.resolve(t.Context(), []string{"I_1"}); err != nil || n["I_1"].Repo.String() != "acme/widgets" {
+		t.Fatalf("first resolve: %v, %v", n, err)
+	}
+	mu.Lock()
+	repo = "evilcorp/secret"
+	mu.Unlock()
+	if n, err := s.resolve(t.Context(), []string{"I_1"}); err != nil || n["I_1"].Repo.String() != "evilcorp/secret" {
+		t.Fatalf("after a transfer, resolve still says %v, %v", n, err)
+	}
 }

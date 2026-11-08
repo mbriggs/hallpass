@@ -37,29 +37,44 @@ if [ ! -s "$S/keys/signing.pem" ]; then
   chmod 600 "$S/keys/signing.pem"
 fi
 ssh-keygen -y -f "$S/keys/signing.pem" > "$S/keys/signing.pub"
+# The broker's SSH key, which the fake accepts for git.
+if [ ! -s "$S/keys/ssh.pem" ]; then
+  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$S/keys/ssh.pem" 2>/dev/null
+  chmod 600 "$S/keys/ssh.pem"
+fi
+ssh-keygen -y -f "$S/keys/ssh.pem" > "$S/keys/ssh.pub"
 
-# Seed GitHub's side: acme/widgets with main and a colleague's branch.
+# Seed GitHub's side: acme/widgets with main and a colleague's branch, and a
+# workflow file for the workflow check to guard.
 bare="$S/gh-root/acme/widgets.git"
 plain=(env GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_AUTHOR_NAME=seed GIT_AUTHOR_EMAIL=seed@example.com GIT_COMMITTER_NAME=seed GIT_COMMITTER_EMAIL=seed@example.com)
 if [ ! -d "$bare" ]; then
   "${plain[@]}" git init -q --bare -b main "$bare"
-  "${plain[@]}" git -C "$bare" config http.receivepack true
+  # What GitHub allows, and the workflow check needs: blobless fetches of
+  # any commit.
+  "${plain[@]}" git -C "$bare" config uploadpack.allowFilter true
+  "${plain[@]}" git -C "$bare" config uploadpack.allowAnySHA1InWant true
   seed=$(mktemp -d "$S/seed.XXXX")
   "${plain[@]}" git init -q -b main "$seed"
   echo widgets > "$seed/README"
-  "${plain[@]}" git -C "$seed" add README
+  mkdir -p "$seed/.github/workflows"
+  printf 'on: push\njobs: {}\n' > "$seed/.github/workflows/ci.yml"
+  "${plain[@]}" git -C "$seed" add README .github
   "${plain[@]}" git -C "$seed" commit -q -m seed
   "${plain[@]}" git -C "$seed" push -q "$bare" main main:colleague
   rm -rf "$seed"
 fi
 
 # The fake GitHub.
-rm -f "$S/fake.url"
+rm -f "$S/fake.url" "$S/fake.ssh"
 nohup "$S/bin/fakegithub" -root "$S/gh-root" -token-file "$S/keys/token" \
-  -log "$S/evidence/github-requests.jsonl" -ready "$S/fake.url" > "$S/fake.log" 2>&1 &
+  -log "$S/evidence/github-requests.jsonl" -ready "$S/fake.url" \
+  -ssh-client-key "$(cat "$S/keys/ssh.pub")" -ssh-ready "$S/fake.ssh" > "$S/fake.log" 2>&1 &
 echo $! > "$S/fake.pid"
-for _ in $(seq 50); do [ -s "$S/fake.url" ] && break; sleep 0.1; done
-[ -s "$S/fake.url" ] || { echo "up.sh: fakegithub didn't start; see $S/fake.log" >&2; exit 1; }
+for _ in $(seq 50); do [ -s "$S/fake.url" ] && [ -s "$S/fake.ssh" ] && break; sleep 0.1; done
+[ -s "$S/fake.url" ] && [ -s "$S/fake.ssh" ] || { echo "up.sh: fakegithub didn't start; see $S/fake.log" >&2; exit 1; }
+ssh_addr=$(sed -n 1p "$S/fake.ssh")
+ssh_host_key=$(sed -n 2p "$S/fake.ssh")
 url=$(cat "$S/fake.url")
 
 # The broker's config. protected_branches gives the protected-branch
@@ -68,13 +83,18 @@ cat > "$S/hallpass.toml" <<EOF
 uids = [$(id -u)]
 protected_branches = ["release/*"]
 api_url = "$url/api"
-git_url = "$url"
+ssh_addr = "$ssh_addr"
+ssh_host_keys = ["$ssh_host_key"]
 
 [token]
 secret = "file:$S/keys/token"
 source = "pat"
 login = "verifier"
 created = $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+[ssh]
+key = "file:$S/keys/ssh.pem"
+public = "$(cat "$S/keys/ssh.pub")"
 
 [signing]
 key = "file:$S/keys/signing.pem"
@@ -92,19 +112,20 @@ EOF
 nohup env HALLPASS_RUN_DIR="$S/run" "$S/bin/hallpass" serve --config "$S/hallpass.toml" > "$S/evidence/broker.log" 2>&1 &
 echo $! > "$S/broker.pid"
 for _ in $(seq 50); do grep -q 'msg=serving' "$S/evidence/broker.log" 2>/dev/null && break; sleep 0.1; done
-grep -q 'msg=serving token=true ssh=false signing=true' "$S/evidence/broker.log" || {
+grep -q 'msg=serving token=true ssh=true signing=true' "$S/evidence/broker.log" || {
   echo "up.sh: broker didn't come up with token and signing; see $S/evidence/broker.log" >&2; cat "$S/evidence/broker.log" >&2; exit 1; }
 
 # Client side: what hallpass install writes, pointed at the scratch sockets,
 # with no system or global git config and no credentials anywhere.
 cat > "$S/gitconfig" <<EOF
-[url "http://github.com/"]
+[url "ssh://git@github.com/"]
 	insteadOf = https://github.com/
 	insteadOf = git@github.com:
 	insteadOf = ssh://git@github.com/
-[http "http://github.com/"]
-	proxy = socks5h://localhost$S/run/git.sock
-	followRedirects = false
+[core]
+	sshCommand = $S/bin/hallpass ssh
+[ssh]
+	variant = ssh
 [credential "https://github.com"]
 	helper =
 	helper = $S/bin/hallpass credential

@@ -10,7 +10,7 @@ import (
 )
 
 type repo struct {
-	t   *testing.T
+	t   testing.TB
 	dir string
 }
 

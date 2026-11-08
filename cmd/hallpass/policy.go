@@ -105,10 +105,7 @@ func policyEdit(verb string, args []string) error {
 		case "deny":
 			fmt.Fprintf(os.Stderr, "Agents may no longer %s in %s.\n", does, where)
 		case "reset":
-			fmt.Fprintf(os.Stderr, "%s in %s now follows the broader setting.\n", g, where)
-		}
-		for _, e := range overriding(cfg, match, g) {
-			fmt.Fprintf(os.Stderr, "  %s has its own setting for %s, which still applies there.\n", e, g)
+			fmt.Fprintf(os.Stderr, "%s in %s now follows the broader setting. hallpass policy show OWNER/REPO shows what applies.\n", g, where)
 		}
 	}
 	if removed {
@@ -132,8 +129,8 @@ func describe(g config.Grant) string {
 
 // editPolicy changes one layer of cfg: the global lists when match is "",
 // else the allowlist entry with that match. A repo with no entry of its own
-// gets one when OWNER/* covers it, with the same access and via, and added
-// reports that.
+// gets one when OWNER/* covers it, with the same access, and added reports
+// that.
 func editPolicy(cfg *config.Config, verb, match string, grants []config.Grant) (added bool, err error) {
 	allow, deny := &cfg.Allow, &cfg.Deny
 	if match != "" {
@@ -143,7 +140,7 @@ func editPolicy(cfg *config.Config, verb, match string, grants []config.Grant) (
 			if w < 0 || verb == "reset" {
 				return false, fmt.Errorf("%s isn't in the allowlist. Allow it first: sudo %s allow %s", match, system.Binary, match)
 			}
-			cfg.Repos = append(cfg.Repos, config.Repo{Match: match, Access: cfg.Repos[w].Access, Via: cfg.Repos[w].Via})
+			cfg.Repos = append(cfg.Repos, config.Repo{Match: match, Access: cfg.Repos[w].Access})
 			i, added = len(cfg.Repos)-1, true
 		}
 		allow, deny = &cfg.Repos[i].Allow, &cfg.Repos[i].Deny
@@ -162,8 +159,7 @@ func editPolicy(cfg *config.Config, verb, match string, grants []config.Grant) (
 }
 
 // offerRemove asks whether to drop the entry at match once it holds no
-// policy and OWNER/* gives the same access and via, so removing it changes
-// nothing.
+// policy and OWNER/* gives the same access, so removing it changes nothing.
 // It removes the entry from cfg if the answer is yes.
 func offerRemove(cfg *config.Config, match string) bool {
 	i, w := entry(cfg, match), entry(cfg, wildcard(match))
@@ -171,7 +167,7 @@ func offerRemove(cfg *config.Config, match string) bool {
 		return false
 	}
 	e := cfg.Repos[i]
-	if len(e.Allow)+len(e.Deny) > 0 || e.Access != cfg.Repos[w].Access || e.Via != cfg.Repos[w].Via {
+	if len(e.Allow)+len(e.Deny) > 0 || e.Access != cfg.Repos[w].Access {
 		return false
 	}
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
@@ -196,21 +192,6 @@ func entry(cfg *config.Config, match string) int {
 func wildcard(match string) string {
 	owner, _, _ := strings.Cut(match, "/")
 	return owner + "/*"
-}
-
-// overriding lists the entries more specific than the layer at match that
-// name g, so their setting wins over the one just changed.
-func overriding(cfg *config.Config, match string, g config.Grant) []string {
-	owner, name, _ := strings.Cut(match, "/")
-	var out []string
-	for _, r := range cfg.Repos {
-		rOwner, rName, _ := strings.Cut(r.Match, "/")
-		narrower := match == "" || (name == "*" && rName != "*" && strings.EqualFold(rOwner, owner))
-		if narrower && (slices.Contains(r.Allow, g) || slices.Contains(r.Deny, g)) {
-			out = append(out, r.Match)
-		}
-	}
-	return out
 }
 
 func policyShow(args []string) error {

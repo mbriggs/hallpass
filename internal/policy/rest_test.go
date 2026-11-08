@@ -38,6 +38,13 @@ func TestRESTCorpus(t *testing.T) {
 		if target == "/graphql" {
 			continue
 		}
+		// Some records were captured against a stub that answered {}, so gh
+		// followed an empty URL to "/" and read its IDs as 0. Real GitHub
+		// would have given it some, as TestGHCorpus also assumes.
+		if target == "/" || strings.HasPrefix(target, "/?") {
+			continue
+		}
+		target = zeroID.ReplaceAllString(target, "/1$1")
 		n++
 		_, err := ClassifyREST(method, target, []byte(rec.Body), nil)
 		if why, ok := refusedREST[method+" "+target]; ok {
@@ -68,9 +75,9 @@ func TestRESTOps(t *testing.T) {
 		{"POST", "/repos/acme/widgets/issues/3/labels", `{"labels":["bug"]}`, []op.Op{op.Labels}},
 		{"POST", "/repos/acme/widgets/pulls/3/reviews", `{"body":"nit","event":"COMMENT"}`, []op.Op{op.ReviewComment}},
 		{"POST", "/repos/acme/widgets/pulls/3/reviews", `{"body":"nit"}`, []op.Op{op.ReviewComment}},
-		{"POST", "/repos/acme/widgets/pulls/3/reviews", `{"event":"APPROVE"}`, []op.Op{op.ReviewComment, op.ReviewApprove}},
-		{"POST", "/repos/acme/widgets/pulls/3/reviews", `{"event":"REQUEST_CHANGES"}`, []op.Op{op.ReviewComment, op.ReviewChanges}},
-		{"POST", "/repos/acme/widgets/pulls/3/reviews/9/events", `{"event":"APPROVE"}`, []op.Op{op.ReviewComment, op.ReviewApprove}},
+		{"POST", "/repos/acme/widgets/pulls/3/reviews", `{"event":"APPROVE"}`, []op.Op{op.ReviewComment, op.ReviewVerdict}},
+		{"POST", "/repos/acme/widgets/pulls/3/reviews", `{"event":"REQUEST_CHANGES"}`, []op.Op{op.ReviewComment, op.ReviewVerdict}},
+		{"POST", "/repos/acme/widgets/pulls/3/reviews/9/events", `{"event":"APPROVE"}`, []op.Op{op.ReviewComment, op.ReviewVerdict}},
 		{"PUT", "/repos/acme/widgets/pulls/3/merge", `{"merge_method":"squash"}`, []op.Op{op.PRMerge}},
 		{"PUT", "/repos/acme/widgets/pulls/3/merge", ``, []op.Op{op.PRMerge}},
 		{"POST", "/repos/acme/widgets/actions/runs/1/rerun", ``, []op.Op{op.WorkflowRerun}},
@@ -145,6 +152,9 @@ func TestClassifyREST(t *testing.T) {
 		{"GET", "/orgs/acme/repos", ``},
 		{"GET", "/search/code?q=org%3Aacme+password", ``},
 		{"GET", "/search/issues?q=repo%3Aacme%2Fa+repo%3Aacme%2Fb", ``},
+		// A second q would reach GitHub without the repo check.
+		{"GET", "/search/issues?q=repo%3Aacme%2Fwidgets&q=repo%3Aacme%2Fsecret", ``},
+		{"GET", "/repos/acme/widgets/pulls?state=open&state=closed", ``},
 		{"GET", "/?per_page=100", ``},
 		{"POST", "/repos/acme/widgets/issues/3/comments", `{"body":"a","body":"/merge"}`},
 	}

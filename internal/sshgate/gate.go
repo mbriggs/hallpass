@@ -31,26 +31,47 @@ var GitHubHostKeys = []string{
 	"ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=",
 }
 
-// Ledger is the record of branches agents created, shared with HTTPS git.
-type Ledger interface {
-	Has(repo github.Repo, branch string) bool
-	Add(repo github.Repo, branch, procs string) error
-}
-
 // Server serves the SSH socket.
 type Server struct {
 	Config    *config.Config
 	Signer    crypto.Signer
-	Ledger    Ledger
+	Ledger    *Ledger
 	Log       *slog.Logger
 	Permitted func(peer.Peer) bool
 	// Addr and HostKeys default to github.com:22 and GitHubHostKeys. Tests
 	// point them at a local server.
 	Addr     string
 	HostKeys []string
+
+	limits limits
+}
+
+// limits bounds the gate's connections: how many it serves at once, how
+// long a client has to send its header, and how long a connection may go
+// with nothing moving in either direction. Zero fields take the defaults;
+// tests set tighter ones.
+type limits struct {
+	conns      int
+	headerWait time.Duration
+	idle       time.Duration
+}
+
+func (l limits) withDefaults() limits {
+	if l.conns == 0 {
+		l.conns = 64
+	}
+	if l.headerWait == 0 {
+		l.headerWait = 10 * time.Second
+	}
+	if l.idle == 0 {
+		l.idle = 10 * time.Minute
+	}
+	return l
 }
 
 func (s *Server) Serve(ln net.Listener) error {
+	lim := s.limits.withDefaults()
+	slots := make(chan struct{}, lim.conns)
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -59,8 +80,41 @@ func (s *Server) Serve(ln net.Listener) error {
 			}
 			return err
 		}
-		go s.handle(c)
+		select {
+		case slots <- struct{}{}:
+			go func() {
+				defer func() { <-slots }()
+				s.handle(c, lim)
+			}()
+		default:
+			go func() {
+				defer c.Close()
+				_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+				s.Log.Warn("refused", "via", "ssh", "reason", "too many git connections")
+				WriteFrame(c, FrameStderr, []byte("hallpass: the broker is handling too many git connections; try again\n"))
+				WriteFrame(c, FrameExit, []byte{1})
+			}()
+		}
 	}
+}
+
+// idleConn pushes its deadline forward by timeout on every read and write,
+// so a long clone keeps going while a connection where nothing moves is
+// cut. SetDeadline moves the deadline of a read or write already waiting,
+// so traffic either way keeps both alive.
+type idleConn struct {
+	net.Conn
+	timeout time.Duration
+}
+
+func (c *idleConn) Read(p []byte) (int, error) {
+	_ = c.Conn.SetDeadline(time.Now().Add(c.timeout))
+	return c.Conn.Read(p)
+}
+
+func (c *idleConn) Write(p []byte) (int, error) {
+	_ = c.Conn.SetDeadline(time.Now().Add(c.timeout))
+	return c.Conn.Write(p)
 }
 
 // out serializes frames from the goroutines relaying stdout and stderr.
@@ -93,9 +147,14 @@ func (f frameFunc) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-func (s *Server) handle(conn net.Conn) {
+func (s *Server) handle(conn net.Conn, lim limits) {
 	defer conn.Close()
+	// peer.Of needs the Unix socket itself, so wrap only after it.
 	p := peer.Of(conn)
+	// The header comes first and is small, so it gets headerWait; the
+	// transfer after it gets idle.
+	ic := &idleConn{Conn: conn, timeout: lim.headerWait}
+	conn = ic
 	log := s.Log.With("via", "ssh", "uid", p.UID, "pid", p.PID, "procs", p.Procs)
 	o := &out{w: conn}
 	fail := func(msg string, attrs ...any) {
@@ -108,9 +167,8 @@ func (s *Server) handle(conn net.Conn) {
 		return
 	}
 	in := bufio.NewReader(conn)
-	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	line, err := in.ReadSlice('\n')
-	_ = conn.SetReadDeadline(time.Time{})
+	ic.timeout = lim.idle
 	if err != nil {
 		fail("malformed request")
 		return
@@ -134,9 +192,6 @@ func (s *Server) handle(conn net.Conn) {
 		return
 	case write && !rule.Write:
 		fail("agents may only read " + repo.String())
-		return
-	case rule.Via != "ssh":
-		fail(repo.String() + " goes through hallpass over HTTPS, not SSH")
 		return
 	case s.Signer == nil:
 		fail("this machine has no SSH key. Create one: sudo /opt/hallpass/bin/hallpass ssh-key create")
@@ -167,7 +222,7 @@ func (s *Server) handle(conn net.Conn) {
 	}
 
 	if write {
-		if !s.relayPush(client, repo, rule.Ops.Has(op.PushDefault), in, stdin, stdout, o, log, p.Procs) {
+		if !s.relayPush(client, repo, rule.Ops, in, stdin, stdout, o, log, p.Procs) {
 			o.frame(FrameExit, []byte{0})
 			return
 		}
@@ -194,7 +249,7 @@ func (s *Server) handle(conn net.Conn) {
 // relayPush runs a receive-pack exchange, checking the push before any of it
 // reaches GitHub. It returns false when it refused the push and answered git
 // itself.
-func (s *Server) relayPush(client *ssh.Client, repo github.Repo, pushDefault bool, in *bufio.Reader, stdin io.WriteCloser, stdout io.Reader, o *out, log *slog.Logger, procs string) bool {
+func (s *Server) relayPush(client *ssh.Client, repo github.Repo, ops op.Set, in *bufio.Reader, stdin io.WriteCloser, stdout io.Reader, o *out, log *slog.Logger, procs string) bool {
 	up := bufio.NewReader(stdout)
 	adv, err := readAdvertisement(up)
 	if err != nil {
@@ -233,16 +288,20 @@ func (s *Server) relayPush(client *ssh.Client, repo github.Repo, pushDefault boo
 		return false
 	}
 	refused := policy.CheckPush(push, policy.Branches{
-		Default:     def.name,
-		PushDefault: pushDefault,
-		Protected:   s.Config.ProtectedBranches,
-		Ours:        func(b string) bool { return s.Ledger.Has(repo, b) },
+		Default:   def.name,
+		Ops:       ops,
+		Protected: s.Config.ProtectedBranches,
+		Tip:       func(b string) string { return s.Ledger.Tip(repo, b) },
+		Repo:      repo,
 	})
 	refuse := func(refused map[string]string) bool {
 		log.Warn("refused", "reason", "push", "refs", refused)
 		// git reads the answer after it sends the pack, so take the pack
-		// first. Nothing of it goes to GitHub.
-		io.Copy(io.Discard, io.LimitReader(in, 1<<30))
+		// first. Nothing of it goes to GitHub. A push of only deletes has
+		// no pack, and git waits for the answer with stdin still open.
+		if push.HasPack() {
+			io.Copy(io.Discard, io.LimitReader(in, 1<<30))
+		}
 		o.frame(FrameStdout, policy.RefusePush(push, refused))
 		return false
 	}
@@ -253,7 +312,7 @@ func (s *Server) relayPush(client *ssh.Client, repo github.Repo, pushDefault boo
 	// GitHub doesn't stop SSH pushes that change workflows, so the broker
 	// reads the pack and checks before sending any of it.
 	var pack bytes.Buffer
-	if !allDeletes(push) {
+	if push.HasPack() {
 		p, err := policy.ReadPack(io.TeeReader(io.LimitReader(in, maxPack), &pack))
 		if err != nil {
 			return refuse(all(push, err.Error()))
@@ -279,12 +338,20 @@ func (s *Server) relayPush(client *ssh.Client, repo github.Repo, pushDefault boo
 	var report bytes.Buffer
 	io.Copy(io.MultiWriter(o.writer(FrameStdout), &capped{&report, 1 << 20}), up)
 	accepted := policy.ReportStatus(report.Bytes(), push.SideBand())
+	// Record where each accepted branch now points, so agents can go on
+	// from there and from nowhere else. The default branch stays out:
+	// push.default governs it, not the ledger.
 	for _, ref := range accepted {
 		for _, u := range push.Updates {
-			if u.Ref == ref && u.Create() {
-				if err := s.Ledger.Add(repo, u.Branch(), procs); err != nil {
-					log.Error("ledger write failed; agents can't update this branch later", "branch", u.Branch(), "err", err)
-				}
+			if u.Ref != ref || u.Branch() == "" || strings.EqualFold(u.Branch(), def.name) {
+				continue
+			}
+			tip := u.New
+			if u.Delete() {
+				tip = ""
+			}
+			if err := s.Ledger.Record(repo, u.Branch(), tip, procs); err != nil {
+				log.Error("ledger write failed; after a restart agents can't update this branch", "branch", u.Branch(), "err", err)
 			}
 		}
 	}
@@ -294,15 +361,6 @@ func (s *Server) relayPush(client *ssh.Client, repo github.Repo, pushDefault boo
 
 // maxPack bounds the pack the broker holds while it checks a push.
 const maxPack = 512 << 20
-
-func allDeletes(p policy.Push) bool {
-	for _, u := range p.Updates {
-		if !u.Delete() {
-			return false
-		}
-	}
-	return true
-}
 
 func all(p policy.Push, reason string) map[string]string {
 	m := map[string]string{}
@@ -355,8 +413,7 @@ func readAdvertisement(r *bufio.Reader) ([]byte, error) {
 }
 
 // defaultBranch reads HEAD's target from upload-pack's ref list, on a second
-// session over the same connection. An empty repo has none; the protected
-// branch list still covers main and master there.
+// session over the same connection. It's "" only for an empty repo.
 func (s *Server) defaultBranch(client *ssh.Client, repo github.Repo) (string, error) {
 	sess, err := client.NewSession()
 	if err != nil {
@@ -374,15 +431,29 @@ func (s *Server) defaultBranch(client *ssh.Client, repo github.Repo) (string, er
 	if err != nil {
 		return "", err
 	}
+	return headBranch(adv)
+}
+
+// headBranch reads the default branch from an upload-pack ref list. A list
+// with no HEAD is an empty repo only when it lists no refs either. Anything
+// else, like a dangling HEAD, is an error, because "" lets the first push
+// through as the new default.
+func headBranch(adv []byte) (string, error) {
 	_, after, ok := bytes.Cut(adv, []byte("symref=HEAD:refs/heads/"))
-	if !ok {
-		return "", nil
+	if ok {
+		end := bytes.IndexAny(after, " \n\x00")
+		if end < 0 {
+			end = len(after)
+		}
+		if end == 0 {
+			return "", errors.New("GitHub's ref list names an empty default branch")
+		}
+		return string(after[:end]), nil
 	}
-	end := bytes.IndexAny(after, " \n\x00")
-	if end < 0 {
-		end = len(after)
+	if bytes.Contains(adv, []byte(" refs/")) {
+		return "", errors.New("GitHub's ref list has branches but no default branch")
 	}
-	return string(after[:end]), nil
+	return "", nil
 }
 
 // Check confirms GitHub accepts the key. GitHub answers a session with no

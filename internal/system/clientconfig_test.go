@@ -30,18 +30,20 @@ func TestGitConfigRoutes(t *testing.T) {
 	}
 	tok := &config.Token{Secret: "file:/x", Source: "pat"}
 	key := &config.Key{Key: "file:/y", Public: "ecdsa-sha2-nistp256 AAAA"}
-	both := &config.Config{Token: tok, SSH: key, Repos: []config.Repo{{Match: "acme/*", Via: "ssh"}, {Match: "mbriggs/*"}}}
+	both := &config.Config{Token: tok, SSH: key}
 	cases := []struct {
 		cfg          *config.Config
 		remote, want string
 	}{
-		{&config.Config{Token: tok}, "git@github.com:mbriggs/dots.git", "http://github.com/mbriggs/dots.git"},
-		{&config.Config{Token: tok}, "https://github.com/mbriggs/dots", "http://github.com/mbriggs/dots"},
-		{&config.Config{Token: tok}, "ssh://git@github.com/mbriggs/dots", "http://github.com/mbriggs/dots"},
+		// With only a token, git still goes to the broker, which says to make
+		// an SSH key, rather than to the user's own credentials.
+		{&config.Config{Token: tok}, "git@github.com:mbriggs/dots.git", "ssh://git@github.com/mbriggs/dots.git"},
+		{&config.Config{Token: tok}, "https://github.com/mbriggs/dots", "ssh://git@github.com/mbriggs/dots"},
 		{&config.Config{SSH: key}, "https://github.com/mbriggs/dots", "ssh://git@github.com/mbriggs/dots"},
 		{both, "https://github.com/acme/widgets", "ssh://git@github.com/acme/widgets"},
 		{both, "git@github.com:acme/widgets", "ssh://git@github.com/acme/widgets"},
-		{both, "git@github.com:mbriggs/dots", "http://github.com/mbriggs/dots"},
+		{both, "git@github.com:mbriggs/dots", "ssh://git@github.com/mbriggs/dots"},
+		{both, "https://github.com/mbriggs/dots", "ssh://git@github.com/mbriggs/dots"},
 		{&config.Config{Signing: key}, "git@github.com:mbriggs/dots", "git@github.com:mbriggs/dots"},
 		{&config.Config{Token: tok}, "https://gitlab.com/x/y", "https://gitlab.com/x/y"},
 	}
@@ -53,5 +55,24 @@ func TestGitConfigRoutes(t *testing.T) {
 	signed := GitConfigText(&config.Config{Signing: key})
 	if !strings.Contains(signed, "program = "+SignBinary+"\n") || strings.Contains(signed, "sshCommand") {
 		t.Errorf("signing-only config:\n%s", signed)
+	}
+}
+
+// Root runs a git only when nobody but root can change or swap it.
+func TestRootOwnedFile(t *testing.T) {
+	user := filepath.Join(t.TempDir(), "git")
+	os.WriteFile(user, []byte("#!/bin/sh\n"), 0o755)
+	if rootOwnedFile(user) == nil {
+		t.Errorf("trusted %s, which this user owns", user)
+	}
+	link := filepath.Join(t.TempDir(), "git")
+	os.Symlink("/bin/sh", link)
+	if rootOwnedFile(link) == nil {
+		t.Errorf("trusted the symlink %s", link)
+	}
+	if real, err := filepath.EvalSymlinks("/bin/sh"); err == nil && RootControlled(filepath.Dir(real)) == nil {
+		if err := rootOwnedFile(real); err != nil {
+			t.Errorf("distrusted %s: %v", real, err)
+		}
 	}
 }

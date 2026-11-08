@@ -166,20 +166,25 @@ func (s *Server) respond(conn net.Conn, p peer.Peer, log *slog.Logger) Response 
 	}
 	sc := bufio.NewScanner(conn)
 	sc.Buffer(make([]byte, 64<<10), maxRequest)
+	refuse := func(reason string) Response {
+		log.Warn("refused", "reason", reason)
+		return Response{Error: reason}
+	}
 	if !sc.Scan() {
-		return Response{Error: "empty request"}
+		return refuse("empty request")
 	}
 	var req Request
 	if err := json.Unmarshal(sc.Bytes(), &req); err != nil {
-		return Response{Error: "malformed request"}
+		return refuse("malformed request")
 	}
 	switch req.Op {
 	case "status":
+		log.Info("allowed", "op", "status", "check", req.Check)
 		return Response{Status: s.status(req.Check)}
 	case "sign":
 		return s.sign(req.Data, log)
 	}
-	return Response{Error: fmt.Sprintf("unknown op %q", req.Op)}
+	return refuse(fmt.Sprintf("unknown op %q", req.Op))
 }
 
 func (s *Server) sign(data []byte, log *slog.Logger) Response {
@@ -235,9 +240,6 @@ func (s *Server) status(check bool) *Status {
 		e := r.Match
 		if r.Access == "read" {
 			e += " (read)"
-		}
-		if r.Via == "ssh" {
-			e += " (ssh)"
 		}
 		if ops := opChanges(r.Allow, r.Deny); ops != "" {
 			e += " (" + ops + ")"

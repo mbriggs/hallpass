@@ -87,7 +87,7 @@ func (d *checkup) broker() bool {
 	if want := fileHash(system.Binary); d.st.Binary != "" && want != "" && d.st.Binary != want {
 		d.fail("sudo "+system.Binary+" install", "the running broker is an older build than %s", system.Binary)
 	}
-	for _, name := range []string{"git", "gh", "ssh"} {
+	for _, name := range []string{"gh", "ssh"} {
 		c, err := net.DialTimeout("unix", config.Socket(name), 2*time.Second)
 		if err != nil {
 			d.fail("rerun sudo "+system.Binary+" install", "the %s socket doesn't answer: %v", name, err)
@@ -148,10 +148,6 @@ func (d *checkup) gits() {
 			d.fail("sudo "+git+" config --system --add include.path "+system.GitConfig, "%s doesn't include %s", git, system.GitConfig)
 			continue
 		}
-		if d.cfg.Token != nil && !gitAtLeast(git, 2, 47) {
-			d.fail("use git 2.47 or later; on macOS, Homebrew's", "%s is older than 2.47, so its github.com remotes can't reach the broker", git)
-			continue
-		}
 		d.ok("%s reads hallpass's config", git)
 	}
 }
@@ -181,18 +177,18 @@ func (d *checkup) overrides() {
 		}
 		d.fail(fix, "%s is %q from %s, not hallpass's %q", what, got, orNowhere(from), want)
 	}
-	if d.cfg.Token != nil {
-		// An owner no allowlist entry names, so it takes the HTTPS route.
-		const remote, want = "git@github.com:hallpass-doctor/check", "http://github.com/hallpass-doctor/check"
+	if d.cfg.Token != nil || d.cfg.SSH != nil {
+		const remote, want = "https://github.com/hallpass-doctor/check", "ssh://git@github.com/hallpass-doctor/check"
 		out, _ := exec.Command(git, "ls-remote", "--get-url", remote).Output()
 		if got := strings.TrimSpace(string(out)); got != want {
 			d.fail("remove url.*.insteadOf entries for github.com from your own git config", "git rewrites %s to %s, not %s", remote, got, want)
 		} else {
 			d.ok("git sends github.com remotes to the broker")
 		}
-		expect("http.proxy for github.com", "socks5h://localhost"+config.RunDir()+"/git.sock",
-			"remove http.proxy for github.com from your own git config",
-			"--get-urlmatch", "http.proxy", want)
+		expect("core.sshCommand", system.Binary+" ssh", "remove core.sshCommand from your own git config", "--get", "core.sshCommand")
+		if d.cfg.SSH == nil {
+			d.warn("git goes over SSH only, and there's no SSH key, so the broker refuses git. Create one: sudo %s ssh-key create", system.Binary)
+		}
 		cmd := exec.Command(git, "credential", "fill")
 		cmd.Stdin = strings.NewReader("protocol=https\nhost=github.com\npath=x/y\n\n")
 		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=", "SSH_ASKPASS=")
@@ -202,9 +198,6 @@ func (d *checkup) overrides() {
 		} else {
 			d.ok("no other credential helper answers for github.com")
 		}
-	}
-	if d.cfg.SSH != nil {
-		expect("core.sshCommand", system.Binary+" ssh", "remove core.sshCommand from your own git config", "--get", "core.sshCommand")
 	}
 	if d.cfg.Signing != nil {
 		fix := "move your own signing settings into a file only git personal loads; the hallpass-setup skill shows how"
@@ -294,20 +287,6 @@ func findGits() []string {
 		add("/usr/local/bin/git")
 	}
 	return out
-}
-
-func gitAtLeast(git string, major, minor int) bool {
-	out, err := exec.Command(git, "version").Output()
-	if err != nil {
-		return false
-	}
-	f := strings.Fields(string(out))
-	if len(f) < 3 {
-		return false
-	}
-	var ma, mi int
-	fmt.Sscanf(f[2], "%d.%d", &ma, &mi)
-	return ma > major || (ma == major && mi >= minor)
 }
 
 func orNowhere(s string) string {

@@ -18,7 +18,7 @@ ours() {
 ours fake   && ok "fakegithub pid $(cat "$S/fake.pid") is ours" || bad "fakegithub isn't running from $S"
 ours broker && ok "broker pid $(cat "$S/broker.pid") is ours"   || bad "broker isn't running from $S"
 
-for s in hallpass git gh ssh; do
+for s in hallpass gh ssh; do
   [ -S "$S/run/$s.sock" ] && ok "socket $s.sock" || bad "no socket $S/run/$s.sock"
 done
 
@@ -30,8 +30,8 @@ code=$(curl -s -o /dev/null -w '%{http_code}' "$url/api/user")
 [ "$code" = 401 ] && ok "fakegithub at $url refuses requests without the token" || bad "fakegithub at $url answered $code without a token"
 
 st=$(HALLPASS_RUN_DIR="$S/run" "$S/bin/hallpass" status --check 2>&1)
-if echo "$st" | grep -q "^token:    classic PAT for verifier" && ! echo "$st" | grep -q "FAILED\|BROKEN"; then
-  ok "status --check: token confirmed with the fake, signing key loaded"
+if echo "$st" | grep -q "^token:    classic PAT for verifier" && echo "$st" | grep -q "GitHub accepts it for verifier" && ! echo "$st" | grep -q "FAILED\|BROKEN"; then
+  ok "status --check: token and SSH key confirmed with the fake, signing key loaded"
 else bad "status --check:"; echo "$st" | sed 's/^/      /'; fi
 
 grep -q 'level=ERROR' "$S/evidence/broker.log" && bad "broker.log has errors: $(grep level=ERROR "$S/evidence/broker.log" | tail -1)" || ok "broker.log has no errors"

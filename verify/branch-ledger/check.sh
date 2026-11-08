@@ -3,6 +3,8 @@
 # result with what's expected. See .claude/skills/verify-branch-ledger.
 #
 #   verify/branch-ledger/check.sh           run the model and the drift check
+#   verify/branch-ledger/check.sh --deep    also run ConcurrentDeep.cfg, about
+#                                           11 minutes more
 #   verify/branch-ledger/check.sh --resync  record the covered files' hashes
 #                                           (only after you've confirmed the
 #                                           model matches them)
@@ -10,6 +12,7 @@
 # Exit 0: every config gave its expected result and the covered code hasn't
 # changed since the last sync. Exit 1: a config gave an unexpected result.
 # Exit 3: results as expected, but covered code changed since the last sync.
+# The drift check runs and reports either way.
 # TLC's full output for each config goes to verify/branch-ledger/out/.
 set -euo pipefail
 
@@ -19,9 +22,9 @@ root=$(cd "$here/../.." && pwd)
 # Files the model describes. Keep in step with the skill's coverage table.
 covered=(
   internal/policy/git.go
-  internal/proxy/ledger.go
-  internal/proxy/git.go
+  internal/sshgate/ledger.go
   internal/sshgate/gate.go
+  cmd/hallpass/ledger.go
 )
 
 if [[ "${1:-}" == "--resync" ]]; then
@@ -52,16 +55,20 @@ meta=$(mktemp -d)
 trap 'rm -rf "$meta"' EXIT
 
 # config:expected. "pass", or the invariant TLC must report as violated.
-#   Full     the user may reuse branch names. Breaks NoClobber: finding F1
-#            in the skill. When F1 is fixed, this should become "pass".
-#   NoReuse  the user never creates a name an agent created. Must pass.
-#   Sanity   expects AgentNeverUpdatesOwnBranch to break, which shows an
-#            agent's update of its own branch is reachable.
+#   Concurrent      two pushes at once, restarts, failed writes, ledger add
+#   MultiRef        pushes of two refs, atomic or not
+#   SanityOwn       expects AgentNeverUpdatesOwnBranch to break: an agent
+#                   can go on updating its own branch
+#   SanityHanded    expects AgentNeverUpdatesHandedBranch to break: an agent
+#                   can update a branch the user handed over
+#   ConcurrentDeep  Concurrent with one more commit (--deep only)
 expect=(
-  Full:NoClobber
-  NoReuse:pass
-  Sanity:AgentNeverUpdatesOwnBranch
+  Concurrent:pass
+  MultiRef:pass
+  SanityOwn:AgentNeverUpdatesOwnBranch
+  SanityHanded:AgentNeverUpdatesHandedBranch
 )
+[[ "${1:-}" == "--deep" ]] && expect+=(ConcurrentDeep:pass)
 
 status=0
 for e in "${expect[@]}"; do
@@ -72,6 +79,7 @@ for e in "${expect[@]}"; do
     -metadir "$meta/$cfg" -workers auto -cleanup BranchLedger.tla) > "$out" 2>&1
   code=$?
   set -e
+  rm -rf "${meta:?}/$cfg"
   got=$(sed -n 's/^Error: Invariant \([A-Za-z]*\) is violated\.$/\1/p' "$out" | head -1)
   if [[ $code -eq 0 ]]; then
     got=pass
@@ -87,12 +95,10 @@ for e in "${expect[@]}"; do
   fi
 done
 
-if [[ $status -eq 0 ]]; then
-  if ! drift=$(cd "$root" && sha256sum -c --quiet "$here/covered.sha256" 2>&1); then
-    echo "STALE covered code changed since the model was last confirmed against it:"
-    echo "$drift" | sed 's/^/      /'
-    echo "      Check the model against the change, then run check.sh --resync."
-    status=3
-  fi
+if ! drift=$(cd "$root" && sha256sum -c --quiet "$here/covered.sha256" 2>&1); then
+  echo "STALE covered code changed since the model was last confirmed against it:"
+  echo "$drift" | sed 's/^/      /'
+  echo "      Check the model against the change, then run check.sh --resync."
+  [[ $status -eq 0 ]] && status=3
 fi
 exit $status

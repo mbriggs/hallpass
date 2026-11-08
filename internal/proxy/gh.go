@@ -155,23 +155,42 @@ func (s *Server) serveGH(w http.ResponseWriter, r *http.Request) {
 	copyHeaders(w.Header(), resp.Header, "Content-Type", "Content-Encoding", "ETag", "Last-Modified", "Link",
 		"X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "X-RateLimit-Used", "X-RateLimit-Resource",
 		"X-GitHub-Request-Id", "Location", "Retry-After")
-	if len(strip) > 0 && resp.StatusCode == http.StatusOK {
-		var obj map[string]json.RawMessage
-		if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&obj); err != nil {
+	if len(strip) > 0 && resp.StatusCode == http.StatusOK && strings.Contains(resp.Header.Get("Content-Type"), "json") {
+		dec := json.NewDecoder(io.LimitReader(resp.Body, 64<<20))
+		dec.UseNumber()
+		var v any
+		if err := dec.Decode(&v); err != nil {
 			refuse(http.StatusBadGateway, "GitHub's answer wasn't JSON")
 			return
 		}
-		for _, k := range strip {
-			delete(obj, k)
-		}
+		stripKeys(v, strip)
 		w.WriteHeader(resp.StatusCode)
-		json.NewEncoder(w).Encode(obj)
+		enc := json.NewEncoder(w)
+		enc.SetEscapeHTML(false)
+		enc.Encode(v)
 		log.Info("allowed", "status", resp.StatusCode)
 		return
 	}
 	w.WriteHeader(resp.StatusCode)
 	flushCopy(w, w, resp.Body)
 	log.Info("allowed", "status", resp.StatusCode)
+}
+
+// stripKeys deletes keys from every object in v, however deep.
+func stripKeys(v any, keys []string) {
+	switch v := v.(type) {
+	case map[string]any:
+		for _, k := range keys {
+			delete(v, k)
+		}
+		for _, c := range v {
+			stripKeys(c, keys)
+		}
+	case []any:
+		for _, c := range v {
+			stripKeys(c, keys)
+		}
+	}
 }
 
 // checkGraphQL checks the repos and node IDs a GraphQL request names. It
@@ -227,24 +246,11 @@ const resolveQuery = `query($ids:[ID!]!){nodes(ids:$ids){__typename
 ... on PullRequestReviewThread{repository{nameWithOwner}}}}`
 
 // resolve asks GitHub which repo each node ID belongs to, its type, and
-// whether the token's user wrote it. Results are cached, since an object's
-// repo changes only when someone transfers it.
+// whether the token's user wrote it. It asks on every request: a cached
+// answer would outlive a repo transfer.
 func (s *Server) resolve(ctx context.Context, ids []string) (map[string]policy.Node, error) {
 	out := map[string]policy.Node{}
-	var missing []string
-	s.mu.Lock()
-	for _, id := range ids {
-		if n, ok := s.nodes[id]; ok && time.Since(n.at) < time.Hour {
-			out[id] = n.Node
-		} else {
-			missing = append(missing, id)
-		}
-	}
-	s.mu.Unlock()
-	if len(missing) == 0 {
-		return out, nil
-	}
-	b, _ := json.Marshal(map[string]any{"query": resolveQuery, "variables": map[string]any{"ids": missing}})
+	b, _ := json.Marshal(map[string]any{"query": resolveQuery, "variables": map[string]any{"ids": ids}})
 	req, err := http.NewRequestWithContext(ctx, "POST", s.Config.API()+"/graphql", bytes.NewReader(b))
 	if err != nil {
 		return nil, err
@@ -276,13 +282,8 @@ func (s *Server) resolve(ctx context.Context, ids []string) (map[string]policy.N
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&r); err != nil {
 		return nil, err
 	}
-	if len(r.Data.Nodes) != len(missing) {
+	if len(r.Data.Nodes) != len(ids) {
 		return nil, errors.New("GitHub returned the wrong number of nodes")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.nodes == nil {
-		s.nodes = map[string]cachedNode{}
 	}
 	for i, n := range r.Data.Nodes {
 		if n == nil {
@@ -296,9 +297,7 @@ func (s *Server) resolve(ctx context.Context, ids []string) (map[string]policy.N
 		if err != nil {
 			continue
 		}
-		node := policy.Node{Type: n.Typename, Repo: repo, Authored: n.ViewerDidAuthor}
-		out[missing[i]] = node
-		s.nodes[missing[i]] = cachedNode{node, time.Now()}
+		out[ids[i]] = policy.Node{Type: n.Typename, Repo: repo, Authored: n.ViewerDidAuthor}
 	}
 	return out, nil
 }

@@ -7,44 +7,10 @@ import (
 	"io"
 	"strings"
 	"testing"
-)
 
-func TestParseGit(t *testing.T) {
-	const up = "application/x-git-upload-pack-request"
-	const rp = "application/x-git-receive-pack-request"
-	ok := []struct {
-		method, target, ct string
-		want               string
-		svc                GitService
-	}{
-		{"GET", "/acme/widgets/info/refs?service=git-upload-pack", "", "acme/widgets", GitInfoRefsUpload},
-		{"GET", "/acme/widgets.git/info/refs?service=git-receive-pack", "", "acme/widgets", GitInfoRefsReceive},
-		{"POST", "/acme/widgets.git/git-upload-pack", up, "acme/widgets", GitUploadPack},
-		{"POST", "/acme/widgets/git-receive-pack", rp, "acme/widgets", GitReceivePack},
-	}
-	for _, c := range ok {
-		g, err := ParseGit(c.method, c.target, c.ct)
-		if err != nil || g.Repo.String() != c.want || g.Service != c.svc {
-			t.Errorf("ParseGit(%s %s) = %v, %v", c.method, c.target, g, err)
-		}
-	}
-	bad := []struct{ method, target, ct string }{
-		{"GET", "/acme/widgets/info/refs", ""},
-		{"GET", "/acme/widgets/info/lfs/objects/batch", ""},
-		{"GET", "/acme/../secret/info/refs?service=git-upload-pack", ""},
-		{"GET", "/acme/%2e%2e/info/refs?service=git-upload-pack", ""},
-		{"GET", "//acme/widgets/info/refs?service=git-upload-pack", ""},
-		{"POST", "/acme/widgets/git-receive-pack", up},
-		{"POST", "/acme/widgets/git-upload-pack?x=1", up},
-		{"GET", "/acme/widgets/archive/main.zip", ""},
-		{"GET", "http://evil/acme/widgets/info/refs?service=git-upload-pack", ""},
-	}
-	for _, c := range bad {
-		if g, err := ParseGit(c.method, c.target, c.ct); err == nil {
-			t.Errorf("ParseGit(%s %s) = %v, want refusal", c.method, c.target, g)
-		}
-	}
-}
+	"github.com/mbriggs/hallpass/internal/github"
+	"github.com/mbriggs/hallpass/internal/op"
+)
 
 func pkt(s string) string { return fmt.Sprintf("%04x%s", len(s)+4, s) }
 
@@ -109,8 +75,14 @@ func TestReadPushRefuses(t *testing.T) {
 }
 
 func TestCheckPush(t *testing.T) {
-	ours := func(b string) bool { return b == "agent/mine" }
-	br := Branches{Default: "main", Protected: []string{"release/*", "production"}, Ours: ours}
+	// Agents last pushed a to agent/mine.
+	tip := func(br string) string {
+		if br == "agent/mine" {
+			return a
+		}
+		return ""
+	}
+	br := Branches{Default: "main", Protected: []string{"release/*", "production"}, Tip: tip, Repo: github.Repo{Owner: "acme", Name: "widgets"}, Ops: op.Defaults()}
 	cases := []struct {
 		u    RefUpdate
 		want bool // allowed
@@ -118,6 +90,9 @@ func TestCheckPush(t *testing.T) {
 		{RefUpdate{zeroOID, a, "refs/heads/agent/new"}, true},
 		{RefUpdate{a, b, "refs/heads/agent/mine"}, true},
 		{RefUpdate{a, zeroOID, "refs/heads/agent/mine"}, true},
+		// agent/mine moved to b since an agent pushed it: the user's now.
+		{RefUpdate{b, a, "refs/heads/agent/mine"}, false},
+		{RefUpdate{b, zeroOID, "refs/heads/agent/mine"}, false},
 		{RefUpdate{a, b, "refs/heads/colleague"}, false},
 		{RefUpdate{a, zeroOID, "refs/heads/colleague"}, false},
 		{RefUpdate{zeroOID, a, "refs/heads/main"}, false},
@@ -137,8 +112,20 @@ func TestCheckPush(t *testing.T) {
 		}
 	}
 
+	// A changed branch's refusal says how to hand it over as it is.
+	got := CheckPush(Push{Updates: []RefUpdate{{b, a, "refs/heads/agent/mine"}}}, br)
+	if want := "ledger add acme/widgets agent/mine " + b; !strings.Contains(got["refs/heads/agent/mine"], want) {
+		t.Errorf("refusal %q doesn't say %q", got["refs/heads/agent/mine"], want)
+	}
+	// One ref twice in a push is refused, since the ledger reads GitHub's
+	// answer by ref.
+	twice := Push{Updates: []RefUpdate{{zeroOID, a, "refs/heads/agent/new"}, {zeroOID, b, "refs/heads/agent/new"}}}
+	if got := CheckPush(twice, br); len(got) == 0 {
+		t.Error("a push naming one ref twice was allowed")
+	}
+
 	// The default branch passes even when a protected pattern names it.
-	br.PushDefault = true
+	br.Ops = op.Set{op.PushDefault: true}
 	br.Protected = append(br.Protected, "main")
 	for _, c := range []struct {
 		u    RefUpdate
@@ -181,5 +168,27 @@ func TestRefusePushIsReadableStatus(t *testing.T) {
 	framed.WriteString("0000")
 	if got := ReportStatus(framed.Bytes(), true); len(got) != 1 || got[0] != "refs/heads/agent/x" {
 		t.Errorf("ReportStatus = %v", got)
+	}
+}
+
+// In an empty repo, the first branch pushed becomes the default, so it
+// needs push.default like any default-branch push.
+func TestCheckPushEmptyRepo(t *testing.T) {
+	create := RefUpdate{zeroOID, a, "refs/heads/feature"}
+	br := Branches{Ops: op.Defaults(), Repo: github.Repo{Owner: "acme", Name: "new"}}
+	why := CheckPush(Push{Updates: []RefUpdate{create}}, br)[create.Ref]
+	if !strings.Contains(why, "acme/new is empty") || !strings.Contains(why, "policy allow push.default") {
+		t.Errorf("first push to an empty repo: %q", why)
+	}
+	br.Ops = op.Set{op.PushDefault: true}
+	if got := CheckPush(Push{Updates: []RefUpdate{create}}, br); len(got) != 0 {
+		t.Errorf("with push.default: %v", got)
+	}
+	// An empty default branch never lets an update or delete skip the
+	// ledger, even with push.default.
+	for _, u := range []RefUpdate{{a, b, "refs/heads/colleague"}, {a, zeroOID, "refs/heads/colleague"}} {
+		if got := CheckPush(Push{Updates: []RefUpdate{u}}, br); len(got) == 0 {
+			t.Errorf("%s from %s with no default branch went through", u.Ref, u.Old[:4])
+		}
 	}
 }

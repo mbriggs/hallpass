@@ -12,8 +12,8 @@ Each credential is optional and turns on its own features:
 
 | Credential | Kept in | Turns on |
 | --- | --- | --- |
-| Token: a device login or a classic PAT, `repo` scope only | sealed to the TPM where there is one; on macOS, an encrypted file tied to the Mac; otherwise a file only the broker user reads | git over HTTPS, and gh |
-| SSH key, ECDSA P-256 | generated inside the TPM where there is one; on macOS, an encrypted file tied to the Mac; otherwise a file | git over SSH |
+| Token: a device login or a classic PAT, `repo` scope only | sealed to the TPM where there is one; on macOS, an encrypted file tied to the Mac; otherwise a file only the broker user reads | gh |
+| SSH key, ECDSA P-256 | generated inside the TPM where there is one; on macOS, an encrypted file tied to the Mac; otherwise a file | git |
 | Signing key, ECDSA P-256 | generated inside the TPM where there is one; on macOS, an encrypted file tied to the Mac; otherwise a file | signed commits and tags |
 
 Every credential acts as you on GitHub, so it works in your repos and your
@@ -49,12 +49,18 @@ It prevents these:
   or rerun or dispatch workflows. You can allow each of these everywhere or
   in one repo. See [Policy](#policy). Whatever the policy says, agents can't
   push a tag or a protected branch other than the default, or update or
-  delete branches they didn't create.
+  delete branches they didn't create. The broker remembers the commit an
+  agent last pushed to each branch. Once you push a commit of your own to
+  the branch, or delete it and make it again at another commit, it's yours.
+  A branch you recreate at the agent's own last commit still counts as the
+  agent's, since it holds only the agent's work.
 - **Workflow injection.** Shai-Hulud committed a workflow to send repo
-  secrets out. Over HTTPS, GitHub refuses workflow changes from a token
-  without `workflow` scope, and `login` and `install-pat` refuse tokens that have it. Over
-  SSH, GitHub doesn't check, so the broker refuses a pushed branch whose new
-  commit changes `.github/workflows`.
+  secrets out. git goes over SSH, where GitHub doesn't check workflow
+  changes, so the broker reads every pushed pack and refuses a branch whose
+  new commit changes `.github/workflows`. That check is the only guard: the
+  token's missing `workflow` scope doesn't apply, because pushes don't use
+  the token. Through gh, the broker refuses contents writes, and `login` and
+  `install-pat` refuse tokens with `workflow` scope.
 - **Settings, secrets, and admin.** The broker refuses repo settings,
   branch protection, hooks, deploy keys, secrets and their names, release
   changes, and deletes, and no policy can allow them. It refuses reading
@@ -129,17 +135,12 @@ It doesn't protect against these:
 `install` writes `/etc/hallpass/gitconfig` for the credentials that exist and
 includes it from each git's system config:
 
-- **git over HTTPS.** github.com remotes, in every form, are rewritten to
-  `http://github.com/`, and git reaches them through
-  `socks5h://localhost/run/hallpass/git.sock`. HTTPS through hallpass needs
-  git 2.47 or later. The tunnel carries plain HTTP, so the broker
-  reads each request, rebuilds it, adds the token, and sends it to GitHub over
-  TLS. There's no CA and no TCP port.
-- **git over SSH.** `core.sshCommand` is `hallpass ssh`. For github.com it
-  sends the git command to the broker's socket and relays the data. The
-  broker connects to GitHub with its key, checking GitHub's published host
-  keys, and runs only `git-upload-pack` and `git-receive-pack`. For any other
-  host, `hallpass ssh` runs the real ssh.
+- **git.** github.com remotes, in every form, are rewritten to
+  `ssh://git@github.com/`, and `core.sshCommand` is `hallpass ssh`. For
+  github.com it sends the git command to the broker's socket and relays the
+  data. The broker connects to GitHub with its key, checking GitHub's
+  published host keys, and runs only `git-upload-pack` and
+  `git-receive-pack`. For any other host, `hallpass ssh` runs the real ssh.
 - **gh.** `hallpass gh` runs gh with `GH_CONFIG_DIR=/etc/hallpass/gh`, whose
   `http_unix_socket` setting sends gh's requests as plain HTTP to the broker.
   The broker classifies each REST route and GraphQL document against
@@ -149,9 +150,11 @@ includes it from each git's system config:
   which signs only git commits and tags. Everything else goes to the real
   `ssh-keygen`.
 
-When both the token and the SSH key exist, git uses HTTPS, because GitHub
-enforces the workflow block there. An allowlist entry can route an owner over
-SSH with `--via ssh`, for orgs that block classic PATs but accept SSH keys.
+git goes over SSH only, and gh uses the token. With a token and no SSH key,
+the git config still sends github.com to the broker, which refuses git and
+says to run `sudo /opt/hallpass/bin/hallpass ssh-key create`. git never falls
+through to your own credentials. The broker dials `github.com:22`, so a
+network that blocks port 22 can't reach GitHub through hallpass.
 
 ## Policy
 
@@ -162,7 +165,10 @@ the git push. Denying `pr.merge` refuses `gh pr merge` and
 
 | On by default | Off by default |
 | --- | --- |
-| `pr.create`, `pr.edit`, `pr.request-review`, `issue.edit`, `comment`, `review.comment` | `issue.create`, `assign`, `push.default`, `review.approve`, `review.request-changes`, `pr.merge`, `pr.automerge`, `labels`, `workflow.rerun`, `workflow.dispatch` |
+| `pr.create`, `pr.edit`, `pr.request-review`, `issue.edit`, `comment`, `review.comment` | `issue.create`, `assign`, `push.default`, `review.verdict`, `pr.merge`, `labels`, `workflow.rerun`, `workflow.dispatch` |
+
+`review.verdict` covers approving and requesting changes. `pr.merge` covers
+merging, the merge queue, and auto-merge.
 
 Change them for every repo, or for one allowlist entry:
 
@@ -185,8 +191,10 @@ remove it.
 
 `allow` prints a warning for the risky operations, among them:
 
-- An approval or change request through hallpass counts as yours.
-- `pr.merge` and `pr.automerge` let agents merge with nobody reviewing.
+- `review.verdict`: an approval or change request through hallpass counts
+  as yours.
+- `pr.merge` lets agents merge, or turn on auto-merge, with nobody
+  reviewing.
 - `workflow.dispatch` lets agents pick the ref and inputs of a workflow
   that often deploys with real secrets.
 - `push.default` passes even when `protected_branches` names the default
@@ -258,8 +266,8 @@ core steps:
 
 ```sh
 sudo ./hallpass-linux-amd64 install                 # or ./bin/hallpass from make build
-sudo /opt/hallpass/bin/hallpass login               # token by device login
-sudo /opt/hallpass/bin/hallpass ssh-key create      # optional: add the key on GitHub
+sudo /opt/hallpass/bin/hallpass login               # token by device login, for gh
+sudo /opt/hallpass/bin/hallpass ssh-key create      # for git: add the key on GitHub
 sudo /opt/hallpass/bin/hallpass signing-key create  # optional: add as a signing key
 sudo /opt/hallpass/bin/hallpass allow 'you/*'
 hallpass status --check    # the broker's credentials, checked with GitHub
@@ -297,14 +305,14 @@ Run `hallpass help` for the full list. Root commands go through
 | `logout` | root | Removes and revokes the token |
 | `ssh-key create\|remove\|show` | root | Manages the SSH key |
 | `signing-key create\|remove\|show` | root | Manages the signing key |
-| `allow OWNER/REPO [--read] [--via ssh]` | root | Lets agents use a repo, or `OWNER/*` |
+| `allow OWNER/REPO [--read]` | root | Lets agents use a repo, or `OWNER/*` |
 | `disallow OWNER/REPO` | root | Removes an allowlist entry |
 | `policy allow\|deny\|reset OP... [--repo OWNER/REPO]` | root | Changes what agents may do, everywhere or in one entry |
 | `policy show [OWNER/REPO]` | you | Lists the operations, or what's in effect in one repo |
 | `uninstall [--purge]` | root | Removes what `install` added. `--purge` also revokes the token and deletes the credentials and config |
 | `status [--check]` | you | Reports the broker's state. `--check` also asks GitHub |
 | `doctor` | you | Checks this machine's git, gh, and signing setup against the broker |
-| `ledger add OWNER/REPO BRANCH` | root | Lets agents update a branch they didn't create |
+| `ledger add OWNER/REPO BRANCH COMMIT` | root | Lets agents update a branch they didn't create, while it points at COMMIT |
 | `gh ARGS` | you | Runs gh through the broker |
 
 ## License

@@ -6,19 +6,21 @@ description: End-to-end check of hallpass through real gh and git, against a scr
 # Verify hallpass
 
 hallpass is a credential broker. Clients reach it three ways: `gh` through
-the gh socket, `git` through the SOCKS git socket, and `hallpass status` /
+the gh socket, `git` through the SSH socket, and `hallpass status` /
 `hallpass-sign` through the control socket.
 
 Verification runs a second broker, not the installed one:
 
 - `serve --config FILE` reads a config you write, and `HALLPASS_RUN_DIR`
-  moves all four sockets. The broker runs as you, with no root.
-- The config's `api_url` and `git_url` point it at `scripts/fakegithub`, a
-  local server that serves git smart HTTP via `git http-backend` and canned
-  REST/GraphQL answers for `acme/widgets`. It returns 401 to any request
-  that lacks the scratch token, so a 200 there shows the broker added the
-  token.
-- The token and signing key are scratch files (`file:` backend). No TPM.
+  moves all three sockets. The broker runs as you, with no root.
+- The config's `api_url`, `ssh_addr`, and `ssh_host_keys` point it at
+  `scripts/fakegithub`, a local server with canned REST/GraphQL answers for
+  `acme/widgets` and an SSH server that runs real `git-upload-pack` and
+  `git-receive-pack`. The API returns 401 to any request without the
+  scratch token, and SSH accepts only the broker's key, so a success there
+  shows the broker added its credential.
+- The token, SSH key, and signing key are scratch files (`file:` backend).
+  No TPM.
 
 The installed broker (`/run/hallpass`, systemd `hallpass.service`, real
 GitHub token) belongs to the user. Never restart it, rewrite its config, or
@@ -40,10 +42,11 @@ S=$(.claude/skills/verify-hallpass/scripts/up.sh | tail -1)
 ```
 
 `up.sh [DIR]` builds `bin/hallpass` with `make build`, copies it to `$S/bin`,
-builds the fake, makes a token and a P-256 signing key, seeds the bare repo
-`acme/widgets` (branches `main` and `colleague`), and starts both processes.
-It prints the scratch dir once the broker logs `msg=serving` with
-`token=true ssh=false signing=true`, and fails loudly otherwise. The
+builds the fake, makes a token and P-256 SSH and signing keys, seeds the
+bare repo `acme/widgets` (branches `main` and `colleague`, and
+`.github/workflows/ci.yml`), and starts both processes. It prints the
+scratch dir once the broker logs `msg=serving` with
+`token=true ssh=true signing=true`, and fails loudly otherwise. The
 allowlist is `acme/widgets` (write) and `acme/readonly` (read), and
 `protected_branches = ["release/*"]`.
 
@@ -71,13 +74,13 @@ checkout.
 ```
 
 Read-only. It checks that both pids are alive and that their command lines
-name `$S`, that all four sockets exist, that the broker binary matches
+name `$S`, that all three sockets exist, that the broker binary matches
 `bin/hallpass`, and that the fake refuses requests without the token. It
 then runs `hallpass status --check` and checks `broker.log` for
 `level=ERROR`. Exit 0 means it's worth driving. Run it first whenever
 anything looks off. After an agent branch push it fails on `level=ERROR`
 because the scratch broker can't write the branch ledger. That failure
-alone isn't a fault; see `features/git-https.md`.
+alone isn't a fault; see `features/git-ssh.md`.
 
 To check the live install without changing it: `/opt/hallpass/bin/hallpass
 status` (no `--check` unless the user asks; `--check` calls real GitHub).
@@ -91,7 +94,8 @@ and expected output. How each client reaches the scratch broker:
   sets `GH_CONFIG_DIR=/etc/hallpass/gh`, which points at the live broker.
 - git: plain `git` with any github.com URL form (`git@github.com:acme/widgets`,
   `https://github.com/acme/widgets`). `$S/gitconfig` rewrites them to
-  `http://github.com/` through `socks5h://localhost$S/run/git.sock`.
+  `ssh://git@github.com/` and sets `core.sshCommand` to `$S/bin/hallpass ssh`,
+  which reaches the scratch SSH socket through `HALLPASS_RUN_DIR`.
 - Signing: `git commit -S`. `$S/gitconfig` sets `gpg.format=ssh`,
   `gpg.ssh.program=$S/bin/hallpass-sign`, and `user.signingKey=$S/keys/signing.pub`.
 - Status: `hallpass status`, `hallpass status --check`, `hallpass status --json`.
@@ -101,13 +105,16 @@ and expected output. How each client reaches the scratch broker:
 Everything goes in `$S/evidence/`. `down.sh` keeps that directory and
 deletes the rest of `$S`.
 
-- `broker.log`: the broker's slog output, one `msg=allowed` or
-  `msg=refused reason=...` line per request (`msg=signed` for a signature)
-  with uid, pid, and process chain. These are the lines
+- `broker.log`: the broker's slog output, one `msg=allowed`, `msg=refused`,
+  or `msg=pushed` line per request (`msg=signed` for a signature), with uid,
+  pid, and process chain first and then the request's own fields, as in
+  `msg=refused via=gh uid=1000 pid=... procs=... reason=...`. Match on
+  `msg=refused` and the reason separately. These are the lines
   `journalctl -u hallpass` shows for the live broker.
 - `github-requests.jsonl`: every request that reached the fake, with
-  method, path, body, and `auth` (`token-ok`, `basic-ok`, `wrong`, `none`).
-  This is the side-effect record.
+  method, path, body, and `auth` (`token-ok`, `key-ok`, `wrong`, `none`). git
+  shows up as method `SSH` with the git command as the path. This is the
+  side-effect record.
 - `github-refs-at-teardown.txt`: the refs on the fake's `acme/widgets` when
   `down.sh` ran.
 - Your transcript: tee each driven command and its output to
@@ -116,16 +123,18 @@ deletes the rest of `$S`.
 
 For each case, capture the command, its output and exit code, the broker's
 log line, and the fake's request log, and name the feature ID beside them.
-An allowed write shows up in `github-requests.jsonl` with `token-ok` (API)
-or `basic-ok` (git). A refused write doesn't show up there at all. Some
+An allowed API write shows up in `github-requests.jsonl` with `token-ok`.
+A refused API write doesn't show up there at all. For git, compare refs,
+because the broker opens a receive-pack session even for a push it then
+refuses. Some
 refusals need a read first (the author check GETs the issue), and that
 read does appear. For pushes, also compare the fake's refs before and
 after with
 `GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -C "$S/gh-root/acme/widgets.git" for-each-ref`.
 
 The fake stands in for GitHub only. Policy, proxies, signing, and sockets
-are the real binary. What GitHub itself enforces (the `workflow` scope over
-HTTPS, branch protection, rulesets) isn't modeled, so don't claim it.
+are the real binary. What GitHub itself enforces (branch protection,
+rulesets) isn't modeled, so don't claim it.
 
 ## The gh matrix
 
@@ -168,11 +177,8 @@ still name `$S`. Then it records the fake's refs and deletes everything in
 
 ## Not covered by the scratch broker
 
-- **git over SSH** (`ssh.sock`, `hallpass ssh`, the pack workflow check).
-  The sshgate dials real github.com with GitHub's published host keys, and
-  `git_url` doesn't redirect it. The tests in `internal/sshgate` and
-  `internal/policy/workflows_test.go` cover the pieces. An end-to-end check
-  needs the live broker and a real repo the user names.
+- **Port 22 to real GitHub.** The scratch broker dials the fake through
+  `ssh_addr`, so GitHub's real host keys and network path aren't exercised.
 - **Root setup and maintenance commands** (`install`, `login`,
   `install-pat`, `ssh-key`, `signing-key`, `allow`, `disallow`, `policy`, `ledger`,
   `logout`, `uninstall`). They write `/etc/hallpass` and the live install.

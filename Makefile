@@ -5,7 +5,7 @@ VERSION ?= dev
 WORKTREE := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))bin/worktree
 GOBUILD := CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$(VERSION)"
 
-.PHONY: build test install dist
+.PHONY: build test fuzz corpus schema install dist
 
 build:
 	$(GOBUILD) -o bin/hallpass ./cmd/hallpass
@@ -14,6 +14,27 @@ test:
 	go vet ./...
 	GOOS=darwin go vet ./...
 	go test -count=1 ./...
+
+# Fuzzes the push checks, the only guard against workflow edits over git,
+# for FUZZTIME each. go test runs the seeds on every make test.
+FUZZTIME ?= 30s
+fuzz:
+	for t in FuzzReadPack FuzzWorkflowChanges FuzzApplyDelta; do \
+	  go test -run '^$$' -fuzz "^$$t$$" -fuzztime $(FUZZTIME) ./internal/policy/ || exit 1; \
+	done
+
+# Records what GH sends for the commands agents run, then checks hallpass
+# allows all of it. Run it for each new gh release.
+GH ?= gh
+corpus:
+	go run ./tools/ghcorpus -gh $(GH)
+	go test -count=1 -run 'TestGHCorpus' ./internal/policy/
+
+# Replaces the embedded GraphQL schema with GitHub's current one and lists
+# the new fields to review, then checks the policy tables still match it.
+schema:
+	go run ./tools/ghschema
+	go test -count=1 ./internal/policy/
 
 # Builds, then copies the binary into /opt/hallpass/bin and starts the broker.
 # Refuses in a lane: the live broker runs main, installed from the primary

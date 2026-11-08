@@ -16,10 +16,9 @@ import (
 func allow(args []string) error {
 	fs := flag.NewFlagSet("allow", flag.ExitOnError)
 	read := fs.Bool("read", false, "agents may read but not write")
-	via := fs.String("via", "", "https or ssh; the default is https when there's a token")
-	fs.Parse(reorder(args, "--via"))
+	fs.Parse(reorder(args))
 	if fs.NArg() != 1 {
-		return errors.New("usage: hallpass allow OWNER/REPO|OWNER/* [--read] [--via ssh]")
+		return errors.New("usage: hallpass allow OWNER/REPO|OWNER/* [--read]")
 	}
 	if err := system.RequireRoot("allow"); err != nil {
 		return err
@@ -32,13 +31,7 @@ func allow(args []string) error {
 	if err != nil {
 		return err
 	}
-	switch {
-	case *via == "ssh" && cfg.SSH == nil:
-		return fmt.Errorf("there's no SSH key yet. Create one: sudo %s ssh-key create", system.Binary)
-	case *via == "https" && cfg.Token == nil:
-		return fmt.Errorf("there's no token yet. Get one: sudo %s login", system.Binary)
-	}
-	entry := config.Repo{Match: match, Via: *via}
+	entry := config.Repo{Match: match}
 	if *read {
 		entry.Access = "read"
 	}

@@ -1,13 +1,13 @@
 # Written by hallpass install.
 [Unit]
 Description=hallpass GitHub credential broker
-Requires=hallpass.socket hallpass-git.socket hallpass-gh.socket hallpass-ssh.socket
-After=hallpass.socket hallpass-git.socket hallpass-gh.socket hallpass-ssh.socket network-online.target
+Requires=hallpass.socket hallpass-gh.socket hallpass-ssh.socket
+After=hallpass.socket hallpass-gh.socket hallpass-ssh.socket network-online.target
 Wants=network-online.target
 
 [Service]
 ExecStart=/opt/hallpass/bin/hallpass serve
-Sockets=hallpass.socket hallpass-git.socket hallpass-gh.socket hallpass-ssh.socket
+Sockets=hallpass.socket hallpass-gh.socket hallpass-ssh.socket
 User=hallpass
 Group=hallpass
 # /dev/tpmrm0 belongs to the tss group.
@@ -16,6 +16,9 @@ StateDirectory=hallpass
 StateDirectoryMode=0700
 UMask=0077
 Restart=on-failure
+# journald drops lines past its rate limit, so a flood of cheap refusals
+# could hide a real request. Keep every line instead.
+LogRateLimitIntervalSec=0
 
 NoNewPrivileges=yes
 CapabilityBoundingSet=

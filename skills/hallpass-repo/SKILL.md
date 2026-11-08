@@ -7,8 +7,8 @@ disable-model-invocation: true
 # Add a repo to hallpass
 
 Run the checks below, then settle the plan with the user: the repo or
-`'OWNER/*'`, read or write, HTTPS or SSH, and any policy changes. SSH
-applies to every repo of that owner. After that, run to the end and report.
+`'OWNER/*'`, read or write, and any policy changes. After that, run to the
+end and report.
 
 To stop agents instead, the user runs
 `sudo /opt/hallpass/bin/hallpass disallow OWNER/REPO`, and you stop there. A
@@ -43,12 +43,13 @@ stopping a push to it.
 The user runs, since it needs sudo:
 
 ```sh
-sudo /opt/hallpass/bin/hallpass allow OWNER/REPO [--read] [--via ssh]
+sudo /opt/hallpass/bin/hallpass allow OWNER/REPO [--read]
 ```
 
-`allow` changes nothing on GitHub. By default the broker refuses merges,
-auto-merge, approvals, change requests, labels, workflow reruns and
-dispatches, and pushes to the default branch.
+`allow` changes nothing on GitHub. By default the broker refuses merges and
+auto-merge (`pr.merge`), approvals and change requests (`review.verdict`),
+labels, workflow reruns and dispatches, and pushes to the default branch
+(`push.default`).
 `/opt/hallpass/bin/hallpass policy show OWNER/REPO` lists each operation's
 name and what's in effect, and the user can allow any of them for this repo:
 
@@ -67,8 +68,7 @@ still apply on top, unless the user is an admin who bypasses them.
 
 For `'OWNER/*'`, pick one repo it covers.
 
-- `git ls-remote https://github.com/OWNER/REPO` succeeds. With `--via ssh`,
-  `git ls-remote git@github.com:OWNER/REPO` does.
+- `git ls-remote https://github.com/OWNER/REPO` succeeds.
 - `/opt/hallpass/bin/hallpass gh api repos/OWNER/REPO --jq .full_name`
   prints the repo.
 - `/opt/hallpass/bin/hallpass status` lists the entry.

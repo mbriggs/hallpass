@@ -19,8 +19,9 @@ import (
 
 	"github.com/mbriggs/hallpass/internal/broker"
 	"github.com/mbriggs/hallpass/internal/config"
+	"github.com/mbriggs/hallpass/internal/github"
+	"github.com/mbriggs/hallpass/internal/op"
 	"github.com/mbriggs/hallpass/internal/peer"
-	"github.com/mbriggs/hallpass/internal/proxy"
 	"github.com/mbriggs/hallpass/internal/sshgate"
 )
 
@@ -132,9 +133,16 @@ func TestGitOverSSHThroughBroker(t *testing.T) {
 			t.Fatal(out)
 		}
 	}
+	// acme/site starts as a copy, and allows push.default.
+	site := filepath.Join(root, "acme", "site.git")
+	if out, err := gitIn(tmp, plain, "clone", "-q", "--bare", bare, site); err != nil {
+		t.Fatal(out)
+	}
 	// What GitHub allows: blobless fetches of any commit.
-	for _, kv := range [][]string{{"uploadpack.allowFilter", "true"}, {"uploadpack.allowAnySHA1InWant", "true"}} {
-		gitIn(bare, plain, "config", kv[0], kv[1])
+	for _, repo := range []string{bare, site} {
+		for _, kv := range [][]string{{"uploadpack.allowFilter", "true"}, {"uploadpack.allowAnySHA1InWant", "true"}} {
+			gitIn(repo, plain, "config", kv[0], kv[1])
+		}
 	}
 
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -148,9 +156,13 @@ func TestGitOverSSHThroughBroker(t *testing.T) {
 	}
 	defer ln.Close()
 	gate := &sshgate.Server{
-		Config:    &config.Config{SSH: &config.Key{}, Repos: []config.Repo{{Match: "acme/widgets"}}, ProtectedBranches: []string{"release/*"}},
+		Config: &config.Config{
+			SSH:               &config.Key{},
+			Repos:             []config.Repo{{Match: "acme/widgets"}, {Match: "acme/site", Allow: []config.Grant{config.Grant(op.PushDefault)}}},
+			ProtectedBranches: []string{"main", "release/*"},
+		},
 		Signer:    key,
-		Ledger:    proxy.OpenLedger(""),
+		Ledger:    sshgate.OpenLedger(""),
 		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Permitted: func(p peer.Peer) bool { return p.Known && p.UID == uint32(os.Getuid()) },
 		Addr:      addr,
@@ -204,6 +216,8 @@ func TestGitOverSSHThroughBroker(t *testing.T) {
 		[]string{"agents can only update branches they created", "push", "--force", "origin", "HEAD:colleague"},
 		[]string{"agents can't push tags", "push", "origin", "HEAD:refs/tags/v1"},
 		[]string{"isn't in hallpass's allowlist", "ls-remote", "https://github.com/acme/secret"},
+		// A delete sends no pack, so the refusal can't wait for one.
+		[]string{"agents can only delete branches they created", "push", "origin", ":colleague"},
 	)
 
 	// A workflow change, buried under a clean commit, never reaches GitHub.
@@ -235,4 +249,54 @@ func TestGitOverSSHThroughBroker(t *testing.T) {
 	if strings.TrimSpace(out) != "refs/heads/agent/fix\nrefs/heads/colleague\nrefs/heads/main" {
 		t.Errorf("refs on GitHub:\n%s", out)
 	}
+
+	// With push.default, acme/site's main takes the push even though
+	// protected_branches names it, and still can't be deleted.
+	siteURL := "https://github.com/acme/site"
+	gitIn(work, env, "reset", "-q", "--hard", "origin/agent/fix")
+	ok("push", "-q", siteURL, "HEAD:main")
+	refused("agents can't delete the default branch", "push", siteURL, ":main")
+	refused("release/1 is protected", "push", siteURL, "HEAD:release/1")
+	head, _ := gitIn(work, env, "rev-parse", "HEAD")
+	if got, _ := gitIn(site, plain, "rev-parse", "main"); got != head {
+		t.Errorf("acme/site main is %s, want %s", got, head)
+	}
+
+	// The ledger holds the commit agents last pushed, not just the name. A
+	// branch the user deleted and made again under the same name is theirs,
+	// and so is one they pushed to.
+	userTip := func(msg, ref string) string {
+		t.Helper()
+		gitIn(seed, plain, "commit", "-q", "--allow-empty", "-m", msg)
+		if out, err := gitIn(seed, plain, "push", "-q", "--force", bare, "HEAD:"+ref); err != nil {
+			t.Fatal(out)
+		}
+		out, _ := gitIn(seed, plain, "rev-parse", "HEAD")
+		return strings.TrimSpace(out)
+	}
+	gitIn(work, env, "reset", "-q", "--hard", "origin/agent/fix")
+	ok("push", "-q", "origin", "HEAD:agent/reuse", "HEAD:agent/gone")
+	gitIn(seed, plain, "push", "-q", bare, ":agent/reuse")
+	reused := userTip("user's own reuse", "agent/reuse")
+	ok("push", "-q", "origin", ":agent/gone")
+	gone := userTip("user's own gone", "agent/gone")
+	pushedTo := userTip("user adds to the agent's branch", "agent/fix")
+	ok("fetch", "-q")
+	gitIn(work, env, "commit", "-q", "--allow-empty", "-m", "agent again")
+	refusedAll(
+		[]string{"agent/reuse has changed since an agent last pushed it", "push", "--force", "origin", "HEAD:agent/reuse"},
+		[]string{"agents can only delete branches they created", "push", "origin", ":agent/gone"},
+		[]string{"ledger add acme/widgets agent/fix " + pushedTo, "push", "--force", "origin", "HEAD:agent/fix"},
+	)
+	for ref, want := range map[string]string{"agent/reuse": reused, "agent/gone": gone, "agent/fix": pushedTo} {
+		if got, _ := gitIn(bare, plain, "rev-parse", ref); strings.TrimSpace(got) != want {
+			t.Errorf("%s on GitHub is %s, want the user's %s", ref, got, want)
+		}
+	}
+	// ledger add hands the branch over as it is, and agents go on from there.
+	if err := gate.Ledger.Record(github.Repo{Owner: "acme", Name: "widgets"}, "agent/fix", pushedTo, "added by hand"); err != nil {
+		t.Fatal(err)
+	}
+	ok("push", "-q", "--force", "origin", "HEAD:agent/fix")
+	ok("push", "-q", "--force", "origin", "HEAD~1:agent/fix")
 }

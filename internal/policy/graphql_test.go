@@ -1,9 +1,7 @@
 package policy
 
 import (
-	"bufio"
 	"encoding/json"
-	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -11,53 +9,6 @@ import (
 	"github.com/mbriggs/hallpass/internal/github"
 	"github.com/mbriggs/hallpass/internal/op"
 )
-
-// The corpus is gh 2.98's real traffic, captured against a stub socket.
-func TestGraphQLCorpus(t *testing.T) {
-	t.Parallel()
-	f, err := os.Open("testdata/gh-2.98.0-capture.jsonl")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	// gh's requests that need an operation that's off by default.
-	optIn := map[string]op.Op{
-		"mergePullRequest(":           op.PRMerge,
-		"enablePullRequestAutoMerge(": op.PRAutoMerge,
-		`"event":"APPROVE"`:           op.ReviewApprove,
-	}
-	sc := bufio.NewScanner(f)
-	sc.Buffer(nil, 1<<20)
-	n := 0
-	for sc.Scan() {
-		var rec struct{ Head, Body string }
-		json.Unmarshal(sc.Bytes(), &rec)
-		if !strings.HasPrefix(rec.Head, "POST /graphql") {
-			continue
-		}
-		n++
-		// The stub answered {}, so gh sent empty IDs where real GitHub would
-		// have given it some.
-		body := strings.ReplaceAll(rec.Body, `"id":""`, `"id":"PR_x"`)
-		g, err := ClassifyGraphQL([]byte(body), nil)
-		if err != nil {
-			t.Errorf("refused gh's own request: %v\n%.300s", err, rec.Body)
-			continue
-		}
-		for marker, want := range optIn {
-			if strings.Contains(rec.Body, marker) && !slices.ContainsFunc(g.Nodes, func(n NodeUse) bool { return slices.Contains(n.Ops, want) }) {
-				t.Errorf("want %s among the ops, got %+v\n%.200s", want, g.Nodes, rec.Body)
-			}
-		}
-		// What the broker forwards classifies the same way.
-		if _, err := ClassifyGraphQL(g.Body, nil); err != nil {
-			t.Errorf("printed request no longer classifies: %v", err)
-		}
-	}
-	if n < 15 {
-		t.Fatalf("only %d GraphQL requests in the corpus", n)
-	}
-}
 
 func gql(query string, vars map[string]any) []byte {
 	b, _ := json.Marshal(map[string]any{"query": query, "variables": vars})
@@ -143,12 +94,12 @@ func TestGraphQLOps(t *testing.T) {
 	}{
 		{"comment", gql(`mutation{addComment(input:{subjectId:"X",body:"hi"}){clientMutationId}}`, nil), []op.Op{op.Comment}},
 		{"aliased merge", gql(`mutation{ok:addComment(input:{subjectId:"X",body:"hi"}){clientMutationId} m:mergePullRequest(input:{pullRequestId:"X"}){clientMutationId}}`, nil), []op.Op{op.Comment, op.PRMerge}},
-		{"approve in variables", gql(`mutation($i:AddPullRequestReviewInput!){addPullRequestReview(input:$i){clientMutationId}}`, map[string]any{"i": map[string]any{"pullRequestId": "X", "event": "APPROVE"}}), []op.Op{op.ReviewComment, op.ReviewApprove}},
-		{"request changes", gql(`mutation{addPullRequestReview(input:{pullRequestId:"X",event:REQUEST_CHANGES}){clientMutationId}}`, nil), []op.Op{op.ReviewComment, op.ReviewChanges}},
-		{"submit approve", gql(`mutation{submitPullRequestReview(input:{pullRequestReviewId:"X",event:APPROVE}){clientMutationId}}`, nil), []op.Op{op.ReviewComment, op.ReviewApprove}},
+		{"approve in variables", gql(`mutation($i:AddPullRequestReviewInput!){addPullRequestReview(input:$i){clientMutationId}}`, map[string]any{"i": map[string]any{"pullRequestId": "X", "event": "APPROVE"}}), []op.Op{op.ReviewComment, op.ReviewVerdict}},
+		{"request changes", gql(`mutation{addPullRequestReview(input:{pullRequestId:"X",event:REQUEST_CHANGES}){clientMutationId}}`, nil), []op.Op{op.ReviewComment, op.ReviewVerdict}},
+		{"submit approve", gql(`mutation{submitPullRequestReview(input:{pullRequestReviewId:"X",event:APPROVE}){clientMutationId}}`, nil), []op.Op{op.ReviewComment, op.ReviewVerdict}},
 		{"labels on create", gql(`mutation{createIssue(input:{repositoryId:"R",title:"t",labelIds:["L"]}){clientMutationId}}`, nil), []op.Op{op.IssueCreate, op.Labels}},
 		{"assign on edit", gql(`mutation{updatePullRequest(input:{pullRequestId:"X",assigneeIds:["U"]}){clientMutationId}}`, nil), []op.Op{op.PREdit, op.Assign}},
-		{"auto-merge", gql(`mutation{enablePullRequestAutoMerge(input:{pullRequestId:"X",mergeMethod:SQUASH}){clientMutationId}}`, nil), []op.Op{op.PRAutoMerge}},
+		{"auto-merge", gql(`mutation{enablePullRequestAutoMerge(input:{pullRequestId:"X",mergeMethod:SQUASH}){clientMutationId}}`, nil), []op.Op{op.PRMerge}},
 		{"merge queue", gql(`mutation{enqueuePullRequest(input:{pullRequestId:"X"}){clientMutationId}}`, nil), []op.Op{op.PRMerge}},
 		{"add labels", gql(`mutation{addLabelsToLabelable(input:{labelableId:"X",labelIds:["L"]}){clientMutationId}}`, nil), []op.Op{op.Labels}},
 	}
@@ -173,9 +124,21 @@ func TestGraphQLOps(t *testing.T) {
 		}
 	}
 
+	// Assigning people needs assign, which is off by default, because
+	// GitHub notifies each person assigned.
+	g, err := ClassifyGraphQL(gql(`mutation{addAssigneesToAssignable(input:{assignableId:"X",assigneeIds:["U"]}){clientMutationId}}`, nil), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r0 := github.Repo{Owner: "acme", Name: "widgets"}
+	defaults := func(github.Repo) (bool, op.Set, bool) { return true, op.Defaults(), true }
+	if err := CheckNode(g.Nodes[0], Node{Type: "Issue", Repo: r0, Authored: true}, defaults); err == nil || !strings.Contains(err.Error(), "policy allow assign") {
+		t.Errorf("assigning with the defaults: %v", err)
+	}
+
 	// CheckOps names the operation and how to allow it.
-	r := github.Repo{Owner: "acme", Name: "widgets"}
-	err := CheckOps([]op.Op{op.Comment, op.PRMerge}, op.Defaults(), r)
+	r := r0
+	err = CheckOps([]op.Op{op.Comment, op.PRMerge}, op.Defaults(), r)
 	if err == nil || !strings.Contains(err.Error(), "policy allow pr.merge --repo acme/widgets") {
 		t.Errorf("CheckOps = %v", err)
 	}

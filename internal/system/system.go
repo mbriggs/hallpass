@@ -34,19 +34,29 @@ const (
 //go:embed units
 var units embed.FS
 
-// RequireRoot fails unless running as root.
+// rootPath is the PATH root commands run with. sudo on macOS keeps the
+// user's PATH, which would let code running as the user choose what root
+// runs by name.
+const rootPath = "/usr/sbin:/usr/bin:/sbin:/bin"
+
+// RequireRoot fails unless running as root. Every root command calls it
+// first, so it also resets PATH to rootPath.
 func RequireRoot(cmd string) error {
 	if os.Geteuid() != 0 {
-		return fmt.Errorf("%s changes system files; run it as: sudo %s %s", cmd, Binary, cmd)
+		return fmt.Errorf("%s needs root; run it as: sudo %s %s", cmd, Binary, cmd)
 	}
-	return nil
+	return os.Setenv("PATH", rootPath)
 }
 
 // InvokingUID is the uid of the user who ran sudo.
 func InvokingUID() (uint32, error) {
-	s := os.Getenv("SUDO_UID")
+	return sudoID("SUDO_UID")
+}
+
+func sudoID(name string) (uint32, error) {
+	s := os.Getenv(name)
 	if s == "" {
-		return 0, fmt.Errorf("SUDO_UID is unset; run with sudo")
+		return 0, fmt.Errorf("%s is unset; run with sudo", name)
 	}
 	n, err := strconv.ParseUint(s, 10, 32)
 	return uint32(n), err
@@ -170,7 +180,9 @@ func copyRoot(src, dst string) error {
 
 func removeGitConfig() {
 	for _, git := range gitBinaries() {
-		_ = exec.Command(git, "config", "--system", "--unset", "--fixed-value", "include.path", GitConfig).Run()
+		if cmd, err := gitCommand(git, "config", "--system", "--unset", "--fixed-value", "include.path", GitConfig); err == nil {
+			_ = cmd.Run()
+		}
 	}
 	for _, p := range []string{GitConfig, SigningPub, AllowedSigners} {
 		_ = os.Remove(p)

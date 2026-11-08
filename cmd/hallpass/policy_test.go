@@ -39,17 +39,6 @@ func TestEditPolicy(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Error(err)
 	}
-
-	cfg.Repos[1].Deny = []config.Grant{config.Grant(op.PRMerge)}
-	if got := overriding(cfg, "", config.Grant(op.PRMerge)); !slices.Equal(got, []string{"acme/site"}) {
-		t.Errorf("overriding global = %v", got)
-	}
-	if got := overriding(cfg, "acme/*", config.Grant(op.PRMerge)); !slices.Equal(got, []string{"acme/site"}) {
-		t.Errorf("overriding acme/* = %v", got)
-	}
-	if got := overriding(cfg, "acme/site", config.Grant(op.PRMerge)); len(got) != 0 {
-		t.Errorf("overriding an exact entry = %v", got)
-	}
 }
 
 func TestEditPolicyAddsEntryUnderOwner(t *testing.T) {

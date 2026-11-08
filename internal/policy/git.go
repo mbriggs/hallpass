@@ -11,107 +11,8 @@ import (
 	"strings"
 
 	"github.com/mbriggs/hallpass/internal/github"
+	"github.com/mbriggs/hallpass/internal/op"
 )
-
-// GitService is the smart-HTTP endpoint a git request is for.
-type GitService int
-
-const (
-	GitInfoRefsUpload GitService = iota + 1
-	GitInfoRefsReceive
-	GitUploadPack
-	GitReceivePack
-)
-
-func (s GitService) String() string {
-	switch s {
-	case GitInfoRefsUpload:
-		return "info/refs upload-pack"
-	case GitInfoRefsReceive:
-		return "info/refs receive-pack"
-	case GitUploadPack:
-		return "upload-pack"
-	case GitReceivePack:
-		return "receive-pack"
-	}
-	return "unknown"
-}
-
-// GitRequest is a git smart-HTTP request the broker may forward.
-type GitRequest struct {
-	Repo    github.Repo
-	Service GitService
-}
-
-// UpstreamPath is the path the broker sends to github.com, rebuilt from the
-// parsed parts rather than copied from the client.
-func (g GitRequest) UpstreamPath() string {
-	base := "/" + g.Repo.Owner + "/" + g.Repo.Name + ".git/"
-	switch g.Service {
-	case GitInfoRefsUpload:
-		return base + "info/refs?service=git-upload-pack"
-	case GitInfoRefsReceive:
-		return base + "info/refs?service=git-receive-pack"
-	case GitUploadPack:
-		return base + "git-upload-pack"
-	default:
-		return base + "git-receive-pack"
-	}
-}
-
-// Write reports whether the request can change the repo.
-func (g GitRequest) Write() bool {
-	return g.Service == GitInfoRefsReceive || g.Service == GitReceivePack
-}
-
-var gitPath = regexp.MustCompile(`^/([A-Za-z0-9][A-Za-z0-9-]{0,38})/([A-Za-z0-9._-]{1,100})/(info/refs|git-upload-pack|git-receive-pack)$`)
-
-// ParseGit classifies a request on the git socket. target is the raw request
-// target (path and query) exactly as the client sent it.
-func ParseGit(method, target, contentType string) (GitRequest, error) {
-	if err := cleanTarget(target); err != nil {
-		return GitRequest{}, err
-	}
-	path, query, _ := strings.Cut(target, "?")
-	m := gitPath.FindStringSubmatch(path)
-	if m == nil {
-		return GitRequest{}, errorf("hallpass only forwards git fetch and push, not %s", path)
-	}
-	name := m[2]
-	if strings.HasSuffix(name, ".git") {
-		name = strings.TrimSuffix(name, ".git")
-	}
-	repo, err := github.ParseRepo(m[1] + "/" + name)
-	if err != nil {
-		return GitRequest{}, errorf("%v", err)
-	}
-	g := GitRequest{Repo: repo}
-	switch m[3] {
-	case "info/refs":
-		if method != "GET" {
-			return GitRequest{}, errorf("info/refs must be GET")
-		}
-		switch query {
-		case "service=git-upload-pack":
-			g.Service = GitInfoRefsUpload
-		case "service=git-receive-pack":
-			g.Service = GitInfoRefsReceive
-		default:
-			return GitRequest{}, errorf("hallpass doesn't support dumb HTTP git")
-		}
-	case "git-upload-pack":
-		if method != "POST" || query != "" || contentType != "application/x-git-upload-pack-request" {
-			return GitRequest{}, errorf("malformed upload-pack request")
-		}
-		g.Service = GitUploadPack
-	case "git-receive-pack":
-		if method != "POST" || query != "" || contentType != "application/x-git-receive-pack-request" {
-			return GitRequest{}, errorf("malformed receive-pack request")
-		}
-		g.Service = GitReceivePack
-	}
-	return g, nil
-}
 
 // RefUpdate is one command in a push.
 type RefUpdate struct {
@@ -144,6 +45,17 @@ type Push struct {
 	Probe bool
 	// Read is how many bytes of the body the command section took.
 	Read int
+}
+
+// HasPack reports whether a pack follows the commands. git sends none when
+// every update is a delete.
+func (p Push) HasPack() bool {
+	for _, u := range p.Updates {
+		if !u.Delete() {
+			return true
+		}
+	}
+	return false
 }
 
 // SideBand reports whether the client asked for side-band output.
@@ -280,20 +192,34 @@ func writePkt(w *bytes.Buffer, s string) {
 // Branches is what the broker knows about a repo's branches when it checks
 // a push.
 type Branches struct {
+	// Default is the default branch, or "" for an empty repo.
 	Default string
-	// PushDefault lets agents create or update the default branch, though
-	// not delete it, even when a protected pattern names it.
-	PushDefault bool
-	Protected   []string // patterns: exact names or a trailing "/*"
-	// Ours reports whether this machine's agents created the branch.
-	Ours func(branch string) bool
+	// Ops is what the repo's config lets agents do. With op.PushDefault
+	// they may create or update the default branch, though not delete it,
+	// even when a protected pattern names it.
+	Ops       op.Set
+	Protected []string // patterns: exact names or a trailing "/*"
+	// Tip returns the commit this machine's agents last pushed to a branch
+	// they created, or "" for any other branch. Agents may update or delete
+	// a branch only from that commit.
+	Tip func(branch string) string
+	// Repo names the repo in refusal messages.
+	Repo github.Repo
 }
 
 // CheckPush returns the reason each refused update was refused, keyed by
 // ref. An empty map means every update may go upstream.
 func CheckPush(p Push, b Branches) map[string]string {
 	refused := map[string]string{}
+	seen := map[string]bool{}
 	for _, u := range p.Updates {
+		if seen[u.Ref] {
+			// The ledger reads GitHub's answer by ref, so one ref must
+			// mean one command.
+			refused[u.Ref] = "push names " + u.Ref + " twice"
+			continue
+		}
+		seen[u.Ref] = true
 		if reason := checkUpdate(u, b); reason != "" {
 			refused[u.Ref] = reason
 		}
@@ -312,23 +238,43 @@ func checkUpdate(u RefUpdate, b Branches) string {
 		return "not a valid branch name"
 	case u.Create() && u.Delete():
 		return "malformed push command"
-	case strings.EqualFold(branch, b.Default) && !b.PushDefault:
-		return branch + " is the default branch; push another branch and open a PR"
-	case strings.EqualFold(branch, b.Default) && u.Delete():
-		return "agents can't delete the default branch"
+	case b.Default == "" && u.Create():
+		// An empty repo has no default branch yet, and GitHub makes the
+		// first branch pushed to it the default. It has no refs to update
+		// or delete, so anything but a create goes on to the checks below.
+		if err := CheckOps([]op.Op{op.PushDefault}, b.Ops, b.Repo); err != nil {
+			return b.Repo.String() + " is empty, so " + branch + " would become its default branch. " + err.Error()
+		}
+		return ""
 	case strings.EqualFold(branch, b.Default):
+		if err := CheckOps([]op.Op{op.PushDefault}, b.Ops, b.Repo); err != nil {
+			return branch + " is the default branch; push another branch and open a PR. " + err.Error()
+		}
+		if u.Delete() {
+			return "agents can't delete the default branch"
+		}
 		return ""
 	case protected(branch, b.Protected):
 		return branch + " is protected in hallpass's config"
 	case u.Create():
 		return ""
-	case b.Ours == nil || !b.Ours(branch):
-		if u.Delete() {
-			return "agents can only delete branches they created"
-		}
-		return "agents can only update branches they created; run sudo /opt/hallpass/bin/hallpass ledger add to allow this one"
 	}
-	return ""
+	tip := ""
+	if b.Tip != nil {
+		tip = b.Tip(branch)
+	}
+	if tip != "" && tip == u.Old {
+		return ""
+	}
+	verb := "update"
+	if u.Delete() {
+		verb = "delete"
+	}
+	why := "agents can only " + verb + " branches they created"
+	if tip != "" {
+		why = branch + " has changed since an agent last pushed it (agents pushed " + tip[:7] + ", this push starts from " + u.Old[:7] + ")"
+	}
+	return why + ". To let agents " + verb + " it as it is: sudo /opt/hallpass/bin/hallpass ledger add " + b.Repo.String() + " " + branch + " " + u.Old
 }
 
 func protected(branch string, patterns []string) bool {

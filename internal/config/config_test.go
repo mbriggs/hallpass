@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -15,7 +16,7 @@ func TestAllowed(t *testing.T) {
 		Token: &Token{Secret: "file:/x", Source: "pat"},
 		SSH:   &Key{Key: "file:/y"},
 		Repos: []Repo{
-			{Match: "acme/*", Via: "ssh"},
+			{Match: "acme/*"},
 			{Match: "acme/payments", Access: "read"},
 			{Match: "mbriggs/*"},
 		},
@@ -24,28 +25,29 @@ func TestAllowed(t *testing.T) {
 		repo  string
 		ok    bool
 		write bool
-		via   string
 	}{
-		{"acme/widgets", true, true, "ssh"},
-		{"ACME/Payments", true, false, "https"},
-		{"mbriggs/dots", true, true, "https"},
-		{"acmex/foo", false, false, ""},
-		{"other/repo", false, false, ""},
+		{"acme/widgets", true, true},
+		{"ACME/Payments", true, false},
+		{"mbriggs/dots", true, true},
+		{"acmex/foo", false, false},
+		{"other/repo", false, false},
 	}
 	for _, tc := range cases {
 		r, _ := github.ParseRepo(tc.repo)
 		got, ok := c.Allowed(r)
-		if ok != tc.ok || got.Write != tc.write || got.Via != tc.via {
+		if ok != tc.ok || got.Write != tc.write {
 			t.Errorf("Allowed(%s) = %+v, %v", tc.repo, got, ok)
 		}
 	}
-	if o := c.SSHOwners(); len(o) != 1 || o[0] != "acme" {
-		t.Errorf("SSHOwners = %v", o)
-	}
+}
 
-	sshOnly := &Config{SSH: &Key{Key: "file:/y"}, Repos: []Repo{{Match: "acme/*"}}}
-	if r, _ := sshOnly.Allowed(github.Repo{Owner: "acme", Name: "x"}); r.Via != "ssh" {
-		t.Errorf("SSH-only machine routes %q", r.Via)
+// A config written before via went away still loads.
+func TestLoadIgnoresVia(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hallpass.toml")
+	os.WriteFile(path, []byte("[[repo]]\nmatch = \"mbriggs/*\"\nvia = \"ssh\"\n"), 0o644)
+	c, err := Load(path)
+	if err != nil || len(c.Repos) != 1 {
+		t.Fatalf("Load = %+v, %v", c, err)
 	}
 }
 

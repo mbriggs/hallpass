@@ -9,7 +9,11 @@ import (
 )
 
 // sockets are the broker's socket units, one per protocol.
-var sockets = []string{"hallpass.socket", "hallpass-git.socket", "hallpass-gh.socket", "hallpass-ssh.socket"}
+var sockets = []string{"hallpass.socket", "hallpass-gh.socket", "hallpass-ssh.socket"}
+
+// retired are units earlier versions installed. Install and Uninstall remove
+// them. hallpass-git.socket carried git over HTTPS.
+var retired = []string{"hallpass-git.socket"}
 
 // Install creates the service user, copies the binary, writes the git and gh
 // config, and starts the sockets. Rerunning it upgrades in place.
@@ -24,6 +28,9 @@ func Install(cfg *config.Config) error {
 		return err
 	}
 	if err := WriteClientConfig(cfg); err != nil {
+		return err
+	}
+	if err := removeUnits(retired); err != nil {
 		return err
 	}
 	for _, u := range append([]string{"hallpass.service"}, sockets...) {
@@ -58,12 +65,8 @@ func LogHint() string { return "journalctl -u hallpass" }
 // Uninstall stops the broker and removes what Install added. It leaves the
 // key and config unless purge is set.
 func Uninstall(purge bool) error {
-	_ = run("systemctl", append([]string{"disable", "--now", "hallpass.service"}, sockets...)...)
-	for _, u := range append([]string{"hallpass.service"}, sockets...) {
-		p := "/etc/systemd/system/" + u
-		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-			return err
-		}
+	if err := removeUnits(append(append([]string{"hallpass.service"}, sockets...), retired...)); err != nil {
+		return err
 	}
 	_ = run("systemctl", "daemon-reload")
 	removeGitConfig()
@@ -77,6 +80,27 @@ func Uninstall(purge bool) error {
 			}
 		}
 		fmt.Fprintln(os.Stderr, "Removed the credentials and config. The hallpass user remains; remove it with userdel hallpass and delete /etc/sysusers.d/hallpass.conf.")
+	}
+	return nil
+}
+
+// removeUnits stops, disables, and deletes units. A unit that was never
+// installed is fine.
+func removeUnits(units []string) error {
+	var present []string
+	for _, u := range units {
+		if _, err := os.Stat("/etc/systemd/system/" + u); err == nil {
+			present = append(present, u)
+		}
+	}
+	if len(present) == 0 {
+		return nil
+	}
+	_ = run("systemctl", append([]string{"disable", "--now"}, present...)...)
+	for _, u := range present {
+		if err := os.Remove("/etc/systemd/system/" + u); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 	}
 	return nil
 }

@@ -19,11 +19,14 @@ Preconditions: `cd /tmp`.
   prints `https://github.com/acme/widgets/pull/1#issuecomment-1`. The fake
   log has a `POST /api/graphql` whose body contains `addComment` and `looks fine`.
 - **Merge.** `gh pr merge 1 -R acme/widgets --squash` exits 1 with
-  `GraphQL: hallpass: agents may not merge PRs or add them to the merge queue in acme/widgets. To allow it: sudo /opt/hallpass/bin/hallpass policy allow pr.merge --repo acme/widgets`.
+  `GraphQL: hallpass: agents may not merge PRs, add them to the merge queue, or turn auto-merge on or off in acme/widgets. To allow it: sudo /opt/hallpass/bin/hallpass policy allow pr.merge --repo acme/widgets`.
   No fake log entry contains `mergePullRequest`.
 - **Approve.** `gh pr review 1 -R acme/widgets --approve` exits 1 with
-  `hallpass: agents may not approve PRs in acme/widgets. To allow it: sudo /opt/hallpass/bin/hallpass policy allow review.approve --repo acme/widgets`.
+  `hallpass: agents may not approve PRs or request changes in acme/widgets. To allow it: sudo /opt/hallpass/bin/hallpass policy allow review.verdict --repo acme/widgets`.
   No fake log body contains `APPROVE`.
+- **Allowlist.** `gh pr comment 1 -R acme/secret -b hi` exits 1 with
+  `GraphQL: hallpass: acme/secret isn't in hallpass's allowlist`. No fake log
+  entry names `acme/secret`. (Feature ID `gql-allowlist`.)
 - **ChatOps.** `gh pr comment 1 -R acme/widgets -b "/merge"` exits 1 with
   `hallpass: hallpass doesn't post text with the line "/merge", because bots act on lines like it as your command. Rephrase it`.
   No fake log body contains `/merge`.
@@ -37,3 +40,5 @@ Preconditions: `cd /tmp`.
   changes a query, the fake falls back to `{"data":{}}` and gh fails with a
   parse or "not found" error that isn't from hallpass. Extend
   `scripts/fakegithub/main.go` instead of reading that as a broker failure.
+  `internal/policy/testdata/gh-<version>-capture.jsonl` (from `make corpus`)
+  has the new gh's exact queries, tagged by command, to copy from.

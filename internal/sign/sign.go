@@ -57,26 +57,31 @@ func Sign(signer crypto.Signer, data []byte) ([]byte, error) {
 }
 
 var (
-	commitHead = regexp.MustCompile(`^tree [0-9a-f]{40}(?:[0-9a-f]{24})?\n`)
-	tagHead    = regexp.MustCompile(`^object [0-9a-f]{40}(?:[0-9a-f]{24})?\ntype [a-z]+\ntag [^\n]+\n`)
+	oid   = `[0-9a-f]{40}(?:[0-9a-f]{24})?`
+	ident = `[^<>\n]* <[^<>\n]*> [0-9]+ [+-][0-9]{4}`
+	// The headers git writes, in the order it writes them. A signature
+	// header doesn't match, so an object that's already signed is refused.
+	commitHeader = regexp.MustCompile(`^tree ` + oid + `\n(?:parent ` + oid + `\n)*author ` + ident + `\ncommitter ` + ident +
+		`\n(?:encoding [^\n]+\n)?(?:mergetag [^\n]*\n(?: [^\n]*\n)*)*$`)
+	tagHeader = regexp.MustCompile(`^object ` + oid + `\ntype (?:commit|tree|blob|tag)\ntag [^\n]+\ntagger ` + ident + `\n$`)
 )
 
 // Describe checks that data is a git commit or tag object, the only things
 // the broker signs, and summarizes it for the audit log.
 func Describe(data []byte) (string, error) {
+	head, msg, ok := bytes.Cut(data, []byte("\n\n"))
+	header := data[:min(len(head)+1, len(data))]
 	kind := ""
 	switch {
-	case commitHead.Match(data):
+	case !ok || bytes.IndexByte(header, 0) >= 0:
+	case commitHeader.Match(header):
 		kind = "commit"
-	case tagHead.Match(data):
+	case tagHeader.Match(header):
 		kind = "tag"
-	default:
-		return "", errors.New("hallpass only signs git commits and tags")
 	}
-	if bytes.Contains(data, []byte("\ngpgsig ")) {
-		return "", errors.New("the object already carries a signature")
+	if kind == "" {
+		return "", errors.New("hallpass only signs unsigned git commits and tags")
 	}
-	_, msg, _ := bytes.Cut(data, []byte("\n\n"))
 	subject, _, _ := bytes.Cut(msg, []byte("\n"))
 	if len(subject) > 120 {
 		subject = subject[:120]

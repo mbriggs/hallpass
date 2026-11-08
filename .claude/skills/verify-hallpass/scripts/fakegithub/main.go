@@ -1,10 +1,11 @@
 // Command fakegithub stands in for github.com and api.github.com while a
-// scratch hallpass broker is driven for verification. It serves git smart
-// HTTP from bare repos under -root through git http-backend, answers the
-// REST and GraphQL calls gh and the broker make for acme/widgets, and
-// refuses anything that doesn't carry the scratch token the broker should
-// have added. Every request it sees goes to -log as one JSON line, so the
-// log shows what actually reached "GitHub".
+// scratch hallpass broker is driven for verification. It serves git over
+// SSH from bare repos under -root, running real git-upload-pack and
+// git-receive-pack for the one client key it accepts. It answers the REST
+// and GraphQL calls gh and the broker make for acme/widgets, and refuses
+// any that don't carry the scratch token the broker should have added.
+// Every request it sees goes to -log as one JSON line, so the log shows
+// what actually reached "GitHub".
 //
 // Build it outside the module's package tree (the directory starts with a
 // dot, so go vet ./... skips it):
@@ -15,7 +16,10 @@ package main
 import (
 	"archive/zip"
 	"bytes"
-	"encoding/base64"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -23,13 +27,14 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/http/cgi"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 )
 
 // login is the account the scratch token belongs to. up.sh writes the same
@@ -41,7 +46,7 @@ type entry struct {
 	Method string `json:"method"`
 	Path   string `json:"path"`
 	Query  string `json:"query,omitempty"`
-	Auth   string `json:"auth"` // "token-ok", "basic-ok", "wrong", or "none"
+	Auth   string `json:"auth"` // "token-ok", "key-ok", "wrong", or "none"
 	Status int    `json:"status"`
 	Body   string `json:"body,omitempty"`
 }
@@ -61,25 +66,17 @@ func main() {
 	tokenFile := flag.String("token-file", "", "file holding the token the broker must send")
 	logPath := flag.String("log", "", "JSONL request log")
 	ready := flag.String("ready", "", "file to write the base URL to once listening")
+	clientKey := flag.String("ssh-client-key", "", "authorized_keys line of the one key git over SSH accepts")
+	sshReady := flag.String("ssh-ready", "", "file to write the SSH address and host key to once listening")
 	flag.Parse()
-	if *root == "" || *tokenFile == "" || *logPath == "" || *ready == "" {
-		log.Fatal("fakegithub: -root, -token-file, -log, and -ready are required")
+	if *root == "" || *tokenFile == "" || *logPath == "" || *ready == "" || *clientKey == "" || *sshReady == "" {
+		log.Fatal("fakegithub: -root, -token-file, -log, -ready, -ssh-client-key, and -ssh-ready are required")
 	}
 	tb, err := os.ReadFile(*tokenFile)
 	if err != nil {
 		log.Fatal(err)
 	}
 	token := strings.TrimSpace(string(tb))
-	basic := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+token))
-
-	gitExec, err := exec.Command("git", "--exec-path").Output()
-	if err != nil {
-		log.Fatal("fakegithub: git --exec-path: ", err)
-	}
-	backend := &cgi.Handler{
-		Path: filepath.Join(strings.TrimSpace(string(gitExec)), "git-http-backend"),
-		Env:  []string{"GIT_PROJECT_ROOT=" + *root, "GIT_HTTP_EXPORT_ALL=1", "REMOTE_USER=agent"},
-	}
 
 	lf, err := os.OpenFile(*logPath, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644)
 	if err != nil {
@@ -103,8 +100,6 @@ func main() {
 		switch got := r.Header.Get("Authorization"); {
 		case got == "token "+token:
 			auth = "token-ok"
-		case got == basic:
-			auth = "basic-ok"
 		case got != "":
 			auth = "wrong"
 		}
@@ -114,24 +109,27 @@ func main() {
 			if len(b) > 2000 {
 				b = b[:2000] + "..."
 			}
-			record(entry{Time: time.Now().UTC().Format(time.RFC3339Nano), Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery, Auth: auth, Status: rec.status, Body: b})
+			record(entry{Time: now(), Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery, Auth: auth, Status: rec.status, Body: b})
 		}()
-		if strings.HasPrefix(r.URL.Path, "/api/") {
-			if auth != "token-ok" {
-				rec.WriteHeader(401)
-				io.WriteString(rec, `{"message":"Bad credentials"}`)
-				return
-			}
-			api(rec, r, strings.TrimPrefix(r.URL.Path, "/api"), string(body))
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			rec.WriteHeader(404)
 			return
 		}
-		if auth != "basic-ok" {
-			rec.Header().Set("WWW-Authenticate", `Basic realm="GitHub"`)
+		if auth != "token-ok" {
 			rec.WriteHeader(401)
+			io.WriteString(rec, `{"message":"Bad credentials"}`)
 			return
 		}
-		backend.ServeHTTP(rec, r)
+		api(rec, r, strings.TrimPrefix(r.URL.Path, "/api"), string(body))
 	})
+
+	addr, hostKey, err := serveGitSSH(*root, *clientKey, record)
+	if err != nil {
+		log.Fatal("fakegithub: ssh: ", err)
+	}
+	if err := os.WriteFile(*sshReady, []byte(addr+"\n"+hostKey+"\n"), 0o644); err != nil {
+		log.Fatal(err)
+	}
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -247,16 +245,7 @@ func runLogs() string {
 func graphql(reply func(int, string), q string) {
 	switch {
 	case strings.Contains(q, "nodes(ids"):
-		// PR_1 and I_1 are the token user's, like PR and issue 1 over REST.
-		mine := strings.Contains(q, `"PR_1"`) || strings.Contains(q, `"I_1"`)
-		typ := "PullRequest"
-		switch {
-		case strings.Contains(q, `"I_`):
-			typ = "Issue"
-		case strings.Contains(q, `"R_`):
-			typ = "Repository"
-		}
-		reply(200, fmt.Sprintf(`{"data":{"nodes":[{"__typename":"%s","repository":{"nameWithOwner":"acme/widgets"},"viewerDidAuthor":%t}]}}`, typ, mine))
+		reply(200, nodes(q))
 	case strings.Contains(q, "IssueByNumber"):
 		reply(200, `{"data":{"repository":{"hasIssuesEnabled":true,"issue":{"__typename":"Issue","id":"I_1","number":1,"url":"https://github.com/acme/widgets/issues/1","state":"OPEN","title":"fake issue","body":"","author":{"login":"verifier"},"comments":{"nodes":[],"totalCount":0},"assignees":{"nodes":[],"totalCount":0},"labels":{"nodes":[],"totalCount":0}}}}}`)
 	case strings.Contains(q, "addComment"):
@@ -269,3 +258,141 @@ func graphql(reply func(int, string), q string) {
 		reply(200, `{"data":{}}`)
 	}
 }
+
+// nodes answers the broker's node lookup with one node per requested ID, in
+// acme/widgets. IDs starting I_ are issues, R_ repos, and the rest PRs, and
+// those ending _1 were written by the token's account, matching the REST
+// fixture.
+func nodes(body string) string {
+	var req struct {
+		Variables struct {
+			IDs []string `json:"ids"`
+		} `json:"variables"`
+	}
+	json.Unmarshal([]byte(body), &req)
+	var out []map[string]any
+	for _, id := range req.Variables.IDs {
+		typ := "PullRequest"
+		switch {
+		case strings.HasPrefix(id, "I_"):
+			typ = "Issue"
+		case strings.HasPrefix(id, "R_"):
+			typ = "Repository"
+		}
+		out = append(out, map[string]any{
+			"__typename":      typ,
+			"repository":      map[string]string{"nameWithOwner": "acme/widgets"},
+			"viewerDidAuthor": strings.HasSuffix(id, "_1"),
+		})
+	}
+	b, _ := json.Marshal(map[string]any{"data": map[string]any{"nodes": out}})
+	return string(b)
+}
+
+// serveGitSSH listens on a local port and runs git-upload-pack and
+// git-receive-pack over bare repos in root, as GitHub does, for the one
+// client key it accepts. Each command goes to the request log.
+func serveGitSSH(root, clientKey string, record func(entry)) (addr, hostKey string, err error) {
+	want, _, _, _, err := ssh.ParseAuthorizedKey([]byte(clientKey))
+	if err != nil {
+		return "", "", fmt.Errorf("-ssh-client-key: %w", err)
+	}
+	hk, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return "", "", err
+	}
+	hs, err := ssh.NewSignerFromSigner(hk)
+	if err != nil {
+		return "", "", err
+	}
+	cfg := &ssh.ServerConfig{PublicKeyCallback: func(_ ssh.ConnMetadata, k ssh.PublicKey) (*ssh.Permissions, error) {
+		if !bytes.Equal(k.Marshal(), want.Marshal()) {
+			record(entry{Time: now(), Method: "SSH", Path: "auth", Auth: "wrong", Status: 1})
+			return nil, fmt.Errorf("unknown key")
+		}
+		return nil, nil
+	}}
+	cfg.AddHostKey(hs)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", "", err
+	}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go serveSSHConn(c, cfg, root, record)
+		}
+	}()
+	return ln.Addr().String(), strings.TrimSpace(string(ssh.MarshalAuthorizedKey(hs.PublicKey()))), nil
+}
+
+func serveSSHConn(c net.Conn, cfg *ssh.ServerConfig, root string, record func(entry)) {
+	_, chans, reqs, err := ssh.NewServerConn(c, cfg)
+	if err != nil {
+		return
+	}
+	go ssh.DiscardRequests(reqs)
+	for nc := range chans {
+		ch, creqs, err := nc.Accept()
+		if err != nil {
+			continue
+		}
+		go func() {
+			defer ch.Close()
+			var env []string
+			for req := range creqs {
+				switch req.Type {
+				case "env":
+					var kv struct{ K, V string }
+					ssh.Unmarshal(req.Payload, &kv)
+					env = append(env, kv.K+"="+kv.V)
+					req.Reply(true, nil)
+				case "exec":
+					var cmd struct{ C string }
+					ssh.Unmarshal(req.Payload, &cmd)
+					req.Reply(true, nil)
+					status := runGit(cmd.C, root, env, ch)
+					record(entry{Time: now(), Method: "SSH", Path: cmd.C, Auth: "key-ok", Status: int(status)})
+					var b [4]byte
+					binary.BigEndian.PutUint32(b[:], status)
+					ch.SendRequest("exit-status", false, b[:])
+					return
+				case "shell":
+					// What GitHub says to ssh -T, which status --check reads.
+					req.Reply(true, nil)
+					io.WriteString(ch.Stderr(), "Hi "+login+"! You've successfully authenticated, but GitHub does not provide shell access.\n")
+					record(entry{Time: now(), Method: "SSH", Path: "shell", Auth: "key-ok", Status: 1})
+					ch.SendRequest("exit-status", false, []byte{0, 0, 0, 1})
+					return
+				default:
+					req.Reply(false, nil)
+				}
+			}
+		}()
+	}
+}
+
+// runGit runs "git-upload-pack 'owner/name.git'" or the receive-pack form
+// against the bare repo in root, and returns its exit status.
+func runGit(command, root string, env []string, ch ssh.Channel) uint32 {
+	svc, arg, ok := strings.Cut(command, " ")
+	if !ok || (svc != "git-upload-pack" && svc != "git-receive-pack") {
+		return 1
+	}
+	path := strings.Trim(arg, "'")
+	if strings.Contains(path, "..") || strings.Count(path, "/") != 1 {
+		return 1
+	}
+	g := exec.Command("git", strings.TrimPrefix(svc, "git-"), filepath.Join(root, path))
+	g.Env = append(os.Environ(), env...)
+	g.Stdin, g.Stdout, g.Stderr = ch, ch, ch.Stderr()
+	if g.Run() != nil {
+		return 1
+	}
+	return 0
+}
+
+func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }

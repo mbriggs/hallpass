@@ -62,13 +62,15 @@ to their PATH.
 
 Each is optional:
 
-- **The token** turns on git over HTTPS and gh. Most users want it.
-- **The SSH key** turns on git over SSH. It's only needed for orgs that
-  block both classic PATs and GitHub CLI's OAuth app but accept SSH keys,
-  or when the user wants a key that can't leave the TPM. Only Linux has a
+- **The token** turns on gh. Most users want it.
+- **The SSH key** turns on git, which goes through hallpass over SSH only.
+  Most users want it too. With a token and no SSH key, git still goes to
+  the broker, which refuses it and says to create a key. Only Linux has a
   TPM backend. On macOS hallpass keeps keys in a file only its service user
   can read, encrypted under a key tied to the Mac. If `doctor` warns that a
   credential is a plain file, it predates sealing; offer to set it up again.
+  The broker dials `github.com:22`, so a network that blocks port
+  22 can't use git through hallpass.
 - **The signing key** signs commits and tags, which then show as Verified.
 
 Tell the user that every credential acts as them on GitHub, so agent PRs,
@@ -95,8 +97,8 @@ Two ways, and both store the token the same way:
 
 The user runs `sudo /opt/hallpass/bin/hallpass ssh-key create` and adds the
 printed key at https://github.com/settings/ssh/new as an **Authentication**
-key, then authorizes it for any SSO orgs. git over SSH also needs repos
-allowed with `--via ssh` when there's a token, since HTTPS is the default.
+key, then authorizes it for any SSO orgs. From then on git works through
+hallpass for every allowed repo.
 
 ### The signing key
 
@@ -131,8 +133,7 @@ sudo /opt/hallpass/bin/hallpass allow OWNER/REPO
 
 `'OWNER/*'` covers every current and future repo of an owner. Quote it, or
 zsh fails the glob before hallpass runs. `--read` lets agents read but not
-write. `--via ssh` sends git for every repo of that owner over SSH. For an
-org repo, suggest the user run `/hallpass-repo` instead, which checks what
+write. For an org repo, suggest the user run `/hallpass-repo` instead, which checks what
 an agent's branch could trigger there before suggesting any policy change.
 
 ## Choose what agents may do

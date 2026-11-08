@@ -24,10 +24,8 @@ const (
 	Comment          Op = "comment"
 	ReviewComment    Op = "review.comment"
 	PushDefault      Op = "push.default"
-	ReviewApprove    Op = "review.approve"
-	ReviewChanges    Op = "review.request-changes"
+	ReviewVerdict    Op = "review.verdict"
 	PRMerge          Op = "pr.merge"
-	PRAutoMerge      Op = "pr.automerge"
 	Labels           Op = "labels"
 	WorkflowRerun    Op = "workflow.rerun"
 	WorkflowDispatch Op = "workflow.dispatch"
@@ -59,14 +57,10 @@ var All = []Info{
 		Warn: "GitHub notifies each person assigned."},
 	{Op: PushDefault, Does: "push the default branch",
 		Warn: "Agents can also force-push it. hallpass can't tell a force push from a fast-forward, so turn on GitHub's branch protection if its history matters."},
-	{Op: ReviewApprove, Does: "approve PRs",
-		Warn: "An approval through hallpass counts as yours. GitHub doesn't let you approve your own PRs, so this approves other people's."},
-	{Op: ReviewChanges, Does: "request changes in reviews",
-		Warn: "A change request through hallpass counts as yours, and can block a PR until you dismiss it."},
-	{Op: PRMerge, Does: "merge PRs or add them to the merge queue",
-		Warn: "Agents can merge any PR GitHub lets you merge, including their own, with nobody reviewing it."},
-	{Op: PRAutoMerge, Does: "turn auto-merge on or off",
-		Warn: "With auto-merge on, a PR merges once its checks pass, with nobody reviewing it."},
+	{Op: ReviewVerdict, Does: "approve PRs or request changes",
+		Warn: "An approval or change request through hallpass counts as yours. GitHub doesn't let you approve your own PRs, so this approves other people's, and a change request can block a PR until you dismiss it."},
+	{Op: PRMerge, Does: "merge PRs, add them to the merge queue, or turn auto-merge on or off",
+		Warn: "Agents can merge any PR GitHub lets you merge, including their own, with nobody reviewing it. Auto-merge merges once checks pass."},
 	{Op: Labels, Does: "add or remove labels",
 		Warn: "Some repos treat labels like automerge or safe-to-test as approvals."},
 	{Op: WorkflowRerun, Does: "rerun workflow runs and jobs",

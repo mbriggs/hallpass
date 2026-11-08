@@ -194,6 +194,9 @@ func (w *walker) queryRoot(set ast.SelectionSet) error {
 			if err != nil {
 				return errorf("repository(...): %v", err)
 			}
+			if err := noRenames(f); err != nil {
+				return err
+			}
 			w.g.Repos = append(w.g.Repos, RepoUse{Repo: r})
 			return w.selections(f, full, 1)
 		case "node", "nodes":
@@ -216,6 +219,11 @@ func (w *walker) queryRoot(set ast.SelectionSet) error {
 		case "viewer":
 			return w.selections(f, identity, 1)
 		case "search":
+			// GitHub ignores repo: in user and repo searches, so only issue
+			// searches stay inside the repo.
+			if args["type"] != "ISSUE" {
+				return errorf("hallpass only allows GraphQL searches of type ISSUE")
+			}
 			r, err := SearchRepo(fmt.Sprint(args["query"]))
 			if err != nil {
 				return err
@@ -238,7 +246,10 @@ func (w *walker) mutationRoot(set ast.SelectionSet) error {
 		if input == nil {
 			return errorf("%s needs an input", f.Name)
 		}
-		ops := []op.Op{m.op}
+		var ops []op.Op
+		if m.op != "" {
+			ops = append(ops, m.op)
+		}
 		for k := range input {
 			if o, ok := m.opFields[k]; ok {
 				ops = append(ops, o)
@@ -347,10 +358,17 @@ func (w *walker) selections(f *ast.Field, v view, depth int) error {
 			return errorf("unknown type for %s", c.Name)
 		}
 		owner := c.ObjectDefinition.Name
-		if child.Kind == ast.Scalar || child.Kind == ast.Enum {
-			if deniedFields[owner+"."+c.Name] {
-				return errorf("hallpass doesn't let agents read %s.%s", owner, c.Name)
+		if deniedFields[owner+"."+c.Name] {
+			return errorf("hallpass doesn't let agents read %s.%s", owner, c.Name)
+		}
+		if owner == "Repository" && c.Name == "object" {
+			expr, _ := c.ArgumentMap(w.vars)["expression"].(string)
+			rev, _, _ := strings.Cut(expr, ":")
+			if err := checkRev(rev); err != nil {
+				return err
 			}
+		}
+		if child.Kind == ast.Scalar || child.Kind == ast.Enum {
 			if v == identity && !w.identityField(owner, c.Name) {
 				key := owner + "." + c.Name
 				if CheckField(key) != nil {
@@ -373,12 +391,18 @@ func (w *walker) selections(f *ast.Field, v view, depth int) error {
 // object rather than following one.
 func (w *walker) edgeView(v view, owner, field string, child *ast.Definition, lookup bool) (view, error) {
 	if v == identity {
-		// Identity reads may only hop to an owner's name, or list the
+		// Identity reads may only hop to an owner's or repo's name, or list the
 		// members of a connection they were already given, like a PR's
 		// assignees. They can't enter a new connection. The repo an object
 		// belongs to, like a sub-issue's parent's, is an identity read too,
 		// but not a repo looked up by name.
 		if (field == "owner" || field == "organization" || field == "repository") && !isConnection(child) && !lookup {
+			return identity, nil
+		}
+		// The repo an object is in, whose name is already in the object's
+		// url. User.repository(name:) and the like take arguments: they look
+		// up any repo, so they stay refused.
+		if field == "repository" && !isConnection(child) && len(w.schema.Types[owner].Fields.ForName(field).Arguments) == 0 {
 			return identity, nil
 		}
 		// The default branch's name, for gh pr create on a fork. Its
@@ -508,21 +532,47 @@ func (w *walker) identityField(owner, name string) bool {
 }
 
 // identityFields are further fields of one type that a read may see of an
-// object that may be outside the named repo. gh pr create reads these of
-// the repo's parent, which for a fork can be a repo the allowlist doesn't
-// cover. They're settings and a one-line description, not code, issues,
-// or PRs. Keep this to what gh asks for.
+// object that may be outside the named repo, each because gh needs it and
+// it says nothing about a repo's code, issues, or PRs. Keep this to what gh
+// asks for.
 var identityFields = map[string]bool{
+	// gh pr create reads these of the repo's parent, which for a fork can
+	// be a repo the allowlist doesn't cover. They're settings and a
+	// one-line description.
 	"Repository.hasIssuesEnabled": true,
 	"Repository.hasWikiEnabled":   true,
 	"Repository.viewerPermission": true,
 	"Repository.description":      true,
+	// gh pr status reads it through PullRequest.baseRef.
+	"BranchProtectionRule.requiresStrictStatusChecks": true,
 }
 
 // deniedFields are fields agents can't read even in an allowed repo.
 var deniedFields = map[string]bool{
 	// A temporary credential for cloning the private repo.
 	"Repository.tempCloneToken": true,
+	// Settings, which the README says agents can't read.
+	"Repository.deployKeys":            true,
+	"Repository.rulesets":              true,
+	"Repository.ruleset":               true,
+	"Repository.codeowners":            true,
+	"Repository.interactionAbility":    true,
+	"Repository.branchProtectionRules": true,
+}
+
+// noRenames pins repository(owner, name) to the repo of that name.
+// followRenames defaults to true, so if an allowed repo was renamed or
+// transferred, GitHub would answer for the repo it is now, which the
+// allowlist may not cover.
+func noRenames(f *ast.Field) error {
+	if a := f.Arguments.ForName("followRenames"); a != nil {
+		if a.Value.Kind != ast.BooleanValue || a.Value.Raw != "false" {
+			return errorf("hallpass only allows repository(followRenames: false)")
+		}
+		return nil
+	}
+	f.Arguments = append(f.Arguments, &ast.Argument{Name: "followRenames", Value: &ast.Value{Kind: ast.BooleanValue, Raw: "false"}})
+	return nil
 }
 
 // sameRepo lists edges GitHub guarantees stay inside the parent's repo. A
@@ -671,8 +721,8 @@ var mutations = map[string]mutation{
 	"mergePullRequest":            {op: op.PRMerge, fields: []string{"pullRequestId", "commitHeadline", "commitBody", "expectedHeadOid", "mergeMethod", "authorEmail"}, binds: []bind{{"pullRequestId", pr, false}}},
 	"enqueuePullRequest":          {op: op.PRMerge, fields: []string{"pullRequestId", "expectedHeadOid"}, binds: []bind{{"pullRequestId", pr, false}}},
 	"dequeuePullRequest":          {op: op.PRMerge, fields: []string{"id"}, binds: []bind{{"id", pr, false}}},
-	"enablePullRequestAutoMerge":  {op: op.PRAutoMerge, fields: []string{"pullRequestId", "commitHeadline", "commitBody", "expectedHeadOid", "mergeMethod", "authorEmail"}, binds: []bind{{"pullRequestId", pr, false}}},
-	"disablePullRequestAutoMerge": {op: op.PRAutoMerge, fields: []string{"pullRequestId"}, binds: []bind{{"pullRequestId", pr, false}}},
+	"enablePullRequestAutoMerge":  {op: op.PRMerge, fields: []string{"pullRequestId", "commitHeadline", "commitBody", "expectedHeadOid", "mergeMethod", "authorEmail"}, binds: []bind{{"pullRequestId", pr, false}}},
+	"disablePullRequestAutoMerge": {op: op.PRMerge, fields: []string{"pullRequestId"}, binds: []bind{{"pullRequestId", pr, false}}},
 	"addLabelsToLabelable":        {op: op.Labels, fields: []string{"labelableId", "labelIds"}, binds: []bind{{"labelableId", issueOr, false}}},
 	"removeLabelsFromLabelable":   {op: op.Labels, fields: []string{"labelableId", "labelIds"}, binds: []bind{{"labelableId", issueOr, false}}},
 }
@@ -691,6 +741,10 @@ func CheckNode(use NodeUse, n Node, allowed func(github.Repo) (write bool, ops o
 	case use.Authored && !n.Authored:
 		return errorf("agents may only change PRs, issues, and comments you wrote")
 	}
+	// A write that names no operation would pass CheckOps, so refuse it.
+	if use.Write && len(use.Ops) == 0 {
+		return errorf("hallpass has no operation for %s, so it refuses it", use.Where)
+	}
 	return CheckOps(use.Ops, ops, n.Repo)
 }
 
@@ -698,8 +752,11 @@ func CheckNode(use NodeUse, n Node, allowed func(github.Repo) (write bool, ops o
 // command that would allow it.
 func CheckOps(need []op.Op, have op.Set, repo github.Repo) error {
 	for _, o := range need {
+		info, known := op.Lookup(string(o))
+		if !known {
+			return errorf("hallpass has no operation named %q, so it refuses this request", o)
+		}
 		if !have.Has(o) {
-			info, _ := op.Lookup(string(o))
 			return errorf("agents may not %s in %s. To allow it: sudo /opt/hallpass/bin/hallpass policy allow %s --repo %s", info.Does, repo, o, repo)
 		}
 	}

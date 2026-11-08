@@ -5,7 +5,8 @@ commands, and expected output.
 
 ## Fixture
 
-The fake has `acme/widgets` with branches `main` and `colleague`. PR and
+The fake has `acme/widgets` with branches `main` and `colleague` and a
+`.github/workflows/ci.yml`. PR and
 issue 1 are by `verifier` (the token's login), and 2 is by `colleague`.
 `acme/secret` isn't on the allowlist.
 
@@ -31,11 +32,12 @@ issue 1 are by `verifier` (the token's login), and 2 is by `colleague`.
   read-only repos, refused routes, and the author check.
 - [gh PR commands and GraphQL](./gh-graphql.md): `gh pr comment`, refused
   `merge` and `approve`, and the ChatOps filter.
-- [git over HTTPS](./git-https.md): clone, fetch, and push to agent
-  branches. Refused default, protected, colleague, and tag pushes.
+- [git over SSH](./git-ssh.md): clone, fetch, and push to agent branches.
+  Refused default, protected, colleague, tag, and workflow pushes, and
+  `push.default`.
 - [Signed commits](./signing.md): `git commit -S` through `hallpass-sign`.
 - [Status](./status.md): `hallpass status`, `--check`, `--json`, and the
   broker-down error.
 
-Git over SSH, the setup commands, and the TPM backend aren't mapped,
-because the scratch broker can't reach them. See SKILL.md.
+The setup commands and the TPM backend aren't mapped, because the scratch
+broker can't reach them. See SKILL.md.

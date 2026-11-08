@@ -49,12 +49,12 @@ Daily use. git calls these for you:
   git personal ARGS...                 run git with your own credentials instead
 
 Maintenance, as root:
-  allow OWNER/REPO [--read] [--via ssh]
+  allow OWNER/REPO [--read]
   disallow OWNER/REPO
   policy allow|deny|reset OP... [--repo OWNER/REPO]
                                        change what agents may do, everywhere or in one repo
   policy show [OWNER/REPO]             list the operations and what's in effect
-  ledger add OWNER/REPO BRANCH         let agents update a branch they didn't create
+  ledger add OWNER/REPO BRANCH COMMIT  let agents update a branch they didn't create, at COMMIT
   ledger list OWNER/REPO               list the branches agents may update
   ssh-key remove | signing-key remove | logout
   uninstall [--purge]
@@ -158,7 +158,6 @@ func serve(args []string) error {
 	px := &proxy.Server{
 		Config:    cfg,
 		Token:     creds.Token,
-		Ledger:    proxy.OpenLedger(config.StateDir() + "/branches.jsonl"),
 		Log:       log,
 		Permitted: ctl.Permitted,
 	}
@@ -175,10 +174,6 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
-	gitLn, err := listen("git")
-	if err != nil {
-		return err
-	}
 	ghLn, err := listen("gh")
 	if err != nil {
 		return err
@@ -187,7 +182,15 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
-	gate := &sshgate.Server{Config: cfg, Signer: creds.SSH, Ledger: px.Ledger, Log: log, Permitted: ctl.Permitted}
+	gate := &sshgate.Server{
+		Config:    cfg,
+		Signer:    creds.SSH,
+		Ledger:    sshgate.OpenLedger(config.StateDir() + "/branches.jsonl"),
+		Log:       log,
+		Permitted: ctl.Permitted,
+		Addr:      cfg.SSHAddr,
+		HostKeys:  cfg.SSHHostKeys,
+	}
 	if creds.SSH != nil {
 		ctl.SSHCheck = gate.Check
 	}
@@ -199,9 +202,8 @@ func serve(args []string) error {
 			l.Close()
 		}
 	}()
-	errs := make(chan error, 4)
+	errs := make(chan error, 3)
 	go func() { errs <- gate.Serve(sshLn) }()
-	go func() { errs <- px.ServeGit(gitLn) }()
 	go func() { errs <- px.ServeGH(ghLn) }()
 	go func() { errs <- ctl.Serve(ctlLn) }()
 	log.Info("serving", "token", creds.Token != "", "ssh", creds.SSH != nil, "signing", creds.Signing != nil, "repos", len(cfg.Repos))
