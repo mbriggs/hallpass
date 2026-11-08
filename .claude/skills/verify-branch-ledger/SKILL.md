@@ -1,6 +1,6 @@
 ---
 name: verify-branch-ledger
-description: TLA+ check that agents update or delete only branches they made. Use when a diff touches internal/sshgate/ledger.go, cmd/hallpass/ledger.go, CheckPush or checkUpdate, or push checks or ledger writes in relayPush.
+description: TLA+ check that agents update or delete only branches they made. Use when a diff touches a ledger.go, CheckPush, checkUpdate, or relayPush's push checks or ledger writes.
 ---
 
 # Verify the branch ledger

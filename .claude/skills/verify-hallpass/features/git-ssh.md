@@ -74,7 +74,7 @@ Preconditions: `cd /tmp`, and the fake's refs recorded with
 ## push.default
 
 To check `push.default`, stop the broker (its pid is in `$S/broker.pid`;
-check that `/proc/PID/cmdline` names `$S` first), add
+check that `ps -ww -o command= -p PID` names `$S` first), add
 `allow = ["push.default"]` on the line after `match = "acme/widgets"` in
 `$S/hallpass.toml`, and start it again with the `nohup` line from `up.sh`,
 appending (`>>`) to `broker.log`. `hallpass status` then shows
@@ -92,10 +92,11 @@ Run this last: it leaves the fake's `main` moved.
   reads the default branch, and the workflow check fetches trees.
 - The current-name check hits `GET /api/repos/OWNER/REPO` at most once per
   10 minutes per repo, so later git commands don't repeat it.
-- The ledger file is fixed at `/var/lib/hallpass/branches.jsonl`, which the
+- The ledger file is fixed at `branches.jsonl` in the state dir
+  (`/var/lib/hallpass` on Linux, `/var/db/hallpass` on macOS), which the
   scratch broker can't write. The broker records each push in memory and
   logs `msg="ledger write failed; after a restart agents can't update this branch"`
-  at `level=ERROR` with `err="open /var/lib/hallpass/branches.jsonl: permission denied"`.
+  at `level=ERROR` with `err="open <state dir>/branches.jsonl: permission denied"`.
   Own-branch updates work until the broker restarts, and doctor's
   `level=ERROR` check fails from then on. The push.default restart loses
   the record of `agent/fix`, so run push.default after the main journey.
