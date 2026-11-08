@@ -96,10 +96,28 @@ func TestGraphQLRefusesEscapes(t *testing.T) {
 		"parent readme":           gql(`{repository(owner:"acme",name:"widgets"){parent{object(expression:"HEAD:README"){id}}}}`, nil),
 		"org description":         gql(`{repository(owner:"acme",name:"widgets"){owner{... on Organization{description}}}}`, nil),
 		"viewer branch":           gql(`{viewer{repository(name:"secret"){defaultBranchRef{name}}}}`, nil),
+		"viewer repo by name":     gql(`{viewer{repository(name:"secret"){nameWithOwner}}}`, nil),
+		"viewer org by login":     gql(`{viewer{organization(login:"acme"){name}}}`, nil),
+		"parent repo's issues":    gql(`{repository(owner:"acme",name:"widgets"){issue(number:1){parent{repository{issues(first:1){nodes{title}}}}}}}`, nil),
+		"parent repo's readme":    gql(`{repository(owner:"acme",name:"widgets"){issue(number:1){parent{repository{object(expression:"HEAD:README"){id}}}}}}`, nil),
+		"parent body":             gql(`{repository(owner:"acme",name:"widgets"){issue(number:1){parent{body}}}}`, nil),
 	}
 	for name, body := range cases {
 		if g, err := ClassifyGraphQL(body, nil); err == nil {
 			t.Errorf("%s: allowed (%+v)", name, g)
+		}
+	}
+}
+
+// gh issue view reads each sub-issue link's repo name, and gh release reads
+// a repo's releases.
+func TestGraphQLAllowsGhReads(t *testing.T) {
+	for name, body := range map[string][]byte{
+		"sub-issue parent's repo": gql(`{repository(owner:"acme",name:"widgets"){issue(number:1){parent{number title repository{nameWithOwner}} subIssues(first:5){nodes{number repository{nameWithOwner}}}}}}`, nil),
+		"releases":                gql(`{repository(owner:"acme",name:"widgets"){releases(first:5){nodes{name tagName isDraft description}} latestRelease{tagName} release(tagName:"v1"){databaseId}}}`, nil),
+	} {
+		if _, err := ClassifyGraphQL(body, nil); err != nil {
+			t.Errorf("%s: %v", name, err)
 		}
 	}
 }

@@ -127,6 +127,35 @@ The fake stands in for GitHub only. Policy, proxies, signing, and sockets
 are the real binary. What GitHub itself enforces (the `workflow` scope over
 HTTPS, branch protection, rulesets) isn't modeled, so don't claim it.
 
+## The gh matrix
+
+To find what real gh commands hallpass refuses, or to refresh the corpus
+for a new gh release, run the matrix against a scratch broker:
+
+```sh
+.claude/skills/verify-hallpass/scripts/gh-matrix.sh "$S" tmp/matrix.jsonl
+python3 -I .claude/skills/verify-hallpass/scripts/gh-matrix-report.py tmp/matrix.jsonl
+```
+
+`gh-matrix.sh` runs the gh commands agents use most, plus reads the floor
+must refuse, through `scripts/capture`, which records each request with the
+broker's verdict. The report lists each command's refusals and exit. A
+failure with no refusal is usually the fake's canned data, not hallpass:
+gh got an answer it didn't expect after the broker allowed the request.
+Extend `fakegithub` when a command stops before its main request.
+
+Sort each refusal: a bug (a read gh needs, refused), an operation that's
+off by default, or a refusal by design. After fixing the bugs, append the
+run to the corpus, which keeps allowed requests and operation refusals and
+skips refusals by design:
+
+```sh
+python3 -I .claude/skills/verify-hallpass/scripts/gh-matrix-corpus.py tmp/matrix.jsonl internal/policy/testdata/gh-2.98.0-capture.jsonl
+```
+
+`TestGraphQLCorpus` and `TestRESTCorpus` then require every one to
+classify. For a new gh version, start a new corpus file named for it.
+
 ## Cleanup
 
 ```sh

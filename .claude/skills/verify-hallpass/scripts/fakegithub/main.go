@@ -13,6 +13,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
@@ -168,8 +169,14 @@ func api(w http.ResponseWriter, r *http.Request, path, body string) {
 		graphql(reply, body)
 	case path == "/repos/acme/widgets":
 		reply(200, repo)
+	case path == "/search/issues":
+		reply(200, `{"total_count":0,"incomplete_results":false,"items":[]}`)
 	case strings.HasPrefix(path, "/repos/acme/widgets/"):
 		rest := strings.Split(strings.TrimPrefix(path, "/repos/acme/widgets/"), "/")
+		if s, ok := actions(r.Method, rest); ok {
+			reply(200, s)
+			return
+		}
 		switch {
 		case r.Method == "GET" && len(rest) == 2 && (rest[0] == "issues" || rest[0] == "pulls"):
 			reply(200, fmt.Sprintf(`{"number":%s,"title":"fake %s %s","state":"open","user":{"login":"%s"}}`, rest[1], rest[0], rest[1], author(rest[1])))
@@ -187,16 +194,77 @@ func api(w http.ResponseWriter, r *http.Request, path, body string) {
 	}
 }
 
+// actions answers the Actions, workflow, readme, and release reads gh makes,
+// for run 5 (job 7) of workflow ci.yml and release v1.0.0, so gh gets past
+// its first request.
+func actions(method string, rest []string) (string, bool) {
+	if method != "GET" {
+		return "", false
+	}
+	const run = `{"id":5,"name":"ci","display_title":"fake run","status":"completed","conclusion":"success","head_branch":"main","head_sha":"abc","event":"push","workflow_id":9,"run_attempt":1,"html_url":"https://github.com/acme/widgets/actions/runs/5","jobs_url":"https://api.github.com/repos/acme/widgets/actions/runs/5/jobs","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}`
+	const job = `{"id":7,"run_id":5,"name":"test","status":"completed","conclusion":"success","steps":[{"name":"build","status":"completed","conclusion":"success","number":1}],"html_url":"https://github.com/acme/widgets/actions/runs/5/job/7","started_at":"2026-01-01T00:00:00Z","completed_at":"2026-01-01T00:00:00Z"}`
+	const workflow = `{"id":9,"name":"ci","path":".github/workflows/ci.yml","state":"active","html_url":"https://github.com/acme/widgets/blob/main/.github/workflows/ci.yml"}`
+	const release = `{"id":3,"tag_name":"v1.0.0","name":"v1.0.0","draft":false,"prerelease":false,"body":"","assets":[],"html_url":"https://github.com/acme/widgets/releases/tag/v1.0.0"}`
+	p := strings.Join(rest, "/")
+	switch {
+	case p == "actions/runs" || (strings.HasPrefix(p, "actions/workflows/") && strings.HasSuffix(p, "/runs")):
+		return `{"total_count":1,"workflow_runs":[` + run + `]}`, true
+	case p == "actions/runs/5" || p == "actions/runs/5/attempts/1":
+		return run, true
+	case p == "actions/runs/5/jobs" || p == "actions/runs/5/attempts/1/jobs":
+		return `{"total_count":1,"jobs":[` + job + `]}`, true
+	case p == "actions/jobs/7":
+		return job, true
+	case p == "actions/jobs/7/logs":
+		return "2026-01-01T00:00:00Z build ok\n", true
+	case p == "actions/runs/5/logs" || p == "actions/runs/5/attempts/1/logs":
+		return runLogs(), true
+	case p == "actions/runs/5/artifacts" || p == "actions/artifacts":
+		return `{"total_count":0,"artifacts":[]}`, true
+	case p == "actions/workflows":
+		return `{"total_count":1,"workflows":[` + workflow + `]}`, true
+	case strings.HasPrefix(p, "actions/workflows/") && len(rest) == 3:
+		return workflow, true
+	case p == "readme":
+		return `{"name":"README","path":"README","content":"","encoding":"base64","html_url":"https://github.com/acme/widgets/blob/main/README"}`, true
+	case p == "releases/latest" || p == "releases/tags/v1.0.0":
+		return release, true
+	}
+	return "", false
+}
+
+// runLogs is run 5's log archive, laid out as GitHub's: one file per job
+// step under the job's name.
+func runLogs() string {
+	var b bytes.Buffer
+	z := zip.NewWriter(&b)
+	w, _ := z.Create("test/1_build.txt")
+	io.WriteString(w, "2026-01-01T00:00:00Z build ok\n")
+	z.Close()
+	return b.String()
+}
+
 func graphql(reply func(int, string), q string) {
 	switch {
 	case strings.Contains(q, "nodes(ids"):
-		reply(200, `{"data":{"nodes":[{"__typename":"PullRequest","repository":{"nameWithOwner":"acme/widgets"},"viewerDidAuthor":false}]}}`)
+		// PR_1 and I_1 are the token user's, like PR and issue 1 over REST.
+		mine := strings.Contains(q, `"PR_1"`) || strings.Contains(q, `"I_1"`)
+		typ := "PullRequest"
+		switch {
+		case strings.Contains(q, `"I_`):
+			typ = "Issue"
+		case strings.Contains(q, `"R_`):
+			typ = "Repository"
+		}
+		reply(200, fmt.Sprintf(`{"data":{"nodes":[{"__typename":"%s","repository":{"nameWithOwner":"acme/widgets"},"viewerDidAuthor":%t}]}}`, typ, mine))
+	case strings.Contains(q, "IssueByNumber"):
+		reply(200, `{"data":{"repository":{"hasIssuesEnabled":true,"issue":{"__typename":"Issue","id":"I_1","number":1,"url":"https://github.com/acme/widgets/issues/1","state":"OPEN","title":"fake issue","body":"","author":{"login":"verifier"},"comments":{"nodes":[],"totalCount":0},"assignees":{"nodes":[],"totalCount":0},"labels":{"nodes":[],"totalCount":0}}}}}`)
 	case strings.Contains(q, "addComment"):
 		reply(200, `{"data":{"addComment":{"commentEdge":{"node":{"url":"https://github.com/acme/widgets/pull/1#issuecomment-1"}}}}}`)
 	case strings.Contains(q, "PullRequestByNumber"):
 		reply(200, `{"data":{"repository":{"pullRequest":{"id":"PR_1","number":1,"url":"https://github.com/acme/widgets/pull/1","title":"fake pr","state":"OPEN","headRefName":"agent/x","headRepositoryOwner":{"id":"U","login":"acme"},"headRepository":{"id":"R_1","name":"widgets","nameWithOwner":"acme/widgets"},"isCrossRepository":false,"mergeStateStatus":"CLEAN","commits":{"nodes":[{"commit":{"oid":"abc"}}]},"baseRefName":"main"}}}}`)
 	case strings.Contains(q, "RepositoryInfo"):
-		reply(200, `{"data":{"repository":{"id":"R_1","name":"widgets","owner":{"login":"acme"},"defaultBranchRef":{"name":"main"},"isPrivate":true,"viewerPermission":"WRITE"}}}`)
+		reply(200, `{"data":{"repository":{"id":"R_1","name":"widgets","owner":{"login":"acme"},"defaultBranchRef":{"name":"main"},"isPrivate":true,"viewerPermission":"WRITE","hasIssuesEnabled":true}}}`)
 	default:
 		reply(200, `{"data":{}}`)
 	}

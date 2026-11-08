@@ -2,6 +2,7 @@ package policy
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/vektah/gqlparser/v2/ast"
@@ -75,12 +76,14 @@ var literal = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,99}$`)
 
 // readFloor lists the routes under /repos/{owner}/{repo} that no config
 // opens: secrets and their names, settings, keys, hooks, and security
-// findings. Each covers its path and everything under it.
+// findings. Each covers its path and everything under it. Actions
+// variables and rulesets aren't here: they're refused by default, and
+// config may open them.
 var readFloor = []string{
-	"secrets", "actions/secrets", "actions/variables", "actions/permissions",
-	"actions/runners", "actions/oidc", "actions/organization-secrets", "actions/organization-variables",
+	"secrets", "actions/secrets", "actions/permissions",
+	"actions/runners", "actions/oidc", "actions/organization-secrets",
 	"environments/*/secrets", "environments/*/variables",
-	"dependabot", "codespaces", "hooks", "keys", "invitations", "rulesets", "rules",
+	"dependabot", "codespaces", "hooks", "keys", "invitations",
 	"secret-scanning", "code-scanning", "vulnerability-alerts", "private-vulnerability-reporting",
 	"security-advisories", "interaction-limits", "autolinks", "properties",
 }
@@ -93,7 +96,18 @@ func floored(rest []string) bool {
 			return true
 		}
 	}
-	return false
+	return branchProtection(rest)
+}
+
+// branchProtection reports whether a path is a branch's protection
+// settings, branches/NAME/protection[/...]. Branch names can hold slashes,
+// so any protection segment after the first name counts, and a branch
+// with protection in its name can't be read through hallpass.
+func branchProtection(segs []string) bool {
+	if len(segs) < 3 || segs[0] != "branches" {
+		return false
+	}
+	return slices.Contains(segs[2:], "protection")
 }
 
 // overlapsFloor reports whether a config pattern could match a path under
@@ -120,6 +134,18 @@ func overlapsFloor(pat string) bool {
 		}
 		if ok {
 			return true
+		}
+	}
+	// A branch pattern reaches protection settings when a segment past the
+	// branch name could be protection, or ** could cover one.
+	if ps[0] == "branches" {
+		if tail {
+			return true
+		}
+		for _, s := range ps[min(2, len(ps)):] {
+			if s == "protection" || s == "*" {
+				return true
+			}
 		}
 	}
 	return false

@@ -8,7 +8,12 @@ import (
 )
 
 func TestCheckRead(t *testing.T) {
-	for _, ok := range []string{"deployments", "deployments/#/statuses", "pages", "environments", "deployments/**", "traffic/views"} {
+	for _, ok := range []string{"deployments", "deployments/#/statuses", "pages", "environments", "deployments/**", "traffic/views",
+		// Refused by default, and config may open them.
+		"actions/variables", "actions/variables/*", "rulesets", "rulesets/#", "rules/branches/*",
+		// A branch, without its protection.
+		"branches/*",
+	} {
 		if err := CheckRead(ok); err != nil {
 			t.Errorf("CheckRead(%q) = %v", ok, err)
 		}
@@ -17,7 +22,8 @@ func TestCheckRead(t *testing.T) {
 		"*", "#", "**", "a/**/b", "Deployments", "",
 		// The floor, directly and through wildcards.
 		"secrets", "actions/secrets", "actions/secrets/*", "actions/*", "actions/**",
-		"environments/*/secrets", "environments/**", "environments/*/*", "hooks/#", "rulesets",
+		"environments/*/secrets", "environments/**", "environments/*/*", "hooks/#",
+		"branches/*/protection", "branches/**", "branches/*/*", "branches/main/protection/required_status_checks",
 	} {
 		if err := CheckRead(bad); err == nil {
 			t.Errorf("CheckRead(%q) passed", bad)
@@ -26,11 +32,37 @@ func TestCheckRead(t *testing.T) {
 }
 
 // No built-in read reaches the floor, so the floor only ever narrows what
-// config adds.
+// config adds. The exception is branches/**, which must cover branch names
+// with slashes; the floor takes protection out of it on every request.
 func TestBuiltinReadsClearTheFloor(t *testing.T) {
 	for _, r := range reads {
-		if r != "" && overlapsFloor(r) {
+		if r != "" && r != "branches/**" && overlapsFloor(r) {
 			t.Errorf("built-in read %q overlaps the read floor", r)
+		}
+	}
+}
+
+func TestBranchProtectionIsFloored(t *testing.T) {
+	for path, ok := range map[string]bool{
+		"branches/main":                           true,
+		"branches/agent/matrix":                   true,
+		"branches/main/protection":                false,
+		"branches/agent/x/protection":             false,
+		"branches/main/protection/enforce_admins": false,
+		"actions/variables":                       false, // refused by default
+		"rulesets":                                false, // refused by default
+	} {
+		_, err := ClassifyREST("GET", "/repos/acme/widgets/"+path, nil, nil)
+		if ok != (err == nil) {
+			t.Errorf("GET %s: err = %v", path, err)
+		}
+	}
+	// Variables and rulesets open with a grant; protection doesn't.
+	g := grants(nil, ReadLayer{From: "global", Allow: []string{"actions/variables", "rulesets", "branches/**"}})
+	for path, ok := range map[string]bool{"actions/variables": true, "rulesets": true, "branches/main/protection": false} {
+		_, err := ClassifyREST("GET", "/repos/acme/widgets/"+path, nil, g)
+		if ok != (err == nil) {
+			t.Errorf("granted GET %s: err = %v", path, err)
 		}
 	}
 }
