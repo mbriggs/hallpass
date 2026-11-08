@@ -63,6 +63,8 @@ if [ ! -d "$bare" ]; then
   "${plain[@]}" git -C "$seed" commit -q -m seed
   "${plain[@]}" git -C "$seed" push -q "$bare" main main:colleague
   rm -rf "$seed"
+  # acme/readonly, for the read-only fetch and push.
+  "${plain[@]}" git clone -q --bare "$bare" "$S/gh-root/acme/readonly.git"
 fi
 
 # The fake GitHub.
@@ -106,6 +108,11 @@ match = "acme/widgets"
 [[repo]]
 match = "acme/readonly"
 access = "read"
+
+# acme/gadgets is acme/widgets's old name on the fake. Allowlisting it lets
+# git reach the current-name check, which refuses it.
+[[repo]]
+match = "acme/gadgets"
 EOF
 
 # The broker. HALLPASS_RUN_DIR moves its sockets into the scratch dir.
