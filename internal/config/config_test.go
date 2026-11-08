@@ -7,6 +7,7 @@ import (
 
 	"github.com/mbriggs/hallpass/internal/github"
 	"github.com/mbriggs/hallpass/internal/op"
+	"github.com/mbriggs/hallpass/internal/policy"
 )
 
 func TestAllowed(t *testing.T) {
@@ -63,9 +64,14 @@ func TestWriteLoad(t *testing.T) {
 	}
 	for _, bad := range []*Config{
 		{Repos: []Repo{{Match: "acme"}}},
-		{Allow: []op.Op{"pr.mrege"}},
-		{Repos: []Repo{{Match: "acme/x", Deny: []op.Op{"nope"}}}},
-		{Allow: []op.Op{op.Labels}, Deny: []op.Op{op.Labels}},
+		{Allow: []Grant{"pr.mrege"}},
+		{Repos: []Repo{{Match: "acme/x", Deny: []Grant{"nope"}}}},
+		{Allow: []Grant{Grant(op.Labels)}, Deny: []Grant{Grant(op.Labels)}},
+		{Allow: []Grant{"read:actions/secrets"}},
+		{Allow: []Grant{"field:Repository.tempCloneToken"}},
+		{Allow: []Grant{"field:Repository.issues"}},
+		{Allow: []Grant{"nope:x"}},
+		{Repos: []Repo{{Match: "acme/x", Allow: []Grant{"field:Repository.hasProjectsEnabled"}}}},
 	} {
 		if err := bad.Write(path); err == nil {
 			t.Errorf("wrote %+v", bad)
@@ -75,11 +81,11 @@ func TestWriteLoad(t *testing.T) {
 
 func TestPolicyLayers(t *testing.T) {
 	c := &Config{
-		Allow: []op.Op{op.WorkflowRerun, op.Labels},
-		Deny:  []op.Op{op.IssueCreate},
+		Allow: []Grant{Grant(op.WorkflowRerun), Grant(op.Labels)},
+		Deny:  []Grant{Grant(op.IssueCreate)},
 		Repos: []Repo{
-			{Match: "acme/*", Deny: []op.Op{op.Labels}},
-			{Match: "acme/site", Allow: []op.Op{op.PushDefault, op.Labels}},
+			{Match: "acme/*", Deny: []Grant{Grant(op.Labels)}},
+			{Match: "acme/site", Allow: []Grant{Grant(op.PushDefault), Grant(op.Labels)}},
 			{Match: "mbriggs/dots"},
 		},
 	}
@@ -113,6 +119,53 @@ func TestPolicyLayers(t *testing.T) {
 		rule, _ := c.Allowed(r)
 		if rule.Ops.Has(tc.o) != tc.on {
 			t.Errorf("%s: Allowed disagrees with Decide on %s", tc.repo, tc.o)
+		}
+	}
+}
+
+// API grants sit in the same lists as operations, survive a write and a
+// load, and layer the way operations do.
+func TestAPIGrants(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hallpass.toml")
+	in := &Config{
+		Allow: []Grant{Grant(op.Labels), "read:deployments", "field:Repository.hasProjectsEnabled"},
+		Deny:  []Grant{"field:Repository.description"},
+		Repos: []Repo{
+			{Match: "acme/*", Deny: []Grant{"read:deployments"}},
+			{Match: "acme/site", Allow: []Grant{"read:deployments"}, Deny: []Grant{"read:actions/runs/#/logs"}},
+			{Match: "mbriggs/dots"},
+		},
+	}
+	if err := in.Write(path); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(c.Allow, in.Allow) || !slices.Equal(c.Repos[1].Deny, in.Repos[1].Deny) {
+		t.Fatalf("round trip: %+v", c)
+	}
+	if rule, _ := c.Allowed(github.Repo{Owner: "mbriggs", Name: "dots"}); !rule.Ops.Has(op.Labels) {
+		t.Errorf("API grants disturbed the operations")
+	}
+	g := c.Grants()
+	if !g.Fields["Repository.hasProjectsEnabled"] || g.Fields["Repository.description"] {
+		t.Errorf("fields = %v", g.Fields)
+	}
+	for _, tc := range []struct {
+		repo, path string
+		ok         bool
+	}{
+		{"mbriggs/dots", "deployments", true},       // global allow
+		{"acme/api", "deployments", false},          // acme/* deny beats global
+		{"acme/site", "deployments", true},          // exact allow beats acme/*
+		{"acme/site", "actions/runs/5/logs", false}, // exact deny of a built-in
+		{"acme/api", "actions/runs/5/logs", true},   // the built-in elsewhere
+	} {
+		_, err := policy.ClassifyREST("GET", "/repos/"+tc.repo+"/"+tc.path, nil, g)
+		if tc.ok != (err == nil) {
+			t.Errorf("%s %s: err = %v", tc.repo, tc.path, err)
 		}
 	}
 }

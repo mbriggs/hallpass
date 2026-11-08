@@ -112,7 +112,7 @@ func TestGHThroughBroker(t *testing.T) {
 		}
 	}
 	api, run := broker("gh", config.Repo{Match: "acme/widgets"})
-	mergeAPI, runMerge := broker("merge", config.Repo{Match: "acme/widgets", Allow: []op.Op{op.PRMerge}})
+	mergeAPI, runMerge := broker("merge", config.Repo{Match: "acme/widgets", Allow: []config.Grant{config.Grant(op.PRMerge)}})
 
 	// Each call is independent, so they run at once.
 	var wg sync.WaitGroup

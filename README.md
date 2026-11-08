@@ -181,6 +181,36 @@ GraphQL: hallpass: agents may not merge PRs or add them to the merge queue in ac
 The settings live in `/etc/hallpass/hallpass.toml` as `allow` and `deny`
 lists, at the top level and on each `[[repo]]`.
 
+### API reads
+
+Two more kinds of name open or close reads that the built-in tables don't
+cover, with the same `allow`, `deny`, and `reset`, and no rebuild:
+
+```sh
+sudo /opt/hallpass/bin/hallpass policy allow read:deployments --repo acme/widgets
+sudo /opt/hallpass/bin/hallpass policy deny read:actions/runs/#/logs --repo acme/secret
+sudo /opt/hallpass/bin/hallpass policy allow field:Repository.hasProjectsEnabled
+```
+
+- `read:PATTERN` is a GET route under `/repos/{owner}/{repo}`. `#` matches
+  a number, `*` one name, and a final `**` the rest of the path. It layers
+  like an operation, and within one layer a deny wins.
+- `field:Type.field` is a field that GraphQL reads may see of a repo or
+  account outside the one a request named, like a fork's parent. It applies
+  to every repo, and only scalar and enum fields qualify, so it can't open
+  a path into another repo's issues or code.
+
+A refusal that one of these would fix names it:
+
+```text
+hallpass: hallpass doesn't allow reading repos/{repo}/deployments in acme/widgets. Reads are limited to code, PRs, issues, checks, and Actions runs. To allow it: sudo /opt/hallpass/bin/hallpass policy allow read:deployments --repo acme/widgets
+```
+
+No name adds a write, and none opens secrets and their names, Actions
+variables and permissions, environment secrets, Dependabot, Codespaces,
+hooks, deploy keys, invitations, rulesets, security findings, or
+`Repository.tempCloneToken`.
+
 The broker checks each client's uid against `uids` in the config, from the
 kernel's peer credentials. The git config applies to everyone on the machine,
 so hallpass suits a machine with one user.

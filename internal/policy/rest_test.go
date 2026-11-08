@@ -32,7 +32,7 @@ func TestRESTOps(t *testing.T) {
 		{"POST", "/repos/acme/widgets/actions/workflows/42/dispatches", `{"ref":"main"}`, []op.Op{op.WorkflowDispatch}},
 	}
 	for _, c := range cases {
-		r, err := ClassifyREST(c.method, c.target, []byte(c.body))
+		r, err := ClassifyREST(c.method, c.target, []byte(c.body), nil)
 		if err != nil {
 			t.Errorf("%s %s %s: %v", c.method, c.target, c.body, err)
 			continue
@@ -64,7 +64,7 @@ func TestClassifyREST(t *testing.T) {
 		{"PATCH", "/repos/acme/widgets/issues/comments/77", `{"body":"b"}`, true, false, "/repos/acme/widgets/issues/comments/77"},
 	}
 	for _, c := range ok {
-		r, err := ClassifyREST(c.method, c.target, []byte(c.body))
+		r, err := ClassifyREST(c.method, c.target, []byte(c.body), nil)
 		if err != nil {
 			t.Errorf("%s %s: %v", c.method, c.target, err)
 			continue
@@ -101,7 +101,7 @@ func TestClassifyREST(t *testing.T) {
 		{"POST", "/repos/acme/widgets/issues/3/comments", `{"body":"a","body":"/merge"}`},
 	}
 	for _, c := range bad {
-		if r, err := ClassifyREST(c.method, c.target, []byte(c.body)); err == nil {
+		if r, err := ClassifyREST(c.method, c.target, []byte(c.body), nil); err == nil {
 			t.Errorf("%s %s %s: allowed (%+v)", c.method, c.target, c.body, r)
 		}
 	}

@@ -96,8 +96,9 @@ type GraphQL struct {
 
 // ClassifyGraphQL parses, validates, and walks a GraphQL request. It refuses
 // anything that could read outside the repos the request names, or write
-// anything outside the mutation table.
-func ClassifyGraphQL(body []byte) (*GraphQL, error) {
+// anything outside the mutation table. g adds and removes fields an
+// identity read may see; nil means the built-in ones.
+func ClassifyGraphQL(body []byte, g *Grants) (*GraphQL, error) {
 	s, err := Schema()
 	if err != nil {
 		return nil, err
@@ -131,7 +132,7 @@ func ClassifyGraphQL(body []byte) (*GraphQL, error) {
 		return nil, errorf("GraphQL variables: %v", verr)
 	}
 
-	w := &walker{schema: s, vars: vars, g: &GraphQL{}}
+	w := &walker{schema: s, vars: vars, g: &GraphQL{}, grants: g}
 	switch op.Operation {
 	case ast.Query:
 		err = w.queryRoot(op.SelectionSet)
@@ -171,6 +172,7 @@ type walker struct {
 	schema *ast.Schema
 	vars   map[string]any
 	g      *GraphQL
+	grants *Grants
 	fields int
 }
 
@@ -349,8 +351,12 @@ func (w *walker) selections(f *ast.Field, v view, depth int) error {
 			if deniedFields[owner+"."+c.Name] {
 				return errorf("hallpass doesn't let agents read %s.%s", owner, c.Name)
 			}
-			if v == identity && !identityScalars[c.Name] && !identityFields[owner+"."+c.Name] {
-				return errorf("hallpass doesn't allow reading %s.%s here, because it may be outside the repo you named", owner, c.Name)
+			if v == identity && !w.identityField(owner, c.Name) {
+				key := owner + "." + c.Name
+				if CheckField(key) != nil {
+					return errorf("hallpass doesn't allow reading %s here, because it may be outside the repo you named", key)
+				}
+				return errorf("hallpass doesn't allow reading %s here, because it may be outside the repo you named. To allow it everywhere: sudo /opt/hallpass/bin/hallpass policy allow field:%s", key, key)
 			}
 			return nil
 		}
@@ -486,6 +492,15 @@ var identityScalars = map[string]bool{
 	"url": true, "resourcePath": true, "avatarUrl": true, "slug": true, "isPrivate": true,
 	"isFork": true, "isArchived": true, "number": true, "state": true, "title": true,
 	"totalCount": true, "hasNextPage": true, "hasPreviousPage": true, "endCursor": true, "startCursor": true,
+}
+
+// identityField reports whether an identity read may see owner.name: the
+// config's setting if it has one, else the built-in tables.
+func (w *walker) identityField(owner, name string) bool {
+	if on, set := w.grants.fieldOn(owner + "." + name); set {
+		return on
+	}
+	return identityScalars[name] || identityFields[owner+"."+name]
 }
 
 // identityFields are further fields of one type that a read may see of an

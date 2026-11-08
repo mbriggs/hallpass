@@ -17,7 +17,16 @@ import (
 
 const policyUsage = `usage:
   hallpass policy show [OWNER/REPO]
-  sudo hallpass policy allow|deny|reset OP... [--repo OWNER/REPO|OWNER/*]`
+  sudo hallpass policy allow|deny|reset NAME... [--repo OWNER/REPO|OWNER/*]
+
+NAME is an operation, like pr.merge, or an API read:
+  field:Type.field   a field reads may see of a repo or account outside the
+                     one a request named, like field:Repository.hasProjectsEnabled.
+                     Applies to every repo, so it takes no --repo.
+  read:PATTERN       a GET route under /repos/{owner}/{repo}, like
+                     read:deployments/#. # is a number, * one name, and a
+                     final ** the rest of the path.
+A refusal names the NAME that would allow it.`
 
 func policyCmd(args []string) error {
 	if len(args) == 0 {
@@ -39,12 +48,16 @@ func policyEdit(verb string, args []string) error {
 	if fs.NArg() == 0 {
 		return errors.New(policyUsage)
 	}
-	var ops []op.Op
+	var grants []config.Grant
 	for _, name := range fs.Args() {
-		if _, ok := op.Lookup(name); !ok {
-			return fmt.Errorf("no operation is named %q. hallpass policy show lists them", name)
+		g := config.Grant(name)
+		if err := g.Check(); err != nil {
+			return err
 		}
-		ops = append(ops, op.Op(name))
+		if _, ok := g.Field(); ok && *repo != "" {
+			return fmt.Errorf("%s applies to every repo; drop --repo", g)
+		}
+		grants = append(grants, g)
 	}
 	match := ""
 	if *repo != "" {
@@ -61,7 +74,7 @@ func policyEdit(verb string, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := editPolicy(cfg, verb, match, ops); err != nil {
+	if err := editPolicy(cfg, verb, match, grants); err != nil {
 		return err
 	}
 	if err := commit(cfg); err != nil {
@@ -72,29 +85,44 @@ func policyEdit(verb string, args []string) error {
 	if match != "" {
 		where = match
 	}
-	for _, o := range ops {
-		info, _ := op.Lookup(string(o))
+	for _, g := range grants {
+		does := describe(g)
 		switch verb {
 		case "allow":
-			fmt.Fprintf(os.Stderr, "Agents may now %s in %s.\n", info.Does, where)
-			if info.Warn != "" {
-				fmt.Fprintln(os.Stderr, "  "+info.Warn)
+			fmt.Fprintf(os.Stderr, "Agents may now %s in %s.\n", does, where)
+			if o, ok := g.Op(); ok {
+				if info, _ := op.Lookup(string(o)); info.Warn != "" {
+					fmt.Fprintln(os.Stderr, "  "+info.Warn)
+				}
 			}
 		case "deny":
-			fmt.Fprintf(os.Stderr, "Agents may no longer %s in %s.\n", info.Does, where)
+			fmt.Fprintf(os.Stderr, "Agents may no longer %s in %s.\n", does, where)
 		case "reset":
-			fmt.Fprintf(os.Stderr, "%s in %s now follows the broader setting.\n", o, where)
+			fmt.Fprintf(os.Stderr, "%s in %s now follows the broader setting.\n", g, where)
 		}
-		for _, e := range overriding(cfg, match, o) {
-			fmt.Fprintf(os.Stderr, "  %s has its own setting for %s, which still applies there.\n", e, o)
+		for _, e := range overriding(cfg, match, g) {
+			fmt.Fprintf(os.Stderr, "  %s has its own setting for %s, which still applies there.\n", e, g)
 		}
 	}
 	return nil
 }
 
+// describe completes "agents may ..." for a grant.
+func describe(g config.Grant) string {
+	if f, ok := g.Field(); ok {
+		return "read " + f + " of repos and accounts outside the one a request names"
+	}
+	if r, ok := g.Read(); ok {
+		return "read repos/{repo}/" + r
+	}
+	o, _ := g.Op()
+	info, _ := op.Lookup(string(o))
+	return info.Does
+}
+
 // editPolicy changes one layer of cfg: the global lists when match is "",
 // else the allowlist entry with that match.
-func editPolicy(cfg *config.Config, verb, match string, ops []op.Op) error {
+func editPolicy(cfg *config.Config, verb, match string, grants []config.Grant) error {
 	allow, deny := &cfg.Allow, &cfg.Deny
 	if match != "" {
 		i := slices.IndexFunc(cfg.Repos, func(r config.Repo) bool { return strings.EqualFold(r.Match, match) })
@@ -103,28 +131,28 @@ func editPolicy(cfg *config.Config, verb, match string, ops []op.Op) error {
 		}
 		allow, deny = &cfg.Repos[i].Allow, &cfg.Repos[i].Deny
 	}
-	for _, o := range ops {
-		*allow = slices.DeleteFunc(*allow, func(x op.Op) bool { return x == o })
-		*deny = slices.DeleteFunc(*deny, func(x op.Op) bool { return x == o })
+	for _, g := range grants {
+		*allow = slices.DeleteFunc(*allow, func(x config.Grant) bool { return x == g })
+		*deny = slices.DeleteFunc(*deny, func(x config.Grant) bool { return x == g })
 		switch verb {
 		case "allow":
-			*allow = append(*allow, o)
+			*allow = append(*allow, g)
 		case "deny":
-			*deny = append(*deny, o)
+			*deny = append(*deny, g)
 		}
 	}
 	return nil
 }
 
 // overriding lists the entries more specific than the layer at match that
-// name o, so their setting wins over the one just changed.
-func overriding(cfg *config.Config, match string, o op.Op) []string {
+// name g, so their setting wins over the one just changed.
+func overriding(cfg *config.Config, match string, g config.Grant) []string {
 	owner, name, _ := strings.Cut(match, "/")
 	var out []string
 	for _, r := range cfg.Repos {
 		rOwner, rName, _ := strings.Cut(r.Match, "/")
 		narrower := match == "" || (name == "*" && rName != "*" && strings.EqualFold(rOwner, owner))
-		if narrower && (slices.Contains(r.Allow, o) || slices.Contains(r.Deny, o)) {
+		if narrower && (slices.Contains(r.Allow, g) || slices.Contains(r.Deny, g)) {
 			out = append(out, r.Match)
 		}
 	}
@@ -145,28 +173,31 @@ func policyShow(args []string) error {
 		for _, info := range op.All {
 			global := ""
 			switch {
-			case slices.Contains(cfg.Allow, info.Op):
+			case slices.Contains(cfg.Allow, config.Grant(info.Op)):
 				global = "allow"
-			case slices.Contains(cfg.Deny, info.Op):
+			case slices.Contains(cfg.Deny, config.Grant(info.Op)):
 				global = "deny"
 			}
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", info.Op, onOff(info.On), global, info.Does)
 		}
 		tw.Flush()
+		if api := apiChanges("", cfg.Allow, cfg.Deny); api != "" {
+			fmt.Printf("\nAPI reads, every repo:%s\n", api)
+		}
 		for _, r := range cfg.Repos {
 			if len(r.Allow)+len(r.Deny) == 0 {
 				continue
 			}
 			fmt.Printf("\n%s:", r.Match)
-			for _, o := range r.Allow {
-				fmt.Printf(" +%s", o)
+			for _, g := range r.Allow {
+				fmt.Printf(" +%s", g)
 			}
-			for _, o := range r.Deny {
-				fmt.Printf(" -%s", o)
+			for _, g := range r.Deny {
+				fmt.Printf(" -%s", g)
 			}
 		}
 		fmt.Println()
-		fmt.Println("Hard denies, like secrets, settings, and workflow edits, aren't operations, so no policy allows them.")
+		fmt.Println("Hard denies, like secrets, settings, and workflow edits, aren't operations or API reads, so no policy allows them.")
 		return nil
 	}
 
@@ -186,7 +217,45 @@ func policyShow(args []string) error {
 		info, _ := op.Lookup(string(d.Op))
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", d.Op, onOff(d.On), d.From, info.Does)
 	}
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	for _, l := range cfg.Grants().Reads(repo) {
+		var line string
+		for _, p := range l.Allow {
+			line += " +read:" + p
+		}
+		for _, p := range l.Deny {
+			line += " -read:" + p
+		}
+		if line != "" {
+			fmt.Printf("\nAPI reads set by %s:%s", l.From, line)
+		}
+	}
+	if api := apiChanges("field:", cfg.Allow, cfg.Deny); api != "" {
+		fmt.Printf("\nAPI fields, every repo:%s", api)
+	}
+	fmt.Println()
+	return nil
+}
+
+// apiChanges lists a layer's field: and read: grants, like
+// " +read:deployments -field:Repository.description". prefix narrows it to
+// one kind.
+func apiChanges(prefix string, allow, deny []config.Grant) string {
+	var out string
+	for _, list := range []struct {
+		sign   string
+		grants []config.Grant
+	}{{"+", allow}, {"-", deny}} {
+		for _, g := range list.grants {
+			if _, isOp := g.Op(); isOp || !strings.HasPrefix(string(g), prefix) {
+				continue
+			}
+			out += " " + list.sign + string(g)
+		}
+	}
+	return out
 }
 
 func onOff(on bool) string {

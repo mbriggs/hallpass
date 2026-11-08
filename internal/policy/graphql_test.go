@@ -39,7 +39,7 @@ func TestGraphQLCorpus(t *testing.T) {
 		// The stub answered {}, so gh sent empty IDs where real GitHub would
 		// have given it some.
 		body := strings.ReplaceAll(rec.Body, `"id":""`, `"id":"PR_x"`)
-		g, err := ClassifyGraphQL([]byte(body))
+		g, err := ClassifyGraphQL([]byte(body), nil)
 		if err != nil {
 			t.Errorf("refused gh's own request: %v\n%.300s", err, rec.Body)
 			continue
@@ -50,7 +50,7 @@ func TestGraphQLCorpus(t *testing.T) {
 			}
 		}
 		// What the broker forwards classifies the same way.
-		if _, err := ClassifyGraphQL(g.Body); err != nil {
+		if _, err := ClassifyGraphQL(g.Body, nil); err != nil {
 			t.Errorf("printed request no longer classifies: %v", err)
 		}
 	}
@@ -98,18 +98,18 @@ func TestGraphQLRefusesEscapes(t *testing.T) {
 		"viewer branch":           gql(`{viewer{repository(name:"secret"){defaultBranchRef{name}}}}`, nil),
 	}
 	for name, body := range cases {
-		if g, err := ClassifyGraphQL(body); err == nil {
+		if g, err := ClassifyGraphQL(body, nil); err == nil {
 			t.Errorf("%s: allowed (%+v)", name, g)
 		}
 	}
 }
 
 func TestGraphQLUses(t *testing.T) {
-	g, err := ClassifyGraphQL(gql(`query($o:String!,$n:String!){repository(owner:$o,name:$n){pullRequest(number:1){title headRepository{nameWithOwner} author{login}}}}`, map[string]any{"o": "acme", "n": "widgets"}))
+	g, err := ClassifyGraphQL(gql(`query($o:String!,$n:String!){repository(owner:$o,name:$n){pullRequest(number:1){title headRepository{nameWithOwner} author{login}}}}`, map[string]any{"o": "acme", "n": "widgets"}), nil)
 	if err != nil || len(g.Repos) != 1 || g.Repos[0].Repo.String() != "acme/widgets" || g.Mutation {
 		t.Fatalf("%+v %v", g, err)
 	}
-	g, err = ClassifyGraphQL(gql(`mutation{updatePullRequest(input:{pullRequestId:"PR_1",title:"t"}){pullRequest{url}}}`, nil))
+	g, err = ClassifyGraphQL(gql(`mutation{updatePullRequest(input:{pullRequestId:"PR_1",title:"t"}){pullRequest{url}}}`, nil), nil)
 	if err != nil || len(g.Nodes) != 1 || !g.Nodes[0].Authored || !g.Nodes[0].Write || g.Nodes[0].ID != "PR_1" {
 		t.Fatalf("%+v %v", g, err)
 	}
@@ -135,7 +135,7 @@ func TestGraphQLOps(t *testing.T) {
 		{"add labels", gql(`mutation{addLabelsToLabelable(input:{labelableId:"X",labelIds:["L"]}){clientMutationId}}`, nil), []op.Op{op.Labels}},
 	}
 	for _, c := range cases {
-		g, err := ClassifyGraphQL(c.body)
+		g, err := ClassifyGraphQL(c.body, nil)
 		if err != nil {
 			t.Errorf("%s: %v", c.name, err)
 			continue
