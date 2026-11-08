@@ -28,4 +28,8 @@ feature_graphql() {
   case_ gql-chatops
   check fail "hallpass doesn't post text with the line \"/merge\"" 'gh pr comment 1 -R acme/widgets -b "/merge"'
   fake_lacks '/merge'
+
+  case_ gql-chatops-path
+  check 0 'https://github.com/acme/widgets/pull/1#issuecomment-1' 'gh pr comment 1 -R acme/widgets -b "/tmp/out is where the run left it"'
+  fake_has '/tmp/out is where the run left it'
 }

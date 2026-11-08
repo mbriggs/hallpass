@@ -12,6 +12,8 @@ IDs to repos, and filters text that bots would treat as a command.
 - `gql-allowlist` refuses a repo outside the allowlist.
 - `gql-author` refuses a mutation on a colleague's PR.
 - `gql-chatops` refuses a comment with a bot command line like `/merge`.
+- `gql-chatops-path` posts a comment whose line starts with an absolute
+  path, which isn't a bot command.
 - `gql-renames` adds `followRenames: false` to every `repository(...)` the
   broker forwards, so an old name can't reach a renamed repo.
 
@@ -35,6 +37,8 @@ IDs to repos, and filters text that bots would treat as a command.
   with PR 1.
 - `gql-chatops`: a `/merge` comment is refused with `hallpass doesn't post
   text with the line "/merge"`.
+- `gql-chatops-path`: a comment starting `/tmp/out is where...` posts, and
+  the fake sees its text.
 
 ## Gotchas
 

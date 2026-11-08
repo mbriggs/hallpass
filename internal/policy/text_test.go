@@ -26,10 +26,36 @@ func TestCheckTextUnicode(t *testing.T) {
 			t.Errorf("%s: %q allowed", name, s)
 		}
 	}
-	for _, s := range []string{"see a/merge here", "path /usr/bin isn't a command? it is", "\u00a0looks good"} {
-		_ = s
-	}
 	allowed := []string{"see a/merge here", "\u00a0looks good", "merge when ready", "borscht recipe"}
+	for _, s := range allowed {
+		if err := CheckText(s); err != nil {
+			t.Errorf("%q refused: %v", s, err)
+		}
+	}
+}
+
+// A line that starts with an absolute path isn't a slash command, but a
+// slash command followed by punctuation or arguments still is.
+func TestCheckTextPaths(t *testing.T) {
+	refused := []string{
+		"/merge", "/merge.", "/merge, please", "/lgtm cancel", "/hold\tcancel",
+		"/test all", "/label kind/bug", "/assign @someone", "/merge-it",
+		"/merge.yml", "/merge:now", "/usr",
+	}
+	for _, s := range refused {
+		if err := CheckText(s); err == nil {
+			t.Errorf("%q allowed", s)
+		}
+	}
+	allowed := []string{
+		"/tmp/bunk-verify-evidence, and a teardown that removes only what the run",
+		"/Users/mbriggs/src/hallpass is the primary",
+		"/opt/hallpass/bin/hallpass gh pr view",
+		"/tmp/",
+		"  /var/log/system.log",
+		"/",
+		"/1234",
+	}
 	for _, s := range allowed {
 		if err := CheckText(s); err != nil {
 			t.Errorf("%q refused: %v", s, err)
