@@ -398,13 +398,27 @@ func (s *Server) Check() (string, error) {
 		return "", err
 	}
 	defer sess.Close()
-	var out bytes.Buffer
-	sess.Stderr, sess.Stdout = &out, &out
+	// Read the channel's streams directly. They work whether or not GitHub
+	// answers the shell request before closing, and each has one reader.
+	// Sharing one buffer between the session's stdout and stderr copiers
+	// raced, and lost the greeting about half the time.
+	stdout, err := sess.StdoutPipe()
+	if err != nil {
+		return "", err
+	}
+	stderr, err := sess.StderrPipe()
+	if err != nil {
+		return "", err
+	}
+	go io.Copy(io.Discard, stdout)
 	_ = sess.Shell()
-	_ = sess.Wait()
 	// "Hi mbriggs! You've successfully authenticated, but GitHub does not
 	// provide shell access."
-	msg := out.String()
+	b, err := io.ReadAll(io.LimitReader(stderr, 4096))
+	if err != nil {
+		return "", err
+	}
+	msg := string(b)
 	if login, _, ok := strings.Cut(strings.TrimPrefix(msg, "Hi "), "!"); ok && strings.HasPrefix(msg, "Hi ") {
 		return login, nil
 	}
