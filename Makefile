@@ -43,6 +43,8 @@ install:
 	@$(WORKTREE) guard --deny "make install"
 	$(GOBUILD) -o bin/hallpass ./cmd/hallpass
 	sudo ./bin/hallpass install
+	@# bin/worktree sync reads this to tell whether the live broker runs main.
+	git rev-parse HEAD > "$$(git rev-parse --absolute-git-dir)/hallpass-installed"
 
 dist:
 	rm -rf dist && mkdir -p dist

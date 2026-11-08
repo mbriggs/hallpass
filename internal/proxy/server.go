@@ -29,6 +29,10 @@ type Server struct {
 	// Upstream sends requests to GitHub. Nil uses a client that never
 	// follows redirects, so the token never goes anywhere GitHub points.
 	Upstream *http.Client
+	// bodyWait bounds how long a client may take to send a request's
+	// body, so one that never sends it can't hold a handler. Zero is 30
+	// seconds; tests set less.
+	bodyWait time.Duration
 
 	mu            sync.Mutex
 	rateRemaining int

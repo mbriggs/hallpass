@@ -211,6 +211,15 @@ type Branches struct {
 // ref. An empty map means every update may go upstream.
 func CheckPush(p Push, b Branches) map[string]string {
 	refused := map[string]string{}
+	// GitHub makes one branch of an empty repo's first push the default.
+	// checkUpdate lets that one past protected_branches, so a push that
+	// creates more could get the rest past too.
+	if b.Default == "" && len(p.Updates) > 1 {
+		for _, u := range p.Updates {
+			refused[u.Ref] = b.Repo.String() + " is empty, so push one branch first; it becomes the default branch"
+		}
+		return refused
+	}
 	seen := map[string]bool{}
 	for _, u := range p.Updates {
 		if seen[u.Ref] {

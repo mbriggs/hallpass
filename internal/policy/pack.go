@@ -28,11 +28,14 @@ type Object struct {
 }
 
 // maxKept bounds the inflated size of one object the reader keeps, and
-// maxTotal all of them. A push that needs more can't be checked, so it's
-// refused.
+// maxTotal all of them. maxInflated bounds every object the reader
+// inflates, kept or not, so a small pack of highly compressed blobs can't
+// make it inflate without end. A push that needs more can't be checked, so
+// it's refused.
 const (
-	maxKept  = 8 << 20
-	maxTotal = 1 << 30
+	maxKept     = 8 << 20
+	maxTotal    = 1 << 30
+	maxInflated = 4 << 30
 )
 
 type rawObject struct {
@@ -87,9 +90,10 @@ func ReadPack(r io.Reader) (*Pack, error) {
 	// The header's count is the sender's claim, so don't size anything by it.
 	order := make([]int64, 0, min(count, 1<<12))
 	total := 0
+	inflate := uint64(maxInflated)
 	for range count {
 		off := cr.n
-		obj, err := readEntry(cr, h, off)
+		obj, err := readEntry(cr, h, off, &inflate)
 		if err != nil {
 			return nil, err
 		}
@@ -208,8 +212,9 @@ func objectID(typ string, data []byte) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// readEntry reads one object entry, hashing every byte it consumes.
-func readEntry(cr *countingReader, h io.Writer, off int64) (*rawObject, error) {
+// readEntry reads one object entry, hashing every byte it consumes, and
+// takes its inflated size from the budget at inflate.
+func readEntry(cr *countingReader, h io.Writer, off int64, inflate *uint64) (*rawObject, error) {
 	tee := &hashingReader{cr: cr, h: h}
 	b, err := tee.ReadByte()
 	if err != nil {
@@ -256,6 +261,12 @@ func readEntry(cr *countingReader, h io.Writer, off int64) (*rawObject, error) {
 	default:
 		return nil, errorf("pack has an object of unknown type %d", typ)
 	}
+	// The entry declares its size, and nothing reads past it, so charging
+	// the declared size bounds the work before any of it is done.
+	if size > *inflate {
+		return nil, errorf("this push is too large for hallpass to check")
+	}
+	*inflate -= size
 	zr, err := zlib.NewReader(tee)
 	if err != nil {
 		return nil, errorf("malformed pack data")
@@ -273,7 +284,7 @@ func readEntry(cr *countingReader, h io.Writer, off int64) (*rawObject, error) {
 		}
 	} else {
 		o.big = true
-		n, err := io.Copy(io.Discard, zr)
+		n, err := io.Copy(io.Discard, io.LimitReader(zr, int64(size)+1))
 		if err != nil || uint64(n) != size {
 			return nil, errorf("malformed pack data")
 		}

@@ -221,6 +221,9 @@ func ClassifyREST(method, target string, body []byte, g *Grants) (*REST, error) 
 			return nil, errorf("hallpass has no operation for %s %s, so it refuses it", method, wr.path)
 		}
 		r.Write, r.Route, r.Ops = true, method+" "+wr.path, []op.Op{wr.op}
+		// A PR a write returns carries base.repo and head.repo, which hold
+		// the same clone credential as a read.
+		r.Strip = []string{"temp_clone_token"}
 		if wr.authored != "" {
 			r.Authored = base + wr.authored
 		}

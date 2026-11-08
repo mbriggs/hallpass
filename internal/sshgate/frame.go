@@ -61,23 +61,6 @@ func ReadFrame(r io.Reader) (byte, []byte, error) {
 	return hdr[0], data, err
 }
 
-// FrameWriter turns writes into frames of one kind.
-type FrameWriter struct {
-	W    io.Writer
-	Kind byte
-}
-
-func (f FrameWriter) Write(p []byte) (int, error) {
-	for len(p) > 0 {
-		n := min(len(p), 64<<10)
-		if err := WriteFrame(f.W, f.Kind, p[:n]); err != nil {
-			return 0, err
-		}
-		p = p[n:]
-	}
-	return len(p), nil
-}
-
 var remoteCommand = regexp.MustCompile(`^(git-upload-pack|git-receive-pack) '(/?[A-Za-z0-9._/-]+)'$`)
 
 // ParseCommand reads the command git asks ssh to run, like

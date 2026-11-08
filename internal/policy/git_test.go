@@ -184,6 +184,13 @@ func TestCheckPushEmptyRepo(t *testing.T) {
 	if got := CheckPush(Push{Updates: []RefUpdate{create}}, br); len(got) != 0 {
 		t.Errorf("with push.default: %v", got)
 	}
+	// Only one branch can become the default, so a first push of two
+	// can't carry a protected branch past protected_branches.
+	br.Protected = []string{"production"}
+	two := []RefUpdate{create, {zeroOID, a, "refs/heads/production"}}
+	if got := CheckPush(Push{Updates: two}, br); len(got) != 2 {
+		t.Errorf("first push of two branches: %v", got)
+	}
 	// An empty default branch never lets an update or delete skip the
 	// ledger, even with push.default.
 	for _, u := range []RefUpdate{{a, b, "refs/heads/colleague"}, {a, zeroOID, "refs/heads/colleague"}} {

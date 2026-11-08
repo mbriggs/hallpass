@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/subtle"
 	"errors"
 	"flag"
 	"fmt"
@@ -133,6 +134,13 @@ func storeToken(cfg *config.Config, token, source string, newLogin, keepOld bool
 		return fmt.Errorf("the token belongs to %s, but the current one belongs to %s. Pass --new-login to switch accounts", info.Login, old.Login)
 	}
 
+	// Replacing a token revokes the old one, which would revoke this one
+	// too if it's the same.
+	if old := cfg.Token; old != nil && sameToken(old, token) {
+		fmt.Fprintf(os.Stderr, "hallpass already has this token for %s. Nothing changed.\n", info.Login)
+		return nil
+	}
+
 	backend := keys.DefaultBackend()
 	path, err := newStatePath("token", backend)
 	if err != nil {
@@ -190,6 +198,17 @@ func logout(args []string) error {
 
 // revokeStored asks GitHub to revoke a stored token. Failure is reported, not
 // fatal: the token is being retired either way.
+// sameToken reports whether t stores token. A token that won't unseal
+// counts as different.
+func sameToken(t *config.Token, token string) bool {
+	b, p, err := keys.Split(t.Secret)
+	if err != nil {
+		return false
+	}
+	secret, err := keys.Unseal(b, p)
+	return err == nil && subtle.ConstantTimeCompare(secret, []byte(token)) == 1
+}
+
 func revokeStored(t *config.Token) {
 	b, p, err := keys.Split(t.Secret)
 	if err == nil {
