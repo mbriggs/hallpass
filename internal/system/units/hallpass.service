@@ -1,0 +1,40 @@
+# Written by hallpass install.
+[Unit]
+Description=hallpass GitHub credential broker
+Requires=hallpass.socket hallpass-git.socket hallpass-gh.socket hallpass-ssh.socket
+After=hallpass.socket hallpass-git.socket hallpass-gh.socket hallpass-ssh.socket network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/opt/hallpass/bin/hallpass serve
+Sockets=hallpass.socket hallpass-git.socket hallpass-gh.socket hallpass-ssh.socket
+User=hallpass
+Group=hallpass
+# /dev/tpmrm0 belongs to the tss group.
+SupplementaryGroups=tss
+StateDirectory=hallpass
+StateDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+DevicePolicy=closed
+DeviceAllow=/dev/tpmrm0 rw
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service

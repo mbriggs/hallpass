@@ -1,0 +1,6 @@
+interface:
+  display_name: "hallpass repo"
+  short_description: "Let hallpass agents work on a GitHub repo"
+  default_prompt: "Use $hallpass-repo for this task."
+policy:
+  allow_implicit_invocation: false

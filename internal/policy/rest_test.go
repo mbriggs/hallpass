@@ -1,0 +1,108 @@
+package policy
+
+import (
+	"slices"
+	"testing"
+
+	"github.com/mbriggs/hallpass/internal/op"
+)
+
+// Each write names every operation the config must allow for it.
+func TestRESTOps(t *testing.T) {
+	cases := []struct {
+		method, target, body string
+		ops                  []op.Op
+	}{
+		{"POST", "/repos/acme/widgets/pulls", `{"title":"t","head":"x","base":"main"}`, []op.Op{op.PRCreate}},
+		{"POST", "/repos/acme/widgets/issues", `{"title":"t"}`, []op.Op{op.IssueCreate}},
+		{"POST", "/repos/acme/widgets/issues", `{"title":"t","labels":["automerge"],"assignees":["a"]}`, []op.Op{op.IssueCreate, op.Labels, op.Assign}},
+		{"PATCH", "/repos/acme/widgets/issues/3", `{"labels":["bug"]}`, []op.Op{op.IssueEdit, op.Labels}},
+		{"POST", "/repos/acme/widgets/issues/3/labels", `{"labels":["bug"]}`, []op.Op{op.Labels}},
+		{"POST", "/repos/acme/widgets/pulls/3/reviews", `{"body":"nit","event":"COMMENT"}`, []op.Op{op.ReviewComment}},
+		{"POST", "/repos/acme/widgets/pulls/3/reviews", `{"body":"nit"}`, []op.Op{op.ReviewComment}},
+		{"POST", "/repos/acme/widgets/pulls/3/reviews", `{"event":"APPROVE"}`, []op.Op{op.ReviewComment, op.ReviewApprove}},
+		{"POST", "/repos/acme/widgets/pulls/3/reviews", `{"event":"REQUEST_CHANGES"}`, []op.Op{op.ReviewComment, op.ReviewChanges}},
+		{"POST", "/repos/acme/widgets/pulls/3/reviews/9/events", `{"event":"APPROVE"}`, []op.Op{op.ReviewComment, op.ReviewApprove}},
+		{"PUT", "/repos/acme/widgets/pulls/3/merge", `{"merge_method":"squash"}`, []op.Op{op.PRMerge}},
+		{"PUT", "/repos/acme/widgets/pulls/3/merge", ``, []op.Op{op.PRMerge}},
+		{"POST", "/repos/acme/widgets/actions/runs/1/rerun", ``, []op.Op{op.WorkflowRerun}},
+		{"POST", "/repos/acme/widgets/actions/runs/1/rerun-failed-jobs", `{"enable_debug_logging":true}`, []op.Op{op.WorkflowRerun}},
+		{"POST", "/repos/acme/widgets/actions/jobs/7/rerun", ``, []op.Op{op.WorkflowRerun}},
+		{"POST", "/repos/acme/widgets/actions/workflows/deploy.yml/dispatches", `{"ref":"main","inputs":{"env":"prod"}}`, []op.Op{op.WorkflowDispatch}},
+		{"POST", "/repos/acme/widgets/actions/workflows/42/dispatches", `{"ref":"main"}`, []op.Op{op.WorkflowDispatch}},
+	}
+	for _, c := range cases {
+		r, err := ClassifyREST(c.method, c.target, []byte(c.body))
+		if err != nil {
+			t.Errorf("%s %s %s: %v", c.method, c.target, c.body, err)
+			continue
+		}
+		slices.Sort(r.Ops)
+		slices.Sort(c.ops)
+		if !r.Write || !slices.Equal(r.Ops, c.ops) {
+			t.Errorf("%s %s %s: ops %v, want %v", c.method, c.target, c.body, r.Ops, c.ops)
+		}
+	}
+}
+
+func TestClassifyREST(t *testing.T) {
+	ok := []struct {
+		method, target, body string
+		write, follow        bool
+		authored             string
+	}{
+		{"GET", "/user", "", false, false, ""},
+		{"GET", "/repos/acme/widgets", "", false, false, ""},
+		{"GET", "/repos/acme/widgets/actions/runs/99?exclude_pull_requests=true", "", false, false, ""},
+		{"GET", "/repos/acme/widgets/actions/runs/99/logs", "", false, true, ""},
+		{"GET", "/repos/acme/widgets/actions/jobs/5/logs", "", false, true, ""},
+		{"GET", "/search/issues?page=1&per_page=30&q=%28+foo+%29+repo%3Aacme%2Fwidgets+type%3Apr", "", false, false, ""},
+		{"POST", "/repos/acme/widgets/pulls", `{"title":"t","head":"agent/x","base":"main"}`, true, false, ""},
+		{"POST", "/repos/acme/widgets/issues/3/comments", `{"body":"hi"}`, true, false, ""},
+		{"POST", "/repos/acme/widgets/pulls/3/reviews", `{"body":"nit","event":"COMMENT"}`, true, false, ""},
+		{"PATCH", "/repos/acme/widgets/pulls/3", `{"title":"t"}`, true, false, "/repos/acme/widgets/pulls/3"},
+		{"PATCH", "/repos/acme/widgets/issues/comments/77", `{"body":"b"}`, true, false, "/repos/acme/widgets/issues/comments/77"},
+	}
+	for _, c := range ok {
+		r, err := ClassifyREST(c.method, c.target, []byte(c.body))
+		if err != nil {
+			t.Errorf("%s %s: %v", c.method, c.target, err)
+			continue
+		}
+		if r.Write != c.write || r.Follow != c.follow || r.Authored != c.authored {
+			t.Errorf("%s %s = %+v", c.method, c.target, r)
+		}
+	}
+	bad := []struct{ method, target, body string }{
+		{"POST", "/repos/acme/widgets/merges", `{"base":"main","head":"x"}`},
+		{"POST", "/repos/acme/widgets/pulls/3/reviews", `{"event":"DISMISS"}`},
+		{"POST", "/repos/acme/widgets/pulls/3", `{}`},
+		{"POST", "/repos/acme/widgets/actions/workflows/../dispatches", `{"ref":"main"}`},
+		{"POST", "/repos/acme/widgets/actions/runs/1/cancel", ``},
+		{"POST", "/repos/acme/widgets/actions/runs/1/rerun", `{"x":1}`},
+		{"DELETE", "/repos/acme/widgets/issues/3/labels/bug", ``},
+		{"PUT", "/repos/acme/widgets/contents/x", `{}`},
+		{"POST", "/repos/acme/widgets/git/refs", `{}`},
+		{"DELETE", "/repos/acme/widgets/issues/comments/1", ``},
+		{"GET", "/repos/acme/widgets/actions/secrets", ``},
+		{"GET", "/repos/acme/widgets/environments/prod/secrets", ``},
+		{"GET", "/repos/acme/widgets/hooks", ``},
+		{"POST", "/repos/acme/widgets/issues/3/comments", `{"body":"/merge"}`},
+		{"POST", "/repos/acme/widgets/pulls", `{"title":"t","head":"evil:x","base":"main"}`},
+		{"POST", "/repos/acme/widgets/pulls/3/requested_reviewers", `{"team_reviewers":["core"]}`},
+		{"POST", "/repos/acme/widgets/releases", `{}`},
+		{"GET", "/repos/acme/%2e%2e/secret", ``},
+		{"GET", "/repos/acme/widgets/../../user/repos", ``},
+		{"GET", "/repositories/123/contents", ``},
+		{"GET", "/orgs/acme/repos", ``},
+		{"GET", "/search/code?q=org%3Aacme+password", ``},
+		{"GET", "/search/issues?q=repo%3Aacme%2Fa+repo%3Aacme%2Fb", ``},
+		{"GET", "/?per_page=100", ``},
+		{"POST", "/repos/acme/widgets/issues/3/comments", `{"body":"a","body":"/merge"}`},
+	}
+	for _, c := range bad {
+		if r, err := ClassifyREST(c.method, c.target, []byte(c.body)); err == nil {
+			t.Errorf("%s %s %s: allowed (%+v)", c.method, c.target, c.body, r)
+		}
+	}
+}

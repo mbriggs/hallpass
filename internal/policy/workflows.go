@@ -1,0 +1,144 @@
+package policy
+
+// Over HTTPS, GitHub refuses a push that changes .github/workflows from a
+// token without workflow scope. Over SSH it doesn't, so the broker checks
+// what a push would make the ref run.
+//
+// GitHub runs a push's workflows from the commit the ref ends up at, so the
+// check is on that commit, wherever it came from: the pack, or a commit
+// already on GitHub, such as a fork PR's head. Its .github/workflows entry
+// must match one GitHub already trusts for that ref: the ref's old commit,
+// or the default branch's head, which covers merging or rebasing onto main
+// after someone else changed workflows there. Only the entry's ID is
+// compared, so blob contents are never needed.
+
+// Fetch returns the commits and trees of the given commits already on
+// GitHub, without blobs.
+type Fetch func(commits []string) (map[string]Object, error)
+
+// WorkflowChanges returns, per ref, why the push can't go through: its new
+// commit changes workflows, or the broker couldn't tell. defaultHead is the
+// default branch's commit, or "" for an empty repo.
+func WorkflowChanges(p *Pack, updates []RefUpdate, defaultHead string, fetch Fetch) (map[string]string, error) {
+	objs := p.Objects
+	commitOf := func(id string) (Commit, bool, error) {
+		o, ok := objs[id]
+		if !ok || o.Type != "commit" {
+			return Commit{}, false, nil
+		}
+		c, err := ParseCommit(o.Data)
+		return c, true, err
+	}
+
+	// Everything the comparison needs that isn't in the pack is on GitHub:
+	// the baselines, a tip pushed without its objects, and the parents the
+	// pack builds on, whose trees hold any subtree the push didn't change.
+	want := map[string]bool{}
+	need := func(id string) {
+		if id != "" && id != zeroOID {
+			if _, ok := objs[id]; !ok {
+				want[id] = true
+			}
+		}
+	}
+	need(defaultHead)
+	for _, o := range objs {
+		if o.Type != "commit" {
+			continue
+		}
+		c, err := ParseCommit(o.Data)
+		if err != nil {
+			return nil, err
+		}
+		for _, parent := range c.Parents {
+			need(parent)
+		}
+	}
+	for _, u := range updates {
+		if !u.Delete() {
+			need(u.New)
+			need(u.Old)
+		}
+	}
+	if len(want) > 0 {
+		var ids []string
+		for id := range want {
+			ids = append(ids, id)
+		}
+		extra, err := fetch(ids)
+		if err != nil {
+			return nil, err
+		}
+		merged := make(map[string]Object, len(objs)+len(extra))
+		for k, v := range extra {
+			merged[k] = v
+		}
+		for k, v := range objs {
+			merged[k] = v
+		}
+		objs = merged
+	}
+
+	entry := func(commit string) (string, bool) {
+		if commit == "" || commit == zeroOID {
+			return "", true
+		}
+		c, ok, err := commitOf(commit)
+		if err != nil || !ok {
+			return "", false
+		}
+		t, ok := objs[c.Tree]
+		if !ok || t.Type != "tree" {
+			return "", false
+		}
+		mode, id, err := TreeEntry(t.Data, ".github")
+		if err != nil {
+			return "", false
+		}
+		if id == "" {
+			return "", true
+		}
+		if mode != "40000" {
+			return mode + " " + id, true
+		}
+		gh, ok := objs[id]
+		if !ok || gh.Type != "tree" {
+			return "", false
+		}
+		mode, id, err = TreeEntry(gh.Data, "workflows")
+		if err != nil {
+			return "", false
+		}
+		if id == "" {
+			return "", true
+		}
+		return mode + " " + id, true
+	}
+
+	const unknown = "hallpass couldn't check this push for workflow changes"
+	refused := map[string]string{}
+	base, baseOK := entry(defaultHead)
+	for _, u := range updates {
+		if u.Delete() {
+			continue
+		}
+		tip, ok := entry(u.New)
+		if !ok || !baseOK {
+			refused[u.Ref] = unknown
+			continue
+		}
+		trusted := tip == base
+		if !u.Create() {
+			old, ok := entry(u.Old)
+			if !ok {
+				refused[u.Ref] = unknown
+				continue
+			}
+			trusted = trusted || tip == old
+		}
+		if !trusted {
+			refused[u.Ref] = "agents can't change .github/workflows. Push that change yourself with git personal push"
+		}
+	}
+	return refused, nil
+}

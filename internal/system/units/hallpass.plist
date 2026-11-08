@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Written by hallpass install. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.github.mbriggs.hallpass</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/hallpass/bin/hallpass</string>
+    <string>serve</string>
+  </array>
+  <key>UserName</key>
+  <string>_hallpass</string>
+  <key>GroupName</key>
+  <string>_hallpass</string>
+  <key>Umask</key>
+  <integer>63</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/var/log/hallpass.log</string>
+  <key>StandardErrorPath</key>
+  <string>/var/log/hallpass.log</string>
+</dict>
+</plist>
