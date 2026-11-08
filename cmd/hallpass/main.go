@@ -35,10 +35,10 @@ const usage = `hallpass: brokered GitHub credentials for coding agents
 Setup, as root through /opt/hallpass/bin/hallpass. Each credential is
 optional; set up the ones you want:
   sudo ./hallpass install              install into /opt/hallpass, start the broker
-  sudo hallpass login                  get a GitHub token by device login, for HTTPS git and gh
+  sudo hallpass login                  get a GitHub token by device login, for gh
   sudo hallpass install-pat            or paste a classic PAT with only the repo scope
-  sudo hallpass ssh-key create         make a TPM SSH key, for git over SSH
-  sudo hallpass signing-key create     make a TPM signing key, for signed commits
+  sudo hallpass ssh-key create         make the SSH key, for git
+  sudo hallpass signing-key create     make the signing key, for signed commits
   sudo hallpass allow OWNER/REPO       let agents use a repo; OWNER/* for all of an owner's
   hallpass status --check              confirm the broker's credentials with GitHub
   hallpass doctor                      check this machine's git, gh, and signing setup
