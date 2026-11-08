@@ -11,8 +11,14 @@ import (
 // example to merge. The list can't cover every bot.
 // CheckText trims each line before matching, because \s in Go's regexps
 // is ASCII only.
+//
+// A slash command is one word after the slash, as in /merge or /lgtm
+// cancel. A line that starts with an absolute path, like /tmp/out, has a
+// second slash right after that word, and the first pattern lets it
+// through. Anything else after the word, or the end of the line, counts as
+// a command.
 var chatOps = []*regexp.Regexp{
-	regexp.MustCompile(`^/[A-Za-z]`),
+	regexp.MustCompile(`^/[A-Za-z][\w-]*([^\w/-]|$)`),
 	regexp.MustCompile(`(?i)^bors\b`),
 	regexp.MustCompile(`(?i)@(mergifyio|mergify|dependabot|renovate|bors|kodiakhq|k8s-ci-robot)\b`),
 }
