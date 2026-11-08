@@ -1,7 +1,15 @@
-bin/
+/bin/*
+!/bin/worktree
+!/bin/worktree-env.sh
 dist/
+tmp/
+worktree.env
 
-# The global gitignore drops .claude. Keep the project skills.
-!.claude/
-.claude/*
-!.claude/skills/
+# The global gitignore drops .claude. Keep the project skills, the hooks, and
+# the shared settings. Keep every .claude rule in this one block: a later
+# /.claude/* line would re-ignore what this re-includes.
+!/.claude/
+/.claude/*
+!/.claude/settings.json
+!/.claude/hooks/
+!/.claude/skills/

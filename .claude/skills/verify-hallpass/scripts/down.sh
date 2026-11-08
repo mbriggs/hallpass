@@ -9,7 +9,7 @@ case "$S" in /tmp/hallpass-verify*) ;; *) [ -f "$S/hallpass.toml" ] || { echo "d
 # Kill only pids this run recorded, and only if they still belong to $S.
 for name in broker fake; do
   pid=$(cat "$S/$name.pid" 2>/dev/null) || continue
-  if tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -qF "$S/"; then
+  if ps -ww -o command= -p "$pid" 2>/dev/null | grep -qF "$S/"; then
     kill "$pid"
     for _ in $(seq 30); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
     kill -0 "$pid" 2>/dev/null && kill -9 "$pid"

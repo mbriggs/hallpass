@@ -2,14 +2,20 @@
 # Start a scratch hallpass broker, as you, against a fake GitHub. Nothing
 # here touches /etc/hallpass, /run/hallpass, the live broker, or github.com.
 #
-#   up.sh [SCRATCH_DIR]     default: a new /tmp/hallpass-verify.XXXXXX
+#   up.sh [SCRATCH_DIR]     default: a new /tmp/hallpass-verify.XXXXXX, or in a
+#                           lane /tmp/hallpass-verify-lane<n>.XXXXXX, which the
+#                           lane's teardown stops and deletes
 #
 # Prints the scratch dir on the last line. Source "$S/env" before driving.
 set -euo pipefail
 
 repo=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 here=$(cd "$(dirname "$0")" && pwd)
-S=${1:-$(mktemp -d /tmp/hallpass-verify.XXXXXX)}
+# In a linked worktree, load its lane, or refuse if it has none.
+. "$repo/bin/worktree-env.sh"
+worktree_load "$repo"
+# Under /tmp, not the checkout: macOS caps socket paths at 104 bytes.
+S=${1:-$(mktemp -d "${HALLPASS_VERIFY_PREFIX:-/tmp/hallpass-verify}.XXXXXX")}
 S=$(cd "$(mkdir -p "$S" && echo "$S")" && pwd)
 if [ -e "$S/broker.pid" ] && kill -0 "$(cat "$S/broker.pid")" 2>/dev/null; then
   echo "up.sh: a broker from $S is already running; run down.sh $S first" >&2

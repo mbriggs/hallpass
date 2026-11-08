@@ -40,7 +40,10 @@ It prevents these:
   allowlist doesn't cover, for git, gh, and GraphQL node IDs. GraphQL
   reads that walk from an allowed repo into another one, through an owner,
   an author, a fork, or a cross-reference, see only names, IDs, numbers,
-  titles, and states, never bodies, code, or comments.
+  titles, and states, never bodies, code, or comments. Of a repo reached
+  that way, like a fork's parent, they also see its description, its
+  default branch's name, your permission there, and whether it has issues
+  and a wiki, which `gh pr create` reads.
 - **Merging, approving, and pushing to protected branches.** By default,
   agents can't merge or approve PRs, push the default branch, add labels,
   or rerun or dispatch workflows. You can allow each of these everywhere or

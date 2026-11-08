@@ -1,5 +1,8 @@
 # Build hallpass, run its tests, or cross-build release binaries.
 VERSION ?= dev
+# The guard checks the checkout that holds this Makefile, not the directory
+# make runs from.
+WORKTREE := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))bin/worktree
 GOBUILD := CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$(VERSION)"
 
 .PHONY: build test install dist
@@ -13,7 +16,11 @@ test:
 	go test -count=1 ./...
 
 # Builds, then copies the binary into /opt/hallpass/bin and starts the broker.
-install: build
+# Refuses in a lane: the live broker runs main, installed from the primary
+# checkout by bin/worktree sync after a PR merges.
+install:
+	@$(WORKTREE) guard --deny "make install"
+	$(GOBUILD) -o bin/hallpass ./cmd/hallpass
 	sudo ./bin/hallpass install
 
 dist:

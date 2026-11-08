@@ -349,7 +349,7 @@ func (w *walker) selections(f *ast.Field, v view, depth int) error {
 			if deniedFields[owner+"."+c.Name] {
 				return errorf("hallpass doesn't let agents read %s.%s", owner, c.Name)
 			}
-			if v == identity && !identityScalars[c.Name] {
+			if v == identity && !identityScalars[c.Name] && !identityFields[owner+"."+c.Name] {
 				return errorf("hallpass doesn't allow reading %s.%s here, because it may be outside the repo you named", owner, c.Name)
 			}
 			return nil
@@ -369,6 +369,11 @@ func (w *walker) edgeView(v view, owner, field string, child *ast.Definition) (v
 		// members of a connection they were already given, like a PR's
 		// assignees. They can't enter a new connection.
 		if (field == "owner" || field == "organization") && !isConnection(child) {
+			return identity, nil
+		}
+		// The default branch's name, for gh pr create on a fork. Its
+		// target and history are a further hop, which this refuses.
+		if owner == "Repository" && field == "defaultBranchRef" {
 			return identity, nil
 		}
 		if isWrapper(owner) && (field == "nodes" || field == "edges" || field == "node" || field == "pageInfo") {
@@ -481,6 +486,18 @@ var identityScalars = map[string]bool{
 	"url": true, "resourcePath": true, "avatarUrl": true, "slug": true, "isPrivate": true,
 	"isFork": true, "isArchived": true, "number": true, "state": true, "title": true,
 	"totalCount": true, "hasNextPage": true, "hasPreviousPage": true, "endCursor": true, "startCursor": true,
+}
+
+// identityFields are further fields of one type that a read may see of an
+// object that may be outside the named repo. gh pr create reads these of
+// the repo's parent, which for a fork can be a repo the allowlist doesn't
+// cover. They're settings and a one-line description, not code, issues,
+// or PRs. Keep this to what gh asks for.
+var identityFields = map[string]bool{
+	"Repository.hasIssuesEnabled": true,
+	"Repository.hasWikiEnabled":   true,
+	"Repository.viewerPermission": true,
+	"Repository.description":      true,
 }
 
 // deniedFields are fields agents can't read even in an allowed repo.
