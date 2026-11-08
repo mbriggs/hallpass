@@ -14,7 +14,8 @@ import (
 )
 
 // Each testdata/gh-<version>-capture.jsonl is one gh release's real traffic,
-// recorded by tools/ghcorpus against a stub socket. hallpass must allow
+// recorded by verify-hallpass's gh-matrix.sh and appended with
+// gh-matrix-corpus.py. hallpass must allow
 // every request gh sends for the commands agents run, so a gh upgrade that
 // changes them shows up here as a refusal.
 func TestGHCorpus(t *testing.T) {

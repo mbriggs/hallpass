@@ -185,8 +185,9 @@ skips refusals by design:
 python3 -I .claude/skills/verify-hallpass/scripts/gh-matrix-corpus.py tmp/matrix.jsonl internal/policy/testdata/gh-2.98.0-capture.jsonl
 ```
 
-`TestGHCorpus` (`make corpus` runs it) and `TestRESTCorpus` then require every one to
-classify. For a new gh version, start a new corpus file named for it.
+`TestGHCorpus` and `TestRESTCorpus`, both in `make test`, then require every
+one to classify. The matrix runs the `gh` on `PATH`, so for a new gh version,
+put that gh first on `PATH` and start a new corpus file named for it.
 
 ## Cleanup
 
