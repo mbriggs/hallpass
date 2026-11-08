@@ -31,7 +31,6 @@ type Server struct {
 	Upstream *http.Client
 
 	mu            sync.Mutex
-	names         map[string]cachedName
 	rateRemaining int
 	rateReset     time.Time
 }

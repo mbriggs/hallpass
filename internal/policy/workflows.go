@@ -11,6 +11,14 @@ package policy
 // or the default branch's head, which covers merging or rebasing onto main
 // after someone else changed workflows there. Only the entry's ID is
 // compared, so blob contents are never needed.
+//
+// Dependabot's config gets the same check. Dependabot reads it from the
+// default branch, and a registry it names receives the Dependabot secrets
+// the config references, so an agent allowed push.default could send them
+// to a server of its own.
+
+// guarded are the entries of .github a push may not change.
+var guarded = []string{"workflows", "dependabot.yml", "dependabot.yaml"}
 
 // Fetch returns the commits and trees of the given commits already on
 // GitHub, without blobs.
@@ -105,14 +113,19 @@ func WorkflowChanges(p *Pack, updates []RefUpdate, defaultHead string, fetch Fet
 		if !ok || gh.Type != "tree" {
 			return "", false
 		}
-		mode, id, err = TreeEntry(gh.Data, "workflows")
-		if err != nil {
-			return "", false
+		var key string
+		for _, name := range guarded {
+			mode, id, err := TreeEntry(gh.Data, name)
+			if err != nil {
+				return "", false
+			}
+			// Absent entries add nothing, so a .github with none of them
+			// matches no .github at all.
+			if id != "" {
+				key += name + "=" + mode + " " + id + ";"
+			}
 		}
-		if id == "" {
-			return "", true
-		}
-		return mode + " " + id, true
+		return key, true
 	}
 
 	const unknown = "hallpass couldn't check this push for workflow changes"
@@ -137,7 +150,7 @@ func WorkflowChanges(p *Pack, updates []RefUpdate, defaultHead string, fetch Fet
 			trusted = trusted || tip == old
 		}
 		if !trusted {
-			refused[u.Ref] = "agents can't change .github/workflows. Push that change yourself with git personal push"
+			refused[u.Ref] = "agents can't change .github/workflows or Dependabot's config. Push that change yourself with git personal push"
 		}
 	}
 	return refused, nil

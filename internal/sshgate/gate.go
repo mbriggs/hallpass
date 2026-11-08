@@ -305,13 +305,16 @@ func (s *Server) relayPush(client *ssh.Client, repo github.Repo, ops op.Set, in 
 		o.frame(FrameStderr, []byte("hallpass: couldn't check the default branch: "+def.err.Error()+"\n"))
 		return false
 	}
-	refused := policy.CheckPush(push, policy.Branches{
-		Default:   def.name,
-		Ops:       ops,
-		Protected: s.Config.ProtectedBranches,
-		Tip:       func(b string) string { return s.Ledger.Tip(repo, b) },
-		Repo:      repo,
-	})
+	check := func(def string) map[string]string {
+		return policy.CheckPush(push, policy.Branches{
+			Default:   def,
+			Ops:       ops,
+			Protected: s.Config.ProtectedBranches,
+			Tip:       func(b string) string { return s.Ledger.Tip(repo, b) },
+			Repo:      repo,
+		})
+	}
+	refused := check(def.name)
 	refuse := func(refused map[string]string) bool {
 		log.Warn("refused", "reason", "push", "refs", refused)
 		// git reads the answer after it sends the pack, so take the pack
@@ -344,6 +347,19 @@ func (s *Server) relayPush(client *ssh.Client, repo github.Repo, ops op.Set, in 
 		}
 		if len(refused) > 0 {
 			return refuse(refused)
+		}
+		// The client decides how long its pack takes, and the default
+		// branch can change meanwhile, say to a branch this push updates.
+		// So ask again, and check against the default as it is now.
+		name, err := s.defaultBranch(client, repo)
+		if err != nil {
+			return refuse(all(push, "hallpass couldn't check the default branch: "+err.Error()))
+		}
+		if name != def.name {
+			def.name = name
+			if refused := check(name); len(refused) > 0 {
+				return refuse(refused)
+			}
 		}
 	}
 

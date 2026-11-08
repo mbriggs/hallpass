@@ -362,10 +362,22 @@ func (w *walker) selections(f *ast.Field, v view, depth int) error {
 			return errorf("hallpass doesn't let agents read %s.%s", owner, c.Name)
 		}
 		if owner == "Repository" && c.Name == "object" {
-			expr, _ := c.ArgumentMap(w.vars)["expression"].(string)
-			rev, _, _ := strings.Cut(expr, ":")
-			if err := checkRev(rev); err != nil {
-				return err
+			args := c.ArgumentMap(w.vars)
+			if expr, ok := args["expression"].(string); ok {
+				// git reads ":/text" and ":0:path" with nothing before the
+				// colon, so a revision is required there.
+				rev, _, _ := strings.Cut(expr, ":")
+				if rev == "" {
+					return errorf("hallpass needs a full SHA or a ref name before the colon in %q", expr)
+				}
+				if err := checkRev(rev); err != nil {
+					return err
+				}
+			}
+			if oid, ok := args["oid"].(string); ok {
+				if err := checkRev(oid); err != nil {
+					return err
+				}
 			}
 		}
 		if child.Kind == ast.Scalar || child.Kind == ast.Enum {
@@ -558,6 +570,12 @@ var deniedFields = map[string]bool{
 	"Repository.codeowners":            true,
 	"Repository.interactionAbility":    true,
 	"Repository.branchProtectionRules": true,
+	// REST's read floor has properties, and environments' protection
+	// rules are settings. Many types lead to an environment, so the rules
+	// are denied on Environment itself.
+	"Repository.repositoryCustomPropertyValue":  true,
+	"Repository.repositoryCustomPropertyValues": true,
+	"Environment.protectionRules":               true,
 }
 
 // noRenames pins repository(owner, name) to the repo of that name.

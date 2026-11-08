@@ -17,16 +17,20 @@ import (
 // CurrentName follows GitHub's redirect for a renamed repo to its new name,
 // and only within GitHub's API.
 func TestCurrentName(t *testing.T) {
-	var hits atomic.Int32
+	var renamed atomic.Bool
 	var api string
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
 		if r.Header.Get("Authorization") != "token "+testToken {
 			w.WriteHeader(401)
 			return
 		}
 		switch r.URL.Path {
 		case "/api/repos/acme/widgets":
+			if renamed.Load() {
+				w.Header().Set("Location", api+"/repositories/7")
+				w.WriteHeader(http.StatusMovedPermanently)
+				return
+			}
 			io.WriteString(w, `{"full_name":"acme/widgets"}`)
 		case "/api/repos/acme/old":
 			// What GitHub answers for a renamed or transferred repo.
@@ -63,11 +67,10 @@ func TestCurrentName(t *testing.T) {
 		t.Errorf("redirect off GitHub's API: %v", err)
 	}
 
-	// Answers are cached, so a busy repo costs one lookup.
-	before := hits.Load()
-	name("acme/widgets")
-	name("acme/old")
-	if hits.Load() != before {
-		t.Errorf("cached lookups reached GitHub %d times", hits.Load()-before)
+	// A rename right after a lookup shows on the next one: nothing is
+	// cached.
+	renamed.Store(true)
+	if got, err := name("acme/widgets"); err != nil || got != "other/private" {
+		t.Errorf("repo renamed since the last lookup: %q, %v", got, err)
 	}
 }

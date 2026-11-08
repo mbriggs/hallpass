@@ -8,32 +8,17 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/mbriggs/hallpass/internal/github"
 )
-
-// currentNameTTL is how long CurrentName trusts an answer. A rename takes
-// effect at most this long after it happens.
-const currentNameTTL = 10 * time.Minute
-
-type cachedName struct {
-	repo github.Repo
-	at   time.Time
-}
 
 // CurrentName asks GitHub what repo is called now. GitHub keeps an old name
 // working after a rename or transfer, by redirecting the API and by serving
 // git under it, so a name the allowlist covers can lead to a repo it
 // doesn't. The SSH gate compares the answer with the name it was given.
+// It asks on every call: a cached answer would let an old name through
+// for as long as it was kept.
 func (s *Server) CurrentName(ctx context.Context, repo github.Repo) (github.Repo, error) {
-	s.mu.Lock()
-	c, ok := s.names[repo.Key()]
-	s.mu.Unlock()
-	if ok && time.Since(c.at) < currentNameTTL {
-		return c.repo, nil
-	}
-
 	url := s.Config.API() + "/repos/" + repo.Owner + "/" + repo.Name
 	resp, err := s.getRepo(ctx, url)
 	if err != nil {
@@ -70,13 +55,6 @@ func (s *Server) CurrentName(ctx context.Context, repo github.Repo) (github.Repo
 	if err != nil {
 		return github.Repo{}, fmt.Errorf("GitHub named %s as %q: %w", repo, r.FullName, err)
 	}
-
-	s.mu.Lock()
-	if s.names == nil {
-		s.names = map[string]cachedName{}
-	}
-	s.names[repo.Key()] = cachedName{cur, time.Now()}
-	s.mu.Unlock()
 	return cur, nil
 }
 

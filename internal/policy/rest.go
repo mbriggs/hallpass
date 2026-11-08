@@ -100,10 +100,15 @@ var (
 	compareSides = regexp.MustCompile(`\.\.\.?`)
 )
 
-// checkRev refuses an abbreviated SHA. Full SHAs and ref names pass.
+// checkRev refuses an abbreviated SHA, and any revision expression, like
+// abc1234~0, since one can wrap an abbreviated SHA. Full SHAs and ref names
+// pass: a ref name can't hold ~, ^, :, or @{.
 func checkRev(rev string) error {
 	if shortSHA.MatchString(rev) {
 		return errorf("hallpass needs the full SHA, not %q, because GitHub resolves abbreviated ones across forks", rev)
+	}
+	if strings.ContainsAny(rev, "~^:") || strings.Contains(rev, "@{") {
+		return errorf("hallpass needs a full SHA or a ref name, not the expression %q, because GitHub resolves abbreviated SHAs across forks", rev)
 	}
 	return nil
 }
