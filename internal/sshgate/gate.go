@@ -3,6 +3,7 @@ package sshgate
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto"
 	"encoding/json"
 	"errors"
@@ -42,6 +43,10 @@ type Server struct {
 	// point them at a local server.
 	Addr     string
 	HostKeys []string
+	// CurrentName asks GitHub what a repo is called now, so an old name
+	// left by a rename or transfer can't reach a repo the allowlist
+	// doesn't cover. Nil, as on a machine with no token, skips the check.
+	CurrentName func(context.Context, github.Repo) (github.Repo, error)
 
 	limits limits
 }
@@ -196,6 +201,19 @@ func (s *Server) handle(conn net.Conn, lim limits) {
 	case s.Signer == nil:
 		fail("this machine has no SSH key. Create one: sudo /opt/hallpass/bin/hallpass ssh-key create")
 		return
+	}
+	if s.CurrentName != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		cur, err := s.CurrentName(ctx, repo)
+		cancel()
+		if err != nil {
+			fail("couldn't check " + repo.String() + "'s current name with GitHub: " + err.Error())
+			return
+		}
+		if !strings.EqualFold(cur.String(), repo.String()) {
+			fail(repo.String() + " is now " + cur.String() + " on GitHub. Use the new name, which hallpass checks against its allowlist")
+			return
+		}
 	}
 
 	client, err := s.dial()
