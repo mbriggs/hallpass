@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"errors"
 	"flag"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"github.com/mbriggs/hallpass/internal/github"
 	"github.com/mbriggs/hallpass/internal/op"
 	"github.com/mbriggs/hallpass/internal/system"
+	"golang.org/x/term"
 )
 
 const policyUsage = `usage:
@@ -74,11 +76,16 @@ func policyEdit(verb string, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := editPolicy(cfg, verb, match, grants); err != nil {
+	added, err := editPolicy(cfg, verb, match, grants)
+	if err != nil {
 		return err
 	}
+	removed := verb == "reset" && offerRemove(cfg, match)
 	if err := commit(cfg); err != nil {
 		return err
+	}
+	if added {
+		fmt.Fprintf(os.Stderr, "Added %s to the allowlist, with the access %s gives it, to hold its policy.\n", match, wildcard(match))
 	}
 
 	where := "every repo"
@@ -104,6 +111,9 @@ func policyEdit(verb string, args []string) error {
 			fmt.Fprintf(os.Stderr, "  %s has its own setting for %s, which still applies there.\n", e, g)
 		}
 	}
+	if removed {
+		fmt.Fprintf(os.Stderr, "Removed %s from the allowlist. %s still covers it.\n", match, wildcard(match))
+	}
 	return nil
 }
 
@@ -121,13 +131,20 @@ func describe(g config.Grant) string {
 }
 
 // editPolicy changes one layer of cfg: the global lists when match is "",
-// else the allowlist entry with that match.
-func editPolicy(cfg *config.Config, verb, match string, grants []config.Grant) error {
+// else the allowlist entry with that match. A repo with no entry of its own
+// gets one when OWNER/* covers it, with the same access and via, and added
+// reports that.
+func editPolicy(cfg *config.Config, verb, match string, grants []config.Grant) (added bool, err error) {
 	allow, deny := &cfg.Allow, &cfg.Deny
 	if match != "" {
-		i := slices.IndexFunc(cfg.Repos, func(r config.Repo) bool { return strings.EqualFold(r.Match, match) })
+		i := entry(cfg, match)
 		if i < 0 {
-			return fmt.Errorf("%s isn't in the allowlist. Allow it first: sudo %s allow %s", match, system.Binary, match)
+			w := entry(cfg, wildcard(match))
+			if w < 0 || verb == "reset" {
+				return false, fmt.Errorf("%s isn't in the allowlist. Allow it first: sudo %s allow %s", match, system.Binary, match)
+			}
+			cfg.Repos = append(cfg.Repos, config.Repo{Match: match, Access: cfg.Repos[w].Access, Via: cfg.Repos[w].Via})
+			i, added = len(cfg.Repos)-1, true
 		}
 		allow, deny = &cfg.Repos[i].Allow, &cfg.Repos[i].Deny
 	}
@@ -141,7 +158,44 @@ func editPolicy(cfg *config.Config, verb, match string, grants []config.Grant) e
 			*deny = append(*deny, g)
 		}
 	}
-	return nil
+	return added, nil
+}
+
+// offerRemove asks whether to drop the entry at match once it holds no
+// policy and OWNER/* gives the same access and via, so removing it changes
+// nothing.
+// It removes the entry from cfg if the answer is yes.
+func offerRemove(cfg *config.Config, match string) bool {
+	i, w := entry(cfg, match), entry(cfg, wildcard(match))
+	if i < 0 || w < 0 || match == wildcard(match) {
+		return false
+	}
+	e := cfg.Repos[i]
+	if len(e.Allow)+len(e.Deny) > 0 || e.Access != cfg.Repos[w].Access || e.Via != cfg.Repos[w].Via {
+		return false
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		fmt.Fprintf(os.Stderr, "%s has no policy of its own now, and %s covers it. To remove it: sudo %s disallow %s\n", match, wildcard(match), system.Binary, match)
+		return false
+	}
+	fmt.Fprintf(os.Stderr, "%s has no policy of its own now, and %s covers it. Remove it from the allowlist? [Y/n] ", match, wildcard(match))
+	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	if a := strings.ToLower(strings.TrimSpace(line)); a != "" && a != "y" && a != "yes" {
+		return false
+	}
+	cfg.Repos = slices.Delete(cfg.Repos, i, i+1)
+	return true
+}
+
+// entry is the index of the allowlist entry with match, or -1.
+func entry(cfg *config.Config, match string) int {
+	return slices.IndexFunc(cfg.Repos, func(r config.Repo) bool { return strings.EqualFold(r.Match, match) })
+}
+
+// wildcard is the OWNER/* match for OWNER/NAME.
+func wildcard(match string) string {
+	owner, _, _ := strings.Cut(match, "/")
+	return owner + "/*"
 }
 
 // overriding lists the entries more specific than the layer at match that

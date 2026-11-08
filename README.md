@@ -176,7 +176,14 @@ hallpass policy show mbriggs/dots     # what's in effect there, and which layer 
 
 The layers apply in order: the defaults, then the global lists, then the
 `OWNER/*` entry, then the exact entry. The most specific layer that names an
-operation decides it. `allow` prints a warning for the risky operations, among them:
+operation decides it.
+
+If `--repo OWNER/NAME` has no entry of its own but `OWNER/*` covers it,
+the command adds an `OWNER/NAME` entry with the same access to hold the
+policy. When a `reset` leaves such an entry with no policy, it offers to
+remove it.
+
+`allow` prints a warning for the risky operations, among them:
 
 - An approval or change request through hallpass counts as yours.
 - `pr.merge` and `pr.automerge` let agents merge with nobody reviewing.

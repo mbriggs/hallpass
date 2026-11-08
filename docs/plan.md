@@ -302,7 +302,9 @@ typo in `deny` can't quietly deny nothing. `access` and `via` still come
 from the most specific entry alone.
 
 `hallpass policy allow|deny|reset OP... [--repo MATCH]` edits a layer, and
-prints a warning when it allows a risky one. `hallpass policy show [OWNER/REPO]`
+prints a warning when it allows a risky one. Naming a repo that only
+`OWNER/*` covers adds an exact entry with the wildcard's access and `via`, and a
+`reset` that leaves that entry with no policy offers to remove it. `hallpass policy show [OWNER/REPO]`
 prints what's in effect and which layer decided each operation. Refusals
 name the operation and the command that would allow it.
 
