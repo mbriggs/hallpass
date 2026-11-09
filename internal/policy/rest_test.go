@@ -11,6 +11,23 @@ import (
 	"github.com/mbriggs/hallpass/internal/op"
 )
 
+// withToken reports whether the broker would send a classified request with
+// the token: it classified, and not as a read to send anonymously.
+func withToken(r *REST, err error) bool { return err == nil && !r.Anonymous }
+
+// refusal is the message gh sees when the broker doesn't send a request with
+// the token: the error, or what an anonymous read gives if GitHub won't
+// answer it.
+func refusal(r *REST, err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	if r.Anonymous {
+		return r.Why
+	}
+	return ""
+}
+
 // refusedREST are corpus requests hallpass refuses, and why that's fine.
 var refusedREST = map[string]string{
 	"GET /?per_page=100": "in the original 2.98 capture, against a stub that answered {}; hallpass has always refused it and no gh command has needed it since",
@@ -46,15 +63,15 @@ func TestRESTCorpus(t *testing.T) {
 		}
 		target = zeroID.ReplaceAllString(target, "/1$1")
 		n++
-		_, err := ClassifyREST(method, target, []byte(rec.Body), nil)
+		r, err := ClassifyREST(method, target, []byte(rec.Body), nil)
 		if why, ok := refusedREST[method+" "+target]; ok {
-			if err == nil {
+			if withToken(r, err) {
 				t.Errorf("%s %s classifies now; drop it from refusedREST (%s)", method, target, why)
 			}
 			continue
 		}
-		if err != nil {
-			t.Errorf("refused gh's own request %s %s: %v", method, target, err)
+		if !withToken(r, err) {
+			t.Errorf("refused gh's own request %s %s: %s", method, target, refusal(r, err))
 		}
 	}
 	if n < 20 {
@@ -162,12 +179,12 @@ func TestClassifyREST(t *testing.T) {
 		{"POST", "/repos/acme/widgets/issues/3/comments", `{"body":"a","body":"/merge"}`},
 	}
 	for _, c := range bad {
-		if r, err := ClassifyREST(c.method, c.target, []byte(c.body), nil); err == nil {
+		if r, err := ClassifyREST(c.method, c.target, []byte(c.body), nil); withToken(r, err) {
 			t.Errorf("%s %s %s: allowed (%+v)", c.method, c.target, c.body, r)
 		}
 	}
 	// No read pattern can name Deployments, so the refusal offers no command.
-	if _, err := ClassifyREST("GET", "/repos/acme/widgets/Deployments", nil, nil); err == nil || strings.Contains(err.Error(), "To allow it") {
-		t.Errorf("GET Deployments: %v", err)
+	if r, err := ClassifyREST("GET", "/repos/acme/widgets/Deployments", nil, nil); withToken(r, err) || strings.Contains(refusal(r, err), "To allow it") {
+		t.Errorf("GET Deployments: %q", refusal(r, err))
 	}
 }

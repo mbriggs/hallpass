@@ -116,6 +116,13 @@ func main() {
 			rec.WriteHeader(http.StatusNotFound)
 			return
 		}
+		// octo/public is a public repo outside the allowlist: GitHub shows
+		// it to anyone, token or not.
+		if r.Method == http.MethodGet && r.URL.Path == "/api/repos/octo/public" && auth == "none" {
+			rec.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(rec, `{"id":3,"name":"public","full_name":"octo/public","owner":{"login":"octo"},"default_branch":"main","private":false}`)
+			return
+		}
 		if auth != "token-ok" {
 			rec.WriteHeader(http.StatusUnauthorized)
 			_, _ = io.WriteString(rec, `{"message":"Bad credentials"}`)

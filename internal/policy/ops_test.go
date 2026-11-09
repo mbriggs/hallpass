@@ -59,6 +59,12 @@ func TestEveryWriteHasAnOperation(t *testing.T) {
 		t.Errorf("default branch refusal doesn't name push.default: %q", why)
 	}
 
+	// A read the tables don't cover goes without the token, if the
+	// policy allows anonymous reads.
+	if r, err := ClassifyREST("GET", "/orgs/acme", nil, nil); err == nil && r.Anonymous {
+		used[op.Anonymous] = true
+	}
+
 	for _, info := range op.All {
 		if !used[info.Op] {
 			t.Errorf("no request needs %s, so allowing or denying it does nothing", info.Op)

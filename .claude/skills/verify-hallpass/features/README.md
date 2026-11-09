@@ -12,7 +12,9 @@ allowlisted read-only. `acme/gadgets` is allowlisted, and the fake answers
 it as widgets's old name, so git under it reaches widgets. `acme/gizmos` is
 allowlisted, and the fake answers it as the old name of `acme/private`,
 which isn't, so git under it is refused. `acme/secret` isn't on the
-allowlist.
+allowlist, and the fake answers it 401 without the token.
+`octo/public` isn't either, and the fake shows it to anyone, as GitHub does
+a public repo.
 
 ## Driving conventions
 

@@ -191,6 +191,22 @@ func (c *Config) Allowed(repo github.Repo) (Rule, bool) {
 	return Rule{Write: best.Access != "read", Ops: ops}, true
 }
 
+// Anonymous reports whether the broker may send a read it doesn't cover to
+// GitHub without the token. repo is the repo the read names, or nil for a
+// path outside /repos, which only the global lists decide.
+func (c *Config) Anonymous(repo *github.Repo) bool {
+	var wild, exact *Repo
+	if repo != nil {
+		wild, exact = c.entries(*repo)
+	}
+	for _, d := range c.decide(wild, exact) {
+		if d.Op == op.Anonymous {
+			return d.On
+		}
+	}
+	return false
+}
+
 // Decide explains what agents may do in repo, one Decision per operation in
 // op.All's order. ok is false when the allowlist doesn't cover repo.
 func (c *Config) Decide(repo github.Repo) (ds []Decision, ok bool) {

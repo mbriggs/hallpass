@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mbriggs/hallpass/internal/config"
 	"github.com/mbriggs/hallpass/internal/github"
 	"github.com/mbriggs/hallpass/internal/op"
 	"github.com/mbriggs/hallpass/internal/policy"
@@ -59,12 +61,19 @@ func (s *Server) serveGH(w http.ResponseWriter, r *http.Request) {
 	case r.Host != "api.github.com":
 		refuse(http.StatusMisdirectedRequest, "hallpass only forwards requests to api.github.com")
 		return
-	case s.Token == "":
-		refuse(http.StatusServiceUnavailable, "this machine has no GitHub token. Get one: sudo /opt/hallpass/bin/hallpass login")
-		return
-	case s.rateLow():
-		refuse(http.StatusTooManyRequests, "the token's account is close to GitHub's hourly rate limit, so hallpass is holding the rest for you")
-		return
+	}
+	// tokenReady refuses when the token can't serve a request. Anonymous
+	// reads don't need it.
+	tokenReady := func() bool {
+		switch {
+		case s.Token == "":
+			refuse(http.StatusServiceUnavailable, "this machine has no GitHub token. Get one: sudo /opt/hallpass/bin/hallpass login")
+			return false
+		case s.rateLow():
+			refuse(http.StatusTooManyRequests, "the token's account is close to GitHub's hourly rate limit, so hallpass is holding the rest for you")
+			return false
+		}
+		return true
 	}
 	// Only the body read gets a deadline. A server-wide ReadTimeout would
 	// also cancel long log and artifact downloads.
@@ -92,6 +101,9 @@ func (s *Server) serveGH(w http.ResponseWriter, r *http.Request) {
 	var follow bool
 	var strip []string
 	if graphql {
+		if !tokenReady() {
+			return
+		}
 		g, err := policy.ClassifyGraphQL(body, s.Config.Grants())
 		if err != nil {
 			refuse(http.StatusForbidden, err.Error())
@@ -109,15 +121,33 @@ func (s *Server) serveGH(w http.ResponseWriter, r *http.Request) {
 			refuse(http.StatusForbidden, err.Error())
 			return
 		}
-		log = log.With("route", rest.Route)
+		var rule config.Rule
+		listed := false
 		if rest.Repo != nil {
 			log = log.With("repo", rest.Repo.String())
-			rule, ok := s.Config.Allowed(*rest.Repo)
-			switch {
-			case !ok:
-				refuse(http.StatusForbidden, rest.Repo.String()+" isn't in hallpass's allowlist. To allow it: sudo /opt/hallpass/bin/hallpass allow "+rest.Repo.String())
+			rule, listed = s.Config.Allowed(*rest.Repo)
+		}
+		if rest.Repo != nil && !listed {
+			why := rest.Repo.String() + " isn't in hallpass's allowlist. To allow it: sudo /opt/hallpass/bin/hallpass allow " + rest.Repo.String()
+			if rest.Write {
+				refuse(http.StatusForbidden, why)
 				return
-			case rest.Write && !rule.Write:
+			}
+			if !rest.Anonymous {
+				rest.Route = "GET " + rest.Path + " (anonymous)"
+			}
+			rest.Anonymous, rest.Why = true, why
+		}
+		log = log.With("route", rest.Route)
+		if rest.Anonymous {
+			s.serveAnonymous(w, r, rest, log, refuse)
+			return
+		}
+		if !tokenReady() {
+			return
+		}
+		if rest.Repo != nil {
+			if rest.Write && !rule.Write {
 				refuse(http.StatusForbidden, "agents may only read "+rest.Repo.String())
 				return
 			}
@@ -205,6 +235,55 @@ func (s *Server) serveGH(w http.ResponseWriter, r *http.Request) {
 		log.Info("allowed", "status", resp.StatusCode)
 		return
 	}
+	w.WriteHeader(resp.StatusCode)
+	flushCopy(w, w, resp.Body)
+	log.Info("allowed", "status", resp.StatusCode)
+}
+
+// serveAnonymous sends a read hallpass doesn't cover to GitHub without the
+// token, so GitHub shows only what anyone could fetch. When GitHub won't show
+// it, or the policy denies anonymous reads, gh gets rest.Why.
+func (s *Server) serveAnonymous(w http.ResponseWriter, r *http.Request, rest *policy.REST, log *slog.Logger, refuse func(int, string)) {
+	if !s.Config.Anonymous(rest.Repo) {
+		refuse(http.StatusForbidden, rest.Why)
+		return
+	}
+	up, err := http.NewRequestWithContext(r.Context(), http.MethodGet, s.Config.API()+rest.Path, nil)
+	if err != nil {
+		refuse(http.StatusInternalServerError, err.Error())
+		return
+	}
+	copyHeaders(up.Header, r.Header, "Accept", "User-Agent", "X-GitHub-Api-Version", "If-None-Match", "Time-Zone")
+	// No Authorization header, and no noteRate: the anonymous limit is the
+	// machine's address's, not the token's.
+	resp, err := s.upstream().Do(up)
+	if err != nil {
+		refuse(http.StatusBadGateway, "couldn't reach GitHub: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 == 3 && resp.StatusCode != http.StatusNotModified {
+		// gh can't follow a redirect itself: everything it sends comes to
+		// this socket, which forwards only to api.github.com.
+		resp.Body.Close()
+		if resp, err = s.followStorage(r.Context(), resp.Header.Get("Location")); err != nil {
+			refuse(http.StatusBadGateway, err.Error())
+			return
+		}
+		defer resp.Body.Close()
+	}
+	switch {
+	case resp.Header.Get("X-RateLimit-Remaining") == "0" && (resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests):
+		reset, _ := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64)
+		refuse(http.StatusTooManyRequests, "GitHub's limit on requests without a token is used up until "+time.Unix(reset, 0).Format("15:04")+". "+rest.Why)
+		return
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound:
+		refuse(http.StatusForbidden, "Without a token, GitHub answered "+resp.Status+". "+rest.Why)
+		return
+	}
+	copyHeaders(w.Header(), resp.Header, "Content-Type", "Content-Encoding", "ETag", "Last-Modified", "Link",
+		"X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "X-RateLimit-Used", "X-RateLimit-Resource",
+		"X-GitHub-Request-Id", "Retry-After")
 	w.WriteHeader(resp.StatusCode)
 	flushCopy(w, w, resp.Body)
 	log.Info("allowed", "status", resp.StatusCode)
@@ -367,7 +446,8 @@ func (s *Server) authored(ctx context.Context, path string) (ok, isPR bool, err 
 
 // storageHosts are where GitHub redirects downloads of run logs and
 // artifacts. The URLs are signed, so they need no token.
-var storageHosts = []string{".actions.githubusercontent.com", ".blob.core.windows.net", "objects.githubusercontent.com"}
+// codeload serves the tarballs and zipballs an anonymous read redirects to.
+var storageHosts = []string{".actions.githubusercontent.com", ".blob.core.windows.net", "objects.githubusercontent.com", "codeload.github.com"}
 
 func (s *Server) followStorage(ctx context.Context, loc string) (*http.Response, error) {
 	u, err := url.Parse(loc)

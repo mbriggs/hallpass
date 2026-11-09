@@ -29,6 +29,7 @@ const (
 	Labels           Op = "labels"
 	WorkflowRerun    Op = "workflow.rerun"
 	WorkflowDispatch Op = "workflow.dispatch"
+	Anonymous        Op = "anonymous"
 )
 
 // Info describes an operation.
@@ -50,6 +51,9 @@ var All = []Info{
 	{Op: IssueEdit, On: true, Does: "edit, close, or reopen your issues"},
 	{Op: Comment, On: true, Does: "comment on PRs and issues, or edit your comments"},
 	{Op: ReviewComment, On: true, Does: "leave comment-only reviews and review comments"},
+	// Anonymous reads go without the token, so GitHub shows them only what
+	// anyone on the network could fetch.
+	{Op: Anonymous, On: true, Does: "read, without the token, what the allowlist and read tables don't cover"},
 
 	{Op: IssueCreate, Does: "open issues",
 		Warn: "Issues show as yours, and in a public repo anyone can read them."},

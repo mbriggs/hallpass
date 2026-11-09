@@ -3,6 +3,7 @@ package policy
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"regexp"
 	"slices"
@@ -35,6 +36,18 @@ type REST struct {
 	// Strip names response fields the broker removes at any depth of a
 	// JSON answer.
 	Strip []string
+	// Anonymous marks a GET the allowlist and read tables don't cover and
+	// no policy denies. The broker may send it without the token, so GitHub
+	// shows only what anyone could fetch. Why is the refusal to give when
+	// the broker can't.
+	Anonymous bool
+	Why       string
+}
+
+// anonymous marks r as a read to send without the token.
+func (r *REST) anonymous(why string) *REST {
+	r.Anonymous, r.Why, r.Route = true, why, "GET "+r.Path+" (anonymous)"
+	return r
 }
 
 // reads are the repo paths agents may GET, under /repos/{owner}/{repo}. #
@@ -155,12 +168,16 @@ func ClassifyREST(method, target string, body []byte, g *Grants) (*REST, error) 
 	case method == "GET" && rawPath == "/search/issues":
 		repo, err := SearchRepo(query.Get("q"))
 		if err != nil {
-			return nil, err
+			return r.anonymous(err.Error()), nil
 		}
 		r.Repo, r.Route = &repo, "GET /search/issues"
 		return r, nil
 	case len(segs) < 3 || segs[0] != "repos":
-		return nil, errorf("hallpass doesn't allow %s %s", method, rawPath)
+		why := "hallpass doesn't allow " + method + " " + rawPath
+		if method == "GET" {
+			return r.anonymous(why), nil
+		}
+		return nil, errorf("%s", why)
 	}
 	repo, err := github.ParseRepo(segs[1] + "/" + segs[2])
 	if err != nil || strings.HasSuffix(segs[2], ".git") {
@@ -181,14 +198,20 @@ func ClassifyREST(method, target string, body []byte, g *Grants) (*REST, error) 
 		on, from := g.readOn(repo, rest, builtin)
 		if !on {
 			p := readPattern(rest)
-			if len(rest) == 0 || CheckRead(p) != nil {
-				return nil, errorf("hallpass doesn't allow reading %s", pattern(rest))
+			msg := "hallpass doesn't allow reading " + pattern(rest)
+			if len(rest) > 0 && CheckRead(p) == nil {
+				why := "Reads are limited to code, PRs, issues, checks, and Actions runs"
+				if from != "default" {
+					why = "The policy for " + from + " denies it"
+				}
+				msg = fmt.Sprintf("hallpass doesn't allow reading %s in %s. %s. To allow it: sudo /opt/hallpass/bin/hallpass policy allow read:%s --repo %s", pattern(rest), repo, why, p, repo)
 			}
-			why := "Reads are limited to code, PRs, issues, checks, and Actions runs"
-			if from != "default" {
-				why = "The policy for " + from + " denies it"
+			// A read the tables don't cover can go without the token. One a
+			// policy denies can't, even where GitHub would show it to anyone.
+			if from == "default" {
+				return r.anonymous(msg), nil
 			}
-			return nil, errorf("hallpass doesn't allow reading %s in %s. %s. To allow it: sudo /opt/hallpass/bin/hallpass policy allow read:%s --repo %s", pattern(rest), repo, why, p, repo)
+			return nil, errorf("%s", msg)
 		}
 		if builtin {
 			if err := checkBuiltinRead(rest, query); err != nil {

@@ -35,9 +35,9 @@ func TestRESTReadsStayInRepo(t *testing.T) {
 		"/repos/acme/widgets/branches/main/protection/required_pull_request_reviews": "never allows reading",
 	}
 	for target, want := range refused {
-		_, err := ClassifyREST("GET", target, nil, nil)
-		if err == nil || !strings.Contains(err.Error(), want) {
-			t.Errorf("%s: got %v, want an error with %q", target, err, want)
+		r, err := ClassifyREST("GET", target, nil, nil)
+		if withToken(r, err) || !strings.Contains(refusal(r, err), want) {
+			t.Errorf("%s: got %q, want a refusal with %q", target, refusal(r, err), want)
 		}
 	}
 	allowed := []string{

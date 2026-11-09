@@ -18,7 +18,7 @@ func TestReviewFindings(t *testing.T) {
 		{"POST", "/repos/acme/widgets/issues/3/comments", `{"body":"fine\r/merge"}`},
 	}
 	for _, c := range refusedREST {
-		if r, err := ClassifyREST(c.method, c.target, []byte(c.body), nil); err == nil {
+		if r, err := ClassifyREST(c.method, c.target, []byte(c.body), nil); withToken(r, err) {
 			t.Errorf("%s %s %s: allowed (%+v)", c.method, c.target, c.body, r)
 		}
 	}

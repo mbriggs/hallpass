@@ -57,7 +57,9 @@ It prevents these:
   Root can do both. What protects the credentials from root depends on the
   platform; see [Protection by platform](#protection-by-platform).
 - **Reaching repos you didn't allow.** The broker refuses any repo the
-  allowlist doesn't cover, for git, gh, and GraphQL node IDs. GraphQL
+  allowlist doesn't cover, for git, gh, and GraphQL node IDs, except a
+  REST read, which goes without the token and so sees only what anyone
+  could. GraphQL
   reads that walk from an allowed repo into another one, through an owner,
   an author, a fork, or a cross-reference, see only names, IDs, numbers,
   titles, and states, never bodies, code, or comments. Of a repo reached
@@ -96,8 +98,10 @@ It prevents these:
   changes, and deletes, and no policy can allow them. It also refuses
   anything outside an allowed repo's API, such as creating a repo or a gist
   on your account. It refuses reading rulesets and Actions variables unless
-  the policy allows it. Any request not on its lists is refused, including
-  whatever GitHub adds later.
+  the policy allows it. Any request not on its lists never goes with the
+  token, including whatever GitHub adds later. A read among those goes
+  without it, so GitHub shows only public data; see
+  [Reads without the token](#reads-without-the-token).
 - **Commands for bots.** PR and issue text with lines like `/merge` or
   `bors r+` is refused, because bots would take them as your command.
 - **Silent fallback to your credentials.** The git config rewrites every
@@ -230,7 +234,7 @@ the git push. Denying `pr.merge` refuses `gh pr merge` and
 
 | On by default | Off by default |
 | --- | --- |
-| `pr.create`, `pr.edit`, `pr.request-review`, `issue.edit`, `comment`, `review.comment` | `issue.create`, `assign`, `push.default`, `review.verdict`, `pr.merge`, `labels`, `workflow.rerun`, `workflow.dispatch` |
+| `pr.create`, `pr.edit`, `pr.request-review`, `issue.edit`, `comment`, `review.comment`, `anonymous` | `issue.create`, `assign`, `push.default`, `review.verdict`, `pr.merge`, `labels`, `workflow.rerun`, `workflow.dispatch` |
 
 `review.verdict` covers approving and requesting changes. `pr.merge` covers
 merging, the merge queue, and auto-merge.
@@ -313,6 +317,33 @@ off by default, and a policy can open them.
 The broker checks each client's uid against `uids` in the config, from the
 kernel's peer credentials. The git config applies to everyone on the machine,
 so hallpass suits a machine with one user.
+
+### Reads without the token
+
+A REST GET that the allowlist or the read tables don't cover goes to GitHub
+without the token. That covers public repos outside the allowlist, paths
+outside `/repos` like `/users/NAME` and `/search/repositories`, and reads
+in an allowed repo that no table lists. GitHub answers such a request with
+only what anyone could fetch, so nothing private comes back, and agents
+gain nothing they couldn't already get with `curl`. When GitHub won't
+answer, gh gets the refusal it would have had:
+
+```text
+hallpass: Without a token, GitHub answered 404 Not Found. acme/secret isn't in hallpass's allowlist. To allow it: sudo /opt/hallpass/bin/hallpass allow acme/secret
+```
+
+A read a policy denies, like `read:deployments` on one repo, doesn't go at
+all, and neither does a read past the read floor or a write. GitHub's
+GraphQL API needs a token, so `gh repo view` and `gh pr list` on a repo
+outside the allowlist are still refused. Requests without a token share
+GitHub's limit of 60 an hour for the machine's address, and don't count
+against the token's.
+
+The `anonymous` operation turns this off, everywhere or for one entry:
+
+```sh
+sudo /opt/hallpass/bin/hallpass policy deny anonymous
+```
 
 ## Use your own credentials
 
