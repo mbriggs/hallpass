@@ -29,12 +29,16 @@ $(GOLANGCI_LINT):
 	GOBIN=$(abspath tmp/golangci-lint) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 	mv tmp/golangci-lint/golangci-lint $@
 
-# Fuzzes the push checks, the only guard against workflow edits over git,
-# for FUZZTIME each. go test runs the seeds on every make test.
+# Fuzzes the parsers that read what agents send, for FUZZTIME each: pushes,
+# packs, GraphQL requests, and repo names. go test runs the seeds on every
+# make test. A failing input lands in the package's testdata/fuzz/; commit
+# it with the fix so the seeds keep it.
 FUZZTIME ?= 30s
+FUZZ_TARGETS := policy:FuzzReadPush policy:FuzzReadPack policy:FuzzWorkflowChanges \
+  policy:FuzzApplyDelta policy:FuzzGraphQLReprint github:FuzzParseRepo
 fuzz:
-	for t in FuzzReadPack FuzzWorkflowChanges FuzzApplyDelta; do \
-	  go test -run '^$$' -fuzz "^$$t$$" -fuzztime $(FUZZTIME) ./internal/policy/ || exit 1; \
+	for t in $(FUZZ_TARGETS); do \
+	  go test -run '^$$' -fuzz "^$${t#*:}$$" -fuzztime $(FUZZTIME) ./internal/$${t%%:*}/ || exit 1; \
 	done
 
 # Replaces the embedded GraphQL schema with GitHub's current one and lists

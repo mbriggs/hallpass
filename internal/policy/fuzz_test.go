@@ -1,9 +1,16 @@
 package policy
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha1"
+	"encoding/json"
+	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -167,4 +174,129 @@ func FuzzApplyDelta(f *testing.F) {
 			t.Fatalf("delta declares %d bytes, produced %d", size, len(out))
 		}
 	})
+}
+
+// The broker checks the commands ReadPush parsed, then sends GitHub p.Raw
+// and the rest of the body. So Raw must parse back to exactly the commands
+// that were checked, and the pack must start right where ReadPush stopped.
+func FuzzReadPush(f *testing.F) {
+	for _, lines := range [][]string{
+		{zeroOID + " " + a + " refs/heads/agent/x\x00report-status side-band-64k agent=git/2.56\n", a + " " + b + " refs/heads/agent/y\n"},
+		{a + " " + zeroOID + " refs/heads/agent/x\x00report-status-v2 delete-refs atomic quiet\n"},
+		{a + " " + b + " refs/tags/v1\x00ofs-delta object-format=sha1 session-id=abc\n"},
+	} {
+		var s strings.Builder
+		for _, l := range lines {
+			s.WriteString(pkt(l))
+		}
+		s.WriteString("0000PACK")
+		f.Add([]byte(s.String()))
+	}
+	f.Add([]byte("0000"))
+	f.Fuzz(func(t *testing.T, body []byte) {
+		r := bufio.NewReader(bytes.NewReader(body))
+		p, err := ReadPush(r)
+		if err != nil {
+			return
+		}
+		rest, _ := io.ReadAll(r)
+		if p.Read > len(body) || !bytes.Equal(rest, body[p.Read:]) {
+			t.Fatalf("Read = %d, but %d bytes are left of %d", p.Read, len(rest), len(body))
+		}
+		again, err := ReadPush(bufio.NewReader(bytes.NewReader(p.Raw)))
+		if err != nil {
+			t.Fatalf("Raw %q doesn't parse: %v", p.Raw, err)
+		}
+		if !slices.Equal(again.Updates, p.Updates) || !slices.Equal(again.Capabilities, p.Capabilities) ||
+			again.Probe != p.Probe || !bytes.Equal(again.Raw, p.Raw) || again.Read != len(p.Raw) {
+			t.Fatalf("checked %+v, but sent %q, which parses as %+v", p, p.Raw, again)
+		}
+	})
+}
+
+// The broker checks its own parse of a GraphQL request and sends GitHub
+// that parse printed back out. The printed request must classify exactly as
+// the checked one did, or the check and what GitHub runs disagree.
+func FuzzGraphQLReprint(f *testing.F) {
+	for _, body := range captureGraphQL(f) {
+		var req struct {
+			Query     string          `json:"query"`
+			Variables json.RawMessage `json:"variables"`
+		}
+		if err := json.Unmarshal([]byte(body), &req); err != nil {
+			f.Fatal(err)
+		}
+		f.Add(req.Query, string(req.Variables))
+	}
+	for _, q := range []string{
+		`{repository(owner:"acme",name:"widgets"){issue(number:1){title body}}}`,
+		`query($o:String!,$n:String!){r:repository(owner:$o,name:$n){...F}} fragment F on Repository{name}`,
+		`{nodes(ids:["PR_a","I_b"]){id ... on PullRequest{title}}}`,
+		`{search(query:"repo:acme/widgets is:open label:bug",type:ISSUE,first:5){issueCount}}`,
+		`mutation{addComment(input:{subjectId:"X",body:"say \"hi\"\\n\u00e9"}){clientMutationId}}`,
+		`{viewer{login}}`,
+		`mutation{addComment(input:{subjectId:"X",body:"""block\nstring"""}){clientMutationId}}`,
+		`mutation($i:AddLabelsToLabelableInput!){addLabelsToLabelable(input:$i){clientMutationId}}`,
+	} {
+		vars := `{"o":"acme","n":"widgets","i":{"labelableId":"X","labelIds":["L"]}}`
+		// Each seed is allowed, so the fuzzer starts past the checks.
+		if _, err := ClassifyGraphQL(fuzzGQL(q, vars), nil); err != nil {
+			f.Fatalf("seed %s is refused: %v", q, err)
+		}
+		f.Add(q, vars)
+	}
+	f.Fuzz(func(t *testing.T, query, vars string) {
+		body := fuzzGQL(query, vars)
+		g, err := ClassifyGraphQL(body, nil)
+		if err != nil {
+			return
+		}
+		again, err := ClassifyGraphQL(g.Body, nil)
+		if err != nil {
+			t.Fatalf("checked %s\nbut sent %s\nwhich is refused: %v", body, g.Body, err)
+		}
+		if again.Mutation != g.Mutation || !slices.Equal(again.Fields, g.Fields) ||
+			!reflect.DeepEqual(again.Repos, g.Repos) || !reflect.DeepEqual(again.Nodes, g.Nodes) {
+			t.Fatalf("checked %s as %+v\nbut sent %s, which is %+v", body, g, g.Body, again)
+		}
+		if !bytes.Equal(again.Body, g.Body) {
+			t.Fatalf("printing isn't stable:\n%s\n%s", g.Body, again.Body)
+		}
+	})
+}
+
+// fuzzGQL builds a request body, leaving out vars unless it's valid JSON.
+func fuzzGQL(query, vars string) []byte {
+	req := map[string]any{"query": query}
+	if json.Valid([]byte(vars)) {
+		req["variables"] = json.RawMessage(vars)
+	}
+	body, _ := json.Marshal(req)
+	return body
+}
+
+// captureGraphQL returns the GraphQL bodies gh sent in the recorded captures.
+func captureGraphQL(tb testing.TB) []string {
+	tb.Helper()
+	files, _ := filepath.Glob("testdata/gh-*-capture.jsonl")
+	var out []string
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			tb.Fatal(err)
+		}
+		for line := range bytes.Lines(data) {
+			var rec struct{ Head, Body string }
+			if err := json.Unmarshal(line, &rec); err != nil {
+				tb.Fatal(err)
+			}
+			if strings.HasPrefix(rec.Head, "POST /graphql ") {
+				out = append(out, strings.ReplaceAll(rec.Body, `"id":""`, `"id":"PR_x"`))
+			}
+		}
+	}
+	if len(out) == 0 {
+		tb.Fatal("no GraphQL requests in testdata")
+	}
+	return out
 }
