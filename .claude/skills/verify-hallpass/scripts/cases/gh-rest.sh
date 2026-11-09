@@ -35,6 +35,10 @@ feature_rest() {
   check 0 '"id":101' 'gh api -X PATCH repos/acme/widgets/issues/1 -f title=x'
   fake_has '"method":"PATCH","path":"/api/repos/acme/widgets/issues/1"'
 
+  case_ rest-short-sha
+  check fail 'hallpass needs the full SHA, not "abc1234"' 'gh api repos/acme/widgets/commits/abc1234'
+  fake_lacks commits/
+
   case_ rest-token
   check 0 hallpass-brokered "grep oauth_token \"$S/gh/hosts.yml\""
   check fail '' "grep oauth_token \"$S/gh/hosts.yml\" | grep -v hallpass-brokered"

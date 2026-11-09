@@ -11,7 +11,7 @@ signing key and the namespace is `git`. Everything else goes to the real
 - `sign-passthrough` hands a key that isn't the broker's to `ssh-keygen`.
 - `sign-refuse-data` refuses to sign anything but an unsigned git commit or tag.
 - `sign-refuse-forged` refuses data that starts like a commit but has headers git never writes.
-- `sign-namespace` never signs for a namespace other than `git`.
+- `sign-other-namespace` never signs for a namespace other than `git`.
 - `sign-tag-merge` signs tags and merge commits that carry a signed tag.
 
 ## Driving it

@@ -13,7 +13,10 @@ the routes its policy allows in allowlisted repos, and returns 403 with a
 - `rest-route` refuses a route hallpass never allows (secrets).
 - `rest-read-off` refuses a read that's off by default but config can open
   (Actions variables).
-- `rest-author` allows edits to your own issues and refuses a colleague's.
+- `rest-author-colleague` refuses edits to a colleague's issue, and
+  `rest-author-own` allows edits to your own.
+- `rest-short-sha` refuses an abbreviated SHA, which GitHub resolves across
+  forks.
 - `rest-token` adds the token: gh holds only a placeholder.
 
 ## Driving it
@@ -38,6 +41,10 @@ the routes its policy allows in allowlisted repos, and returns 403 with a
   `agents may only change PRs, issues, and comments you wrote`. The fake
   sees the GET but no PATCH.
 - `rest-author-own`: a PATCH to your issue 1 passes and reaches the fake.
+- `rest-short-sha`: `commits/abc1234` is refused with `hallpass needs the
+  full SHA, not "abc1234"`, and no `commits/` request reaches the fake. The
+  same check covers `git/{trees,commits,blobs,tags}/`, `?ref=`, `?sha=`,
+  and expressions like `main~1`.
 - `rest-token`: `$S/gh/hosts.yml` holds only `hallpass-brokered`.
 
 ## Gotchas

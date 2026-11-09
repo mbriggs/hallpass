@@ -9,7 +9,9 @@ SSH key.
 
 - `status-plain` lists the broker socket, token, ssh, signing, and repos.
 - `status-check` confirms the token and SSH key with GitHub and flags wrong scopes.
-- `status-json` prints the same as JSON.
+- `status-json` prints the broker's status as JSON. It adds `version` and
+  `binary`, and leaves out the socket and `audit:` lines. It exits 0 even
+  when a check fails, so read `check_error` and `problem`, not the exit.
 - `status-down` gives a clear error when the broker isn't running.
 
 ## Driving it

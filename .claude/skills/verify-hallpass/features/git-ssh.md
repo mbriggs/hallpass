@@ -6,7 +6,8 @@ allowlist, asks GitHub for the repo's current name, checks each pushed ref
 against its rules, reads every pushed pack for workflow changes, and runs
 the command on GitHub with its own key. Agents can push branches they
 create. They can't push the default branch, protected branches,
-colleagues' branches, tags, or commits that change `.github/workflows`.
+colleagues' branches, tags, or commits that change `.github/workflows` or
+`.github/dependabot.yml`.
 
 ## Sub-features
 
@@ -69,10 +70,12 @@ with `up.sh` before running `ssh` again.
 
 - Match the fake log with `jq`, not a literal grep. Each line is JSON, such
   as `{"method":"SSH","path":"git-upload-pack 'acme/widgets.git'","auth":"key-ok",...}`.
-  A push also logs one or two extra `git-upload-pack` lines: the broker
-  reads the default branch, and the workflow check fetches trees.
-- The current-name check hits `GET /api/repos/OWNER/REPO` at most once per
-  10 minutes per repo, so later git commands don't repeat it.
+  A push with a pack usually logs three extra `git-upload-pack` lines: the
+  broker reads the default branch, the workflow check fetches trees, and
+  the broker reads the default branch again before it forwards. A
+  delete-only push logs one.
+- The current-name check sends `GET /api/repos/OWNER/REPO` on every git
+  command, uncached, so the fake logs one per clone, `ls-remote`, and push.
 - The ledger file is fixed at `branches.jsonl` in the state dir
   (`/var/lib/hallpass` on Linux, `/var/db/hallpass` on macOS), which the
   scratch broker can't write. The broker records each push in memory and
