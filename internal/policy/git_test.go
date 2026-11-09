@@ -56,16 +56,17 @@ func TestReadPush(t *testing.T) {
 
 func TestReadPushRefuses(t *testing.T) {
 	cases := map[string]*bufio.Reader{
-		"push-cert":    push("push-cert\x00report-status\n"),
-		"push options": push(zeroOID + " " + a + " refs/heads/x\x00report-status push-options\n"),
-		"unknown cap":  push(zeroOID + " " + a + " refs/heads/x\x00report-status fancy\n"),
-		"no caps":      push(zeroOID + " " + a + " refs/heads/x\n"),
-		"short oid":    push("abc " + a + " refs/heads/x\x00report-status\n"),
-		"shallow":      push(zeroOID+" "+a+" refs/heads/x\x00report-status\n", "shallow "+a+"\n"),
-		"bad length":   bufio.NewReader(strings.NewReader("zzzz")),
-		"tiny length":  bufio.NewReader(strings.NewReader("0002")),
-		"truncated":    bufio.NewReader(strings.NewReader("00ff" + zeroOID)),
-		"oversized":    bufio.NewReader(strings.NewReader(strings.Repeat(pkt(zeroOID+" "+a+" refs/heads/"+strings.Repeat("x", 60000)), 2))),
+		"push-cert":       push("push-cert\x00report-status\n"),
+		"push options":    push(zeroOID + " " + a + " refs/heads/x\x00report-status push-options\n"),
+		"unknown cap":     push(zeroOID + " " + a + " refs/heads/x\x00report-status fancy\n"),
+		"cap after agent": push(zeroOID + " " + a + " refs/heads/x\x00agent=git/2.56 fancy\n"),
+		"no caps":         push(zeroOID + " " + a + " refs/heads/x\n"),
+		"short oid":       push("abc " + a + " refs/heads/x\x00report-status\n"),
+		"shallow":         push(zeroOID+" "+a+" refs/heads/x\x00report-status\n", "shallow "+a+"\n"),
+		"bad length":      bufio.NewReader(strings.NewReader("zzzz")),
+		"tiny length":     bufio.NewReader(strings.NewReader("0002")),
+		"truncated":       bufio.NewReader(strings.NewReader("00ff" + zeroOID)),
+		"oversized":       bufio.NewReader(strings.NewReader(strings.Repeat(pkt(zeroOID+" "+a+" refs/heads/"+strings.Repeat("x", 60000)), 2))),
 	}
 	for name, r := range cases {
 		if _, err := ReadPush(r); err == nil {
@@ -103,6 +104,18 @@ func TestCheckPush(t *testing.T) {
 		{RefUpdate{zeroOID, a, "refs/pull/1/head"}, false},
 		{RefUpdate{zeroOID, a, "refs/heads/../main"}, false},
 		{RefUpdate{zeroOID, a, "refs/heads/x.lock"}, false},
+		// Each of git check-ref-format's rules, on a name no later check refuses.
+		{RefUpdate{zeroOID, a, "refs/heads/@"}, false},
+		{RefUpdate{zeroOID, a, "refs/heads//x"}, false},
+		{RefUpdate{zeroOID, a, "refs/heads/x/"}, false},
+		{RefUpdate{zeroOID, a, "refs/heads/x."}, false},
+		{RefUpdate{zeroOID, a, "refs/heads/a..b"}, false},
+		{RefUpdate{zeroOID, a, "refs/heads/a//b"}, false},
+		{RefUpdate{zeroOID, a, "refs/heads/a@{b"}, false},
+		{RefUpdate{zeroOID, a, "refs/heads/-x"}, false},
+		{RefUpdate{zeroOID, a, "refs/heads/a\x01b"}, false},
+		{RefUpdate{zeroOID, a, "refs/heads/a\x7fb"}, false},
+		{RefUpdate{zeroOID, a, "refs/heads/a~b"}, false},
 		{RefUpdate{zeroOID, a, "HEAD"}, false},
 	}
 	for _, c := range cases {
@@ -118,10 +131,11 @@ func TestCheckPush(t *testing.T) {
 		t.Errorf("refusal %q doesn't say %q", got["refs/heads/agent/mine"], want)
 	}
 	// One ref twice in a push is refused, since the ledger reads GitHub's
-	// answer by ref.
-	twice := Push{Updates: []RefUpdate{{zeroOID, a, "refs/heads/agent/new"}, {zeroOID, b, "refs/heads/agent/new"}}}
-	if got := CheckPush(twice, br); len(got) == 0 {
-		t.Error("a push naming one ref twice was allowed")
+	// answer by ref. The refs after it still get their own reasons.
+	twice := Push{Updates: []RefUpdate{{zeroOID, a, "refs/heads/agent/new"}, {zeroOID, b, "refs/heads/agent/new"}, {zeroOID, a, "refs/tags/v1"}}}
+	got = CheckPush(twice, br)
+	if !strings.Contains(got["refs/heads/agent/new"], "twice") || !strings.Contains(got["refs/tags/v1"], "tags") {
+		t.Errorf("a push naming one ref twice: %v", got)
 	}
 
 	// The default branch passes even when a protected pattern names it.
@@ -156,18 +170,49 @@ func TestRefusePushIsReadableStatus(t *testing.T) {
 		!bytes.Contains(out, []byte("ng refs/heads/ok hallpass: another ref")) {
 		t.Errorf("refusal = %q", out)
 	}
+	// A client that didn't ask for side-band gets the status unframed.
+	p.Capabilities = []string{"report-status"}
+	if out := RefusePush(p, nil); !bytes.HasPrefix(out, []byte(pkt("unpack ok\n"))) {
+		t.Errorf("refusal without side-band = %q", out)
+	}
 	// GitHub's own success report, side-band framed, yields the accepted refs.
 	var status bytes.Buffer
 	writePkt(&status, "unpack ok\n")
 	writePkt(&status, "ok refs/heads/agent/x\n")
 	writePkt(&status, "ng refs/heads/agent/y non-fast-forward\n")
 	status.WriteString("0000")
+	// An empty packet and a full-size one don't end the read.
 	var framed bytes.Buffer
 	writePkt(&framed, "\x02remote: hello\n")
+	framed.WriteString("0004")
+	writePkt(&framed, "\x02"+strings.Repeat("x", 65520-5))
 	writePkt(&framed, "\x01"+status.String())
 	framed.WriteString("0000")
 	if got := ReportStatus(framed.Bytes(), true); len(got) != 1 || got[0] != "refs/heads/agent/x" {
 		t.Errorf("ReportStatus = %v", got)
+	}
+}
+
+// Request targets with characters or encodings GitHub could read as a
+// different path are refused, even on a route that takes any branch name.
+func TestRESTTargetCharacters(t *testing.T) {
+	for _, c := range []struct {
+		branch string
+		ok     bool
+	}{
+		{"fix!", true},
+		{"a b", false},
+		{"a\x7fb", false},
+		{`a\b`, false},
+		{"a;b", false},
+		{"a#b", false},
+		{"a%2fb", false},
+		{"a//b", false},
+	} {
+		_, err := ClassifyREST("GET", "/repos/acme/widgets/branches/"+c.branch, nil, nil)
+		if c.ok != (err == nil) {
+			t.Errorf("GET branches/%q: err = %v", c.branch, err)
+		}
 	}
 }
 

@@ -152,15 +152,10 @@ func overlapsFloor(pat string) bool {
 }
 
 // segsMeet reports whether some path segment matches both pattern
-// segments. # matches numbers, * names, and floor literals aren't numbers.
+// segments. * matches any name, numbers included, so it meets # and every
+// literal. # matches numbers, and floor literals aren't numbers.
 func segsMeet(a, b string) bool {
-	switch {
-	case a == b:
-		return true
-	case a == "*" || b == "*":
-		return a != "#" && b != "#"
-	}
-	return false
+	return a == b || a == "*" || b == "*"
 }
 
 // CheckRead refuses a config read pattern that's malformed or reaches the

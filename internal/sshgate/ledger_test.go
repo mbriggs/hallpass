@@ -15,8 +15,10 @@ func TestLedgerReplaysTips(t *testing.T) {
 	)
 	path := filepath.Join(t.TempDir(), "branches.jsonl")
 	// A line from before tips were recorded names the branch but matches
-	// no push.
-	os.WriteFile(path, []byte(`{"repo":"acme/widgets","branch":"old","created":"2026-11-01T00:00:00Z"}`+"\n"), 0o600)
+	// no push. A corrupt line, or one with a bad repo, is skipped without
+	// losing the lines after it.
+	os.WriteFile(path, []byte("not json\n"+`{"repo":"nope","branch":"x","tip":"`+a+`"}`+"\n"+
+		`{"repo":"acme/widgets","branch":"old","created":"2026-11-01T00:00:00Z"}`+"\n"), 0o600)
 	repo := github.Repo{Owner: "acme", Name: "widgets"}
 	l := OpenLedger(path)
 	for _, step := range []struct{ branch, tip string }{

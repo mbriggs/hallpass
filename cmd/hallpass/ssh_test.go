@@ -153,13 +153,16 @@ func TestGitOverSSHThroughBroker(t *testing.T) {
 
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	pub, _ := ssh.NewPublicKey(&key.PublicKey)
-	// flipHead, when set, makes agent/fix the default branch at the
-	// broker's blobless fetch, which comes after it reads a push's pack and
-	// before it forwards the push.
-	var flipHead atomic.Bool
+	// flipHead, when set, makes the branch it names the default branch at
+	// the broker's blobless fetch, which comes after it reads a push's pack
+	// and before it forwards the push.
+	var flipHead atomic.Pointer[string]
 	addr, hostKey := fakeGitHubSSH(t, root, pub, func(svc string, env []string) {
-		if svc == "git-upload-pack" && slices.Contains(env, "GIT_PROTOCOL=version=2") && flipHead.CompareAndSwap(true, false) {
-			if out, err := exec.Command("git", "-C", bare, "symbolic-ref", "HEAD", "refs/heads/agent/fix").CombinedOutput(); err != nil {
+		if svc != "git-upload-pack" || !slices.Contains(env, "GIT_PROTOCOL=version=2") {
+			return
+		}
+		if to := flipHead.Swap(nil); to != nil {
+			if out, err := exec.Command("git", "-C", bare, "symbolic-ref", "HEAD", "refs/heads/"+*to).CombinedOutput(); err != nil {
 				t.Errorf("symbolic-ref: %s", out)
 			}
 		}
@@ -215,6 +218,10 @@ func TestGitOverSSHThroughBroker(t *testing.T) {
 		}
 	}
 	ok("fetch", "-q")
+	// git asks for protocol v2, and the gate passes the request on.
+	if out, _ := gitIn(work, append(env, "GIT_TRACE_PACKET=1"), "ls-remote", "origin", "main"); !strings.Contains(out, "< version 2") {
+		t.Errorf("ls-remote didn't speak protocol v2:\n%s", out)
+	}
 	ok("push", "-q", "origin", "HEAD:agent/fix")
 	ok("commit", "-q", "--amend", "--allow-empty", "-m", "amended")
 	ok("push", "-q", "--force", "origin", "HEAD:agent/fix")
@@ -270,12 +277,30 @@ func TestGitOverSSHThroughBroker(t *testing.T) {
 	// protected_branches names it, and still can't be deleted.
 	siteURL := "https://github.com/acme/site"
 	gitIn(work, env, "reset", "-q", "--hard", "origin/agent/fix")
+	// The workflow check needs blobless shallow fetches, and says so when
+	// GitHub doesn't offer them.
+	gitIn(site, plain, "config", "uploadpack.allowFilter", "false")
+	refused("GitHub's fetch doesn't offer filter and shallow", "push", siteURL, "HEAD:main")
+	gitIn(site, plain, "config", "uploadpack.allowFilter", "true")
 	ok("push", "-q", siteURL, "HEAD:main")
 	refused("agents can't delete the default branch", "push", siteURL, ":main")
 	refused("release/1 is protected", "push", siteURL, "HEAD:release/1")
 	head, _ := gitIn(work, env, "rev-parse", "HEAD")
 	if got, _ := gitIn(site, plain, "rev-parse", "main"); got != head {
 		t.Errorf("acme/site main is %s, want %s", got, head)
+	}
+	// push.default governs the default branch, so the ledger leaves it out.
+	if tip := gate.Ledger.Tip(github.Repo{Owner: "acme", Name: "site"}, "main"); tip != "" {
+		t.Errorf("the ledger recorded acme/site main at %s", tip)
+	}
+
+	// The ledger records only the refs GitHub accepted.
+	os.WriteFile(filepath.Join(bare, "hooks", "update"), []byte("#!/bin/sh\ntest \"$1\" != refs/heads/agent/declined\n"), 0o755)
+	refused("hook declined", "push", "origin", "HEAD:agent/taken", "HEAD:agent/declined")
+	os.Remove(filepath.Join(bare, "hooks", "update"))
+	widgets := github.Repo{Owner: "acme", Name: "widgets"}
+	if gate.Ledger.Tip(widgets, "agent/taken") == "" || gate.Ledger.Tip(widgets, "agent/declined") != "" {
+		t.Errorf("ledger after a half-accepted push: %v", gate.Ledger.Branches(widgets))
 	}
 
 	// The ledger holds the commit agents last pushed, not just the name. A
@@ -319,12 +344,19 @@ func TestGitOverSSHThroughBroker(t *testing.T) {
 	// The user makes agent/fix the default branch while an agent's push to
 	// it is in flight. The broker checks the default again after the pack.
 	before, _ := gitIn(bare, plain, "rev-parse", "agent/fix")
-	flipHead.Store(true)
+	flipHead.Store(new("agent/fix"))
 	refused("agent/fix is the default branch", "push", "origin", "HEAD:agent/fix")
-	if flipHead.Load() {
+	if flipHead.Load() != nil {
 		t.Error("the push never reached the broker's blobless fetch")
 	}
 	if after, _ := gitIn(bare, plain, "rev-parse", "agent/fix"); after != before {
 		t.Errorf("agent/fix moved from %s to %s", before, after)
+	}
+	// A new default that the push doesn't touch lets it through.
+	flipHead.Store(new("colleague"))
+	ok("push", "-q", "origin", "HEAD:agent/moved")
+	head, _ = gitIn(work, env, "rev-parse", "HEAD")
+	if got, _ := gitIn(bare, plain, "rev-parse", "agent/moved"); got != head {
+		t.Errorf("agent/moved on GitHub is %s, want %s", got, head)
 	}
 }

@@ -5,7 +5,7 @@ VERSION ?= dev
 WORKTREE := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))bin/worktree
 GOBUILD := CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$(VERSION)"
 
-.PHONY: build test lint fuzz schema install dist
+.PHONY: build test lint fuzz mutate schema install dist
 
 build:
 	$(GOBUILD) -o bin/hallpass ./cmd/hallpass
@@ -40,6 +40,35 @@ fuzz:
 	for t in $(FUZZ_TARGETS); do \
 	  go test -run '^$$' -fuzz "^$${t#*:}$$" -fuzztime $(FUZZTIME) ./internal/$${t%%:*}/ || exit 1; \
 	done
+
+# Mutates PKG's code and runs the whole suite against each mutant, for a
+# manual audit, not CI. .claude/skills/mutation-audit says how to read the
+# report, which lists every mutant in tmp/. gremlins is built into bin/ with
+# this module's Go, as golangci-lint is.
+#   -count=1        gremlins times each mutant from its coverage run, and a
+#                   cached coverage run makes every mutant time out.
+#   --integration --coverpkg
+#                   PKG's own tests alone miss what other packages' tests
+#                   reach and catch, like sshgate's push relay, which only
+#                   cmd/hallpass's tests drive.
+#   --timeout-coefficient
+#                   Each mutant gets 3 coverage runs by default, which a
+#                   suite run beside a dozen others overruns, so mutants
+#                   that live report TIMED OUT.
+#   --invert-*      && and || swaps and break and continue swaps, which can
+#                   flip an allow or a deny, are off by default.
+GREMLINS_VERSION := v0.6.0
+GREMLINS := bin/gremlins-$(GREMLINS_VERSION)
+PKG ?= ./internal/policy
+mutate: $(GREMLINS)
+	mkdir -p tmp
+	GOFLAGS=-count=1 $(GREMLINS) unleash --integration --coverpkg $(PKG) --timeout-coefficient 10 \
+	  --invert-logical --invert-loopctrl -S lct \
+	  -o tmp/mutate-$(subst /,_,$(patsubst ./%,%,$(PKG))).json $(PKG)
+
+$(GREMLINS):
+	GOBIN=$(abspath tmp/gremlins) go install github.com/go-gremlins/gremlins/cmd/gremlins@$(GREMLINS_VERSION)
+	mv tmp/gremlins/gremlins $@
 
 # Replaces the embedded GraphQL schema with GitHub's current one and lists
 # the new fields to review, then checks the policy tables still match it.

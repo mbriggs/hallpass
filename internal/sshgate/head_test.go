@@ -1,6 +1,7 @@
 package sshgate
 
 import (
+	"bufio"
 	"fmt"
 	"strings"
 	"testing"
@@ -35,6 +36,57 @@ func TestHeadBranch(t *testing.T) {
 		got, err := headBranch(c.adv)
 		if got != c.want || (err != nil) != c.wantErr {
 			t.Errorf("%s: headBranch = %q, %v", c.name, got, err)
+		}
+	}
+}
+
+// noThin adds no-thin to the capabilities on the ref list's first line, and
+// leaves alone a list it can't add it to or that has it already.
+func TestNoThin(t *testing.T) {
+	id := strings.Repeat("a", 40)
+	cases := []struct {
+		name    string
+		in, out []byte
+	}{
+		{"adds", adv(id+" refs/heads/main\x00report-status side-band-64k", id+" refs/heads/dev"),
+			adv(id+" refs/heads/main\x00report-status side-band-64k no-thin", id+" refs/heads/dev")},
+		{"has it", adv(id + " refs/heads/main\x00report-status no-thin"), adv(id + " refs/heads/main\x00report-status no-thin")},
+		{"no capabilities", adv(id + " refs/heads/main"), adv(id + " refs/heads/main")},
+		{"only a flush", []byte("0000"), []byte("0000")},
+	}
+	for _, c := range cases {
+		if got := noThin(c.in); string(got) != string(c.out) {
+			t.Errorf("%s: noThin = %q, want %q", c.name, got, c.out)
+		}
+	}
+}
+
+func TestRefOID(t *testing.T) {
+	a, b := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	list := adv(a+" refs/heads/main\x00report-status", b+" refs/heads/dev")
+	for ref, want := range map[string]string{"refs/heads/dev": b, "refs/heads/gone": ""} {
+		if got := refOID(list, ref); got != want {
+			t.Errorf("refOID(%s) = %q, want %q", ref, got, want)
+		}
+	}
+}
+
+// readAdvertisement takes pkt-lines from the empty one (0004) to the
+// longest git allows (65520 bytes), and refuses lengths outside that.
+func TestReadAdvertisement(t *testing.T) {
+	longest := "fff0" + strings.Repeat("x", 0xfff0-4)
+	cases := []struct {
+		in string
+		ok bool
+	}{
+		{"0004" + longest + "0000", true},
+		{"0003" + "0000", false},
+		{"fff1" + strings.Repeat("x", 0xfff1-4) + "0000", false},
+	}
+	for _, c := range cases {
+		got, err := readAdvertisement(bufio.NewReader(strings.NewReader(c.in)))
+		if c.ok && (err != nil || string(got) != c.in) || !c.ok && err == nil {
+			t.Errorf("readAdvertisement(%.8q) = %.8q, %v", c.in, got, err)
 		}
 	}
 }

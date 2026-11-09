@@ -1,6 +1,7 @@
 package sshgate
 
 import (
+	"bytes"
 	"log/slog"
 	"net"
 	"os"
@@ -91,5 +92,20 @@ func TestGateCutsSilentClient(t *testing.T) {
 	}
 	if d := time.Since(start); d > 3*time.Second {
 		t.Errorf("silent client held for %v", d)
+	}
+}
+
+// The copy of GitHub's push answer that the broker keeps stops at its cap,
+// and the writes past it still count as written.
+func TestCappedStopsAtMax(t *testing.T) {
+	var buf bytes.Buffer
+	c := &capped{&buf, 4}
+	for _, s := range []string{"abc", "def", "ghi"} {
+		if n, err := c.Write([]byte(s)); n != len(s) || err != nil {
+			t.Fatalf("Write(%q) = %d, %v", s, n, err)
+		}
+	}
+	if buf.String() != "abcd" {
+		t.Errorf("kept %q, want %q", buf.String(), "abcd")
 	}
 }

@@ -278,12 +278,15 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("token.source must be pat or login, got %q", c.Token.Source)
 		}
 	}
-	for name, k := range map[string]*Key{"ssh": c.SSH, "signing": c.Signing} {
-		if k == nil {
+	for _, k := range []struct {
+		name string
+		key  *Key
+	}{{"ssh", c.SSH}, {"signing", c.Signing}} {
+		if k.key == nil {
 			continue
 		}
-		if _, _, err := keys.Split(k.Key); err != nil {
-			return fmt.Errorf("%s.key: %w", name, err)
+		if _, _, err := keys.Split(k.key.Key); err != nil {
+			return fmt.Errorf("%s.key: %w", k.name, err)
 		}
 	}
 	if err := checkGrants("global", c.Allow, c.Deny, true); err != nil {

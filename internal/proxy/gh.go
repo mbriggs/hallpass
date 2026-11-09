@@ -234,13 +234,9 @@ func (s *Server) checkGraphQL(ctx context.Context, g *policy.GraphQL) string {
 		rule, ok := s.Config.Allowed(repo)
 		return rule.Write, rule.Ops, ok
 	}
-	for _, u := range g.Repos {
-		write, _, ok := allowed(u.Repo)
-		switch {
-		case !ok:
-			return u.Repo.String() + " isn't in hallpass's allowlist. To allow it: sudo /opt/hallpass/bin/hallpass allow " + u.Repo.String()
-		case u.Write && !write:
-			return "agents may only read " + u.Repo.String()
+	for _, r := range g.Repos {
+		if _, _, ok := allowed(r); !ok {
+			return r.String() + " isn't in hallpass's allowlist. To allow it: sudo /opt/hallpass/bin/hallpass allow " + r.String()
 		}
 	}
 	if len(g.Nodes) == 0 {
@@ -382,7 +378,9 @@ func (s *Server) followStorage(ctx context.Context, loc string) (*http.Response,
 	for _, h := range storageHosts {
 		ok = ok || strings.HasSuffix(u.Hostname(), h) || u.Hostname() == strings.TrimPrefix(h, ".")
 	}
-	if !ok && !strings.HasPrefix(loc, s.Config.API()) {
+	// The slash keeps out hosts that start with the API's, like
+	// api.github.com.evil.example and api.github.com@evil.example.
+	if !ok && !strings.HasPrefix(loc, s.Config.API()+"/") {
 		return nil, errors.New("GitHub redirected to " + u.Hostname() + ", which hallpass doesn't follow")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, loc, nil)

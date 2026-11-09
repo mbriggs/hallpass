@@ -16,7 +16,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"regexp"
 	"strings"
 
@@ -34,11 +33,14 @@ const (
 	FrameStdout = 1
 	FrameStderr = 2
 	FrameExit   = 3
+
+	// maxFrame is the most data one frame may carry.
+	maxFrame = 1 << 20
 )
 
 // WriteFrame writes one frame.
 func WriteFrame(w io.Writer, kind byte, data []byte) error {
-	if len(data) > math.MaxUint32 {
+	if len(data) > maxFrame {
 		return errors.New("frame too large")
 	}
 	var hdr [5]byte
@@ -58,7 +60,7 @@ func ReadFrame(r io.Reader) (byte, []byte, error) {
 		return 0, nil, err
 	}
 	n := binary.BigEndian.Uint32(hdr[1:])
-	if n > 1<<20 {
+	if n > maxFrame {
 		return 0, nil, errors.New("frame too large")
 	}
 	data := make([]byte, n)

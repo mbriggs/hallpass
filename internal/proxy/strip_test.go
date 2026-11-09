@@ -20,9 +20,18 @@ import (
 // answer, not only at the top of /repos/o/r, and in what a write returns.
 func TestStripsCloneTokensAtAnyDepth(t *testing.T) {
 	t.Parallel()
+	// File contents aren't stripped, so they pass through byte for byte,
+	// even past one read of GitHub's answer.
+	readme := `{"name": "README.md", "content": "` + strings.Repeat("x", 40<<10) + `", "end": true}`
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.Header.Get("Content-Type") != "application/json" {
+			w.WriteHeader(http.StatusUnsupportedMediaType)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		switch r.Method + " " + r.URL.Path {
+		case "GET /repos/acme/widgets/contents/README.md":
+			io.WriteString(w, readme)
 		case "POST /repos/acme/widgets/pulls":
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{"number":2,"base":{"repo":{"temp_clone_token":"T6"}},"head":{"repo":{"temp_clone_token":"T7"}}}`)
@@ -44,6 +53,7 @@ func TestStripsCloneTokensAtAnyDepth(t *testing.T) {
 	}{
 		{"GET", "/repos/acme/widgets", "", 200, []string{`"full_name":"acme/up"`}},
 		{"GET", "/repos/acme/widgets/pulls", "", 200, []string{`"body":"<b>&</b>"`, `"id":12345678901234567`}},
+		{"GET", "/repos/acme/widgets/contents/README.md", "", 200, []string{readme}},
 		{"POST", "/repos/acme/widgets/pulls", `{"title":"t","head":"b","base":"main"}`, 201, []string{`"number":2`}},
 		{"POST", "/repos/acme/widgets/actions/workflows/ci.yml/dispatches", `{"ref":"main"}`, 204, nil},
 	} {
@@ -69,20 +79,29 @@ func TestStripsCloneTokensAtAnyDepth(t *testing.T) {
 // mbriggs, with repo in the allowlist, and returns a client for it.
 func ghClient(t *testing.T, api string, repo config.Repo) *http.Client {
 	t.Helper()
-	sock := filepath.Join(t.TempDir(), "gh.sock")
-	ln, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { ln.Close() })
-	srv := &Server{
+	return serveGH(t, "unix", &Server{
 		Config:    &config.Config{Token: &config.Token{Login: "mbriggs"}, Repos: []config.Repo{repo}, APIURL: api},
 		Token:     testToken,
 		Log:       slog.New(slog.DiscardHandler),
 		Permitted: func(p peer.Peer) bool { return p.Known && p.UID == uint32(os.Getuid()) },
+	})
+}
+
+// serveGH serves srv's gh socket on a new Unix socket, or on loopback TCP
+// when network is "tcp", and returns a client for it.
+func serveGH(t *testing.T, network string, srv *Server) *http.Client {
+	t.Helper()
+	addr := filepath.Join(t.TempDir(), "gh.sock")
+	if network == "tcp" {
+		addr = "127.0.0.1:0"
 	}
+	ln, err := net.Listen(network, addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
 	go srv.ServeGH(ln)
 	return &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-		return (&net.Dialer{}).DialContext(ctx, "unix", sock)
+		return (&net.Dialer{}).DialContext(ctx, network, ln.Addr().String())
 	}}}
 }
