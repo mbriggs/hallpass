@@ -26,12 +26,13 @@ type Repo struct {
 var repoPart = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
 
 // ParseRepo accepts "owner/name", with an optional ".git" suffix or
-// surrounding slashes.
+// surrounding slashes. A name that still ends in ".git" is refused, since
+// its String would parse as a different repo.
 func ParseRepo(s string) (Repo, error) {
 	s = strings.TrimSuffix(strings.Trim(s, "/"), ".git")
 	owner, name, ok := strings.Cut(s, "/")
 	if !ok || !repoPart.MatchString(owner) || !repoPart.MatchString(name) ||
-		owner == "." || owner == ".." || name == "." || name == ".." {
+		owner == "." || owner == ".." || name == "." || name == ".." || strings.HasSuffix(name, ".git") {
 		return Repo{}, fmt.Errorf("not a GitHub repo path: %q", s)
 	}
 	return Repo{owner, name}, nil

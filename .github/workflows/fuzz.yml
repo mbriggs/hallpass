@@ -1,0 +1,36 @@
+name: fuzz
+
+# ci runs only the seeds. This runs the fuzzers for real, nightly and on
+# demand. The log prints any failing input, to commit with the fix.
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: How long to run each target
+        default: 5m
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - env:
+          FUZZTIME: ${{ inputs.fuzztime || '5m' }}
+        run: make fuzz FUZZTIME="$FUZZTIME"
+      # Prints each failing input under the path to commit it at.
+      - if: failure()
+        run: |
+          for f in internal/*/testdata/fuzz/*/*; do
+            [ -f "$f" ] && { echo "== $f"; cat "$f"; }
+          done
