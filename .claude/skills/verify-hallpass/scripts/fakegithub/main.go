@@ -146,8 +146,9 @@ func main() {
 
 // api answers the calls gh and the broker make. acme/widgets exists, with
 // PR and issue 1 written by the token's account and PR and issue 2 by a
-// colleague. acme/readonly answers its repo lookup only, and acme/gadgets
-// redirects as a repo renamed to acme/widgets. Every other repo is a 404.
+// colleague. acme/readonly answers its repo lookup only. acme/gadgets
+// redirects as a repo renamed to acme/widgets, and acme/gizmos as one
+// renamed to acme/private. Every other repo is a 404.
 func api(w http.ResponseWriter, r *http.Request, path, body string) {
 	w.Header().Set("Content-Type", "application/json")
 	reply := func(code int, s string) {
@@ -176,6 +177,12 @@ func api(w http.ResponseWriter, r *http.Request, path, body string) {
 		// name to the repo's ID, which the broker's current-name check follows.
 		w.Header().Set("Location", "http://"+r.Host+"/api/repositories/1")
 		reply(301, `{"message":"Moved Permanently"}`)
+	case path == "/repos/acme/gizmos":
+		// acme/gizmos was renamed to acme/private, which isn't allowlisted.
+		w.Header().Set("Location", "http://"+r.Host+"/api/repositories/3")
+		reply(301, `{"message":"Moved Permanently"}`)
+	case path == "/repositories/3":
+		reply(200, `{"id":3,"node_id":"R_3","name":"private","full_name":"acme/private","owner":{"login":"acme"},"default_branch":"main","private":true}`)
 	case path == "/search/issues":
 		reply(200, `{"total_count":0,"incomplete_results":false,"items":[]}`)
 	case strings.HasPrefix(path, "/repos/acme/widgets/"):

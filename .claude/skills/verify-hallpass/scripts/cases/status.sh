@@ -5,7 +5,7 @@ feature_status() {
   check 0 "token:    classic PAT for verifier, 0 days old, doesn't expire" 'hallpass status'
   check 0 "ssh:      $(cut -d' ' -f1,2 "$S/keys/ssh.pub")" 'hallpass status'
   check 0 "signing:  $(cut -d' ' -f1,2 "$S/keys/signing.pub")" 'hallpass status'
-  check 0 'repos:    acme/widgets, acme/readonly (read), acme/gadgets' 'hallpass status'
+  check 0 'repos:    acme/widgets, acme/readonly (read), acme/gadgets, acme/gizmos' 'hallpass status'
   check fail '' 'hallpass status | grep "^policy:"'
 
   case_ status-check

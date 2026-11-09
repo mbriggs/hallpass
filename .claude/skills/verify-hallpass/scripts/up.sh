@@ -114,10 +114,15 @@ match = "acme/widgets"
 match = "acme/readonly"
 access = "read"
 
-# acme/gadgets is acme/widgets's old name on the fake. Allowlisting it lets
-# git reach the current-name check, which refuses it.
+# acme/gadgets is acme/widgets's old name on the fake. Both names are
+# allowlisted, so the current-name check follows the rename. acme/gizmos is
+# acme/private's old name, and acme/private isn't allowlisted, so the check
+# refuses it.
 [[repo]]
 match = "acme/gadgets"
+
+[[repo]]
+match = "acme/gizmos"
 EOF
 
 # The broker. HALLPASS_RUN_DIR moves its sockets into the scratch dir.
