@@ -15,7 +15,8 @@ IDs to repos, and filters text that bots would treat as a command.
 - `gql-chatops-path` posts a comment whose line starts with an absolute
   path, which isn't a bot command.
 - `gql-renames` adds `followRenames: false` to every `repository(...)` the
-  broker forwards, so an old name can't reach a renamed repo.
+  broker forwards, so an old name can't reach a renamed repo, and refuses
+  `followRenames: true`.
 
 ## Driving it
 
@@ -24,6 +25,9 @@ IDs to repos, and filters text that bots would treat as a command.
 
 - `gql-comment`: `gh pr comment` posts, the fake sees `addComment`, and
   the `PullRequestByNumber` query before it has `followRenames: false`.
+- `gql-renames`: a query with `followRenames: true` is refused with
+  `hallpass only allows repository(followRenames: false)`, and doesn't
+  reach the fake.
 - `gql-merge`: `gh pr merge` is refused with `GraphQL: hallpass: agents may
   not merge PRs`, and no `mergePullRequest` reaches the fake.
 - `gql-approve`: `gh pr review --approve` is refused with `agents may not
@@ -42,11 +46,14 @@ IDs to repos, and filters text that bots would treat as a command.
 
 ## Gotchas
 
-- Each `gh pr` command first runs a `PullRequestByNumber` query, which the
-  broker allows, and the broker sends its own `nodes(ids` query to resolve
-  the PR's repo and author before a mutation. So the fake log always has
-  reads before the refused mutation. Look for the mutation's name, not for
-  an empty log.
+- Each `gh pr` command first runs a `PullRequestByNumber` query, and the
+  broker sends its own `nodes(ids` query to resolve the PR's repo and
+  author before a mutation. So the fake log usually has reads before the
+  refused mutation. Look for the mutation's name, not for an empty log.
+  Two refusals come earlier. In `gql-allowlist` the broker refuses the
+  `PullRequestByNumber` query itself, so nothing reaches the fake. In
+  `gql-chatops` it refuses the comment's text before the `nodes(ids`
+  lookup.
 - The fake's `nodes` answer puts every ID in `acme/widgets`. So a GraphQL
   write to `acme/readonly` would be allowed here, unlike on GitHub. Extend
   the fake before adding a read-only GraphQL journey.

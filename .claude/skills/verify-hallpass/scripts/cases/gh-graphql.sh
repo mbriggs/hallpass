@@ -6,6 +6,10 @@ feature_graphql() {
   fake_has 'looks fine'
   fake_has 'followRenames: false'
 
+  case_ gql-renames
+  check fail 'hallpass only allows repository(followRenames: false)' "gh api graphql -f query='{repository(owner:\"acme\",name:\"widgets\",followRenames:true){name}}'"
+  fake_lacks 'followRenames: true'
+
   case_ gql-merge
   check fail 'GraphQL: hallpass: agents may not merge PRs' 'gh pr merge 1 -R acme/widgets --squash'
   fake_lacks mergePullRequest
