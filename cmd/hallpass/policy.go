@@ -242,7 +242,10 @@ func policyShow(args []string) error {
 	}
 	ds, ok := cfg.Decide(repo)
 	if !ok {
-		return fmt.Errorf("%s isn't in the allowlist, so agents can't reach it", repo)
+		if cfg.Anonymous(&repo) {
+			return fmt.Errorf("%s isn't in the allowlist, so agents can only read what GitHub shows without a token there", repo)
+		}
+		return fmt.Errorf("%s isn't in the allowlist, and the policy denies anonymous reads, so agents can't reach it", repo)
 	}
 	if rule, _ := cfg.Allowed(repo); !rule.Write {
 		fmt.Printf("Agents may only read %s, so it refuses every write below.\n\n", repo)

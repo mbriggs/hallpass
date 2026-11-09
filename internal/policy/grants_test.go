@@ -54,8 +54,8 @@ func TestBranchProtectionIsFloored(t *testing.T) {
 		"actions/variables":                       false, // refused by default
 		"rulesets":                                false, // refused by default
 	} {
-		_, err := ClassifyREST("GET", "/repos/acme/widgets/"+path, nil, nil)
-		if ok != (err == nil) {
+		r, err := ClassifyREST("GET", "/repos/acme/widgets/"+path, nil, nil)
+		if ok != withToken(r, err) {
 			t.Errorf("GET %s: err = %v", path, err)
 		}
 	}
@@ -116,12 +116,16 @@ func TestRESTReadGrants(t *testing.T) {
 	}
 	for _, c := range cases {
 		r, err := ClassifyREST("GET", c.path, nil, c.g)
-		if c.ok != (err == nil) {
+		if c.ok != withToken(r, err) {
 			t.Errorf("%s: err = %v", c.name, err)
 			continue
 		}
-		if err != nil && !strings.Contains(err.Error(), c.msg) {
-			t.Errorf("%s: %q lacks %q", c.name, err, c.msg)
+		if msg := refusal(r, err); !c.ok && !strings.Contains(msg, c.msg) {
+			t.Errorf("%s: %q lacks %q", c.name, msg, c.msg)
+		}
+		// A policy's deny holds without the token too.
+		if strings.Contains(c.msg, "denies") && err == nil {
+			t.Errorf("%s: a denied read goes anonymous", c.name)
 		}
 		if err != nil && strings.Contains(c.msg, "never") && strings.Contains(err.Error(), "To allow it") {
 			t.Errorf("%s: a floor refusal offers a command: %v", c.name, err)
