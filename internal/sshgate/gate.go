@@ -43,9 +43,10 @@ type Server struct {
 	// point them at a local server.
 	Addr     string
 	HostKeys []string
-	// CurrentName asks GitHub what a repo is called now, so an old name
-	// left by a rename or transfer can't reach a repo the allowlist
-	// doesn't cover. Nil, as on a machine with no token, skips the check.
+	// CurrentName asks GitHub what a repo is called now. The gate follows
+	// an old name left by a rename or transfer only when the allowlist
+	// covers the new name too. Nil, as on a machine with no token, skips
+	// the check.
 	CurrentName func(context.Context, github.Repo) (github.Repo, error)
 
 	limits limits
@@ -195,13 +196,21 @@ func (s *Server) handle(conn net.Conn, lim limits) {
 	}
 	log = log.With("repo", repo.String(), "op", strings.TrimPrefix(h.Service, "git-"))
 	write := h.Service == "git-receive-pack"
-	rule, ok := s.Config.Allowed(repo)
+	// check returns the allowlist's rule for repo, or why it refuses repo.
+	check := func(repo github.Repo) (config.Rule, string) {
+		rule, ok := s.Config.Allowed(repo)
+		switch {
+		case !ok:
+			return rule, repo.String() + " isn't in hallpass's allowlist. To allow it: sudo /opt/hallpass/bin/hallpass allow " + repo.String()
+		case write && !rule.Write:
+			return rule, "agents may only read " + repo.String()
+		}
+		return rule, ""
+	}
+	rule, why := check(repo)
 	switch {
-	case !ok:
-		fail(repo.String() + " isn't in hallpass's allowlist. To allow it: sudo /opt/hallpass/bin/hallpass allow " + repo.String())
-		return
-	case write && !rule.Write:
-		fail("agents may only read " + repo.String())
+	case why != "":
+		fail(why)
 		return
 	case s.Signer == nil:
 		fail("this machine has no SSH key. Create one: sudo /opt/hallpass/bin/hallpass ssh-key create")
@@ -215,9 +224,17 @@ func (s *Server) handle(conn net.Conn, lim limits) {
 			fail("couldn't check " + repo.String() + "'s current name with GitHub: " + err.Error())
 			return
 		}
+		// The gate follows a rename or transfer only when the allowlist
+		// covers both names. It then asks GitHub for the new name under the
+		// new name's rule, so what reaches GitHub is what was checked.
 		if !strings.EqualFold(cur.String(), repo.String()) {
-			fail(repo.String() + " is now " + cur.String() + " on GitHub. Use the new name, which hallpass checks against its allowlist")
-			return
+			curRule, why := check(cur)
+			if why != "" {
+				fail(repo.String() + " is now " + cur.String() + " on GitHub, and hallpass checks both names: " + why)
+				return
+			}
+			log = log.With("now", cur.String())
+			repo, rule = cur, curRule
 		}
 	}
 

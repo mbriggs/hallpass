@@ -47,9 +47,16 @@ feature_ssh() {
   fake_lacks "git-receive-pack 'acme/readonly.git'"
 
   case_ git-renamed
-  check fail 'acme/gadgets is now acme/widgets on GitHub' 'git ls-remote git@github.com:acme/gadgets'
+  check fail "acme/gizmos is now acme/private on GitHub, and hallpass checks both names: acme/private isn't in hallpass's allowlist" 'git ls-remote git@github.com:acme/gizmos'
+  fake_has '"path":"/api/repos/acme/gizmos"'
+  fake_has '"path":"/api/repositories/3"'
+  fake_lacks "acme/gizmos.git"
+  fake_lacks "acme/private.git"
+
+  case_ git-renamed-allowed
+  check 0 refs/heads/main 'git ls-remote git@github.com:acme/gadgets'
   fake_has '"path":"/api/repos/acme/gadgets"'
-  fake_has '"path":"/api/repositories/1"'
+  fake_has "git-upload-pack 'acme/widgets.git'"
   fake_lacks "acme/gadgets.git"
 
   case_ git-delete-own

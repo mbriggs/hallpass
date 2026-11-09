@@ -22,7 +22,10 @@ colleagues' branches, tags, or commits that change `.github/workflows` or
 - `git-push-workflow` refuses a push whose commits change `.github/workflows`.
 - `git-allowlist` refuses `ls-remote` on `acme/secret`.
 - `git-readonly` fetches `acme/readonly` and refuses pushes to it.
-- `git-renamed` refuses a repo's old name after a rename or transfer.
+- `git-renamed` refuses a repo's old name when the allowlist doesn't cover
+  the new one.
+- `git-renamed-allowed` follows an old name when the allowlist covers both
+  names.
 - `git-push-default-allowed` pushes `main` once `push.default` is on.
 
 ## Driving it
@@ -47,9 +50,14 @@ in order, as one journey in `$S/work`:
   hallpass's allowlist`, and the fake never sees it.
 - `git-readonly`: `ls-remote` on `acme/readonly` lists its branches, and a
   push there is refused with `agents may only read acme/readonly`.
-- `git-renamed`: `acme/gadgets` is refused with `acme/gadgets is now
-  acme/widgets on GitHub`. The fake sees `GET /api/repos/acme/gadgets` and
-  the redirect's `GET /api/repositories/1`, and no SSH for it.
+- `git-renamed`: `acme/gizmos` is refused with `acme/gizmos is now
+  acme/private on GitHub, and hallpass checks both names: acme/private
+  isn't in hallpass's allowlist`. The fake sees `GET
+  /api/repos/acme/gizmos` and the redirect's `GET /api/repositories/3`,
+  and no SSH for either name.
+- `git-renamed-allowed`: `ls-remote` on `acme/gadgets` lists widgets's
+  `main`. The fake sees `GET /api/repos/acme/gadgets` and
+  `git-upload-pack 'acme/widgets.git'`, never `acme/gadgets.git`.
 - `git-delete-own`: deletes `agent/fix`.
 - `git-refs-unchanged`: the fake's refs match the start. A refused push
   still logs `git-receive-pack`, because the broker reads GitHub's refs

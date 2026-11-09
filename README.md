@@ -13,7 +13,7 @@ Each credential is optional and turns on its own features:
 
 | Credential | Turns on |
 | --- | --- |
-| Token: a device login or a classic PAT, `repo` scope only | gh, and the check that refuses git under a renamed repo's old name |
+| Token: a device login or a classic PAT, `repo` scope only | gh, and the check that follows a renamed repo's old name only to an allowed new name |
 | SSH key, ECDSA P-256 | git |
 | Signing key, ECDSA P-256 | signed commits and tags |
 
@@ -65,8 +65,9 @@ It prevents these:
   default branch's name, your permission there, and whether it has issues
   and a wiki, which `gh pr create` reads. GitHub keeps a repo's old name
   working after a rename or transfer, so with a token the broker asks
-  GitHub what a repo is called now before running git there, and refuses
-  an old name. On a machine with only an SSH key it can't ask, so an old
+  GitHub what a repo is called now before running git there. It follows
+  an old name only when the allowlist covers the new name too, and then
+  runs git under the new name with the new name's rule. On a machine with only an SSH key it can't ask, so an old
   name that the allowlist covers still reaches the renamed repo.
 - **Merging, approving, and pushing the default branch, unless you allow
   it.** By default, agents can't merge or approve PRs, push the default
