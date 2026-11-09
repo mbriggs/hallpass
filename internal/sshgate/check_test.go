@@ -12,11 +12,14 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+// githubGreeting is what GitHub sends a key it recognizes.
+const githubGreeting = "Hi octocat! You've successfully authenticated, but GitHub does not provide shell access.\n"
+
 // greeter answers a shell request the way GitHub does: the greeting on
 // stderr, exit status 1, and a closed channel. replyFirst says whether it
 // answers the shell request before greeting, or closes the channel without
 // answering it, which GitHub's timing sometimes amounts to.
-func greeter(t *testing.T, replyFirst bool) (addr, hostKey string) {
+func greeter(t *testing.T, replyFirst bool, greeting string) (addr, hostKey string) {
 	t.Helper()
 	hk, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	hs, _ := ssh.NewSignerFromSigner(hk)
@@ -50,7 +53,7 @@ func greeter(t *testing.T, replyFirst bool) (addr, hostKey string) {
 							if replyFirst {
 								req.Reply(true, nil)
 							}
-							ch.Stderr().Write([]byte("Hi octocat! You've successfully authenticated, but GitHub does not provide shell access.\n"))
+							ch.Stderr().Write([]byte(greeting))
 							var b [4]byte
 							binary.BigEndian.PutUint32(b[:], 1)
 							ch.SendRequest("exit-status", false, b[:])
@@ -68,7 +71,7 @@ func greeter(t *testing.T, replyFirst bool) (addr, hostKey string) {
 func TestCheckReadsGitHubsGreeting(t *testing.T) {
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	for _, replyFirst := range []bool{true, false} {
-		addr, hostKey := greeter(t, replyFirst)
+		addr, hostKey := greeter(t, replyFirst, githubGreeting)
 		s := &Server{Signer: key, Addr: addr, HostKeys: []string{hostKey}}
 		for i := range 20 {
 			login, err := s.Check()
@@ -76,5 +79,11 @@ func TestCheckReadsGitHubsGreeting(t *testing.T) {
 				t.Fatalf("replyFirst=%v, try %d: Check = %q, %v", replyFirst, i, login, err)
 			}
 		}
+	}
+	// A greeting that isn't GitHub's names no login, even with a "!" in it.
+	addr, hostKey := greeter(t, true, "Welcome to GitLab, @octocat!\n")
+	s := &Server{Signer: key, Addr: addr, HostKeys: []string{hostKey}}
+	if login, err := s.Check(); err == nil {
+		t.Errorf("Check took %q from another host's greeting", login)
 	}
 }

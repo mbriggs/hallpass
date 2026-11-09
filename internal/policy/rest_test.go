@@ -104,19 +104,19 @@ func TestClassifyREST(t *testing.T) {
 	ok := []struct {
 		method, target, body string
 		write, follow        bool
-		authored             string
+		authored, route      string
 	}{
-		{"GET", "/user", "", false, false, ""},
-		{"GET", "/repos/acme/widgets", "", false, false, ""},
-		{"GET", "/repos/acme/widgets/actions/runs/99?exclude_pull_requests=true", "", false, false, ""},
-		{"GET", "/repos/acme/widgets/actions/runs/99/logs", "", false, true, ""},
-		{"GET", "/repos/acme/widgets/actions/jobs/5/logs", "", false, true, ""},
-		{"GET", "/search/issues?page=1&per_page=30&q=%28+foo+%29+repo%3Aacme%2Fwidgets+type%3Apr", "", false, false, ""},
-		{"POST", "/repos/acme/widgets/pulls", `{"title":"t","head":"agent/x","base":"main"}`, true, false, ""},
-		{"POST", "/repos/acme/widgets/issues/3/comments", `{"body":"hi"}`, true, false, ""},
-		{"POST", "/repos/acme/widgets/pulls/3/reviews", `{"body":"nit","event":"COMMENT"}`, true, false, ""},
-		{"PATCH", "/repos/acme/widgets/pulls/3", `{"title":"t"}`, true, false, "/repos/acme/widgets/pulls/3"},
-		{"PATCH", "/repos/acme/widgets/issues/comments/77", `{"body":"b"}`, true, false, "/repos/acme/widgets/issues/comments/77"},
+		{"GET", "/user", "", false, false, "", "GET /user"},
+		{"GET", "/repos/acme/widgets", "", false, false, "", "GET repos/{repo}/"},
+		{"GET", "/repos/acme/widgets/actions/runs/99?exclude_pull_requests=true", "", false, false, "", "GET repos/{repo}/actions/runs/#"},
+		{"GET", "/repos/acme/widgets/actions/runs/99/logs", "", false, true, "", "GET repos/{repo}/actions/runs/#/logs"},
+		{"GET", "/repos/acme/widgets/actions/jobs/5/logs", "", false, true, "", "GET repos/{repo}/actions/jobs/#/logs"},
+		{"GET", "/search/issues?page=1&per_page=30&q=%28+foo+%29+repo%3Aacme%2Fwidgets+type%3Apr", "", false, false, "", "GET /search/issues"},
+		{"POST", "/repos/acme/widgets/pulls", `{"title":"t","head":"agent/x","base":"main"}`, true, false, "", "POST pulls"},
+		{"POST", "/repos/acme/widgets/issues/3/comments", `{"body":"hi"}`, true, false, "", "POST issues/#/comments"},
+		{"POST", "/repos/acme/widgets/pulls/3/reviews", `{"body":"nit","event":"COMMENT"}`, true, false, "", "POST pulls/#/reviews"},
+		{"PATCH", "/repos/acme/widgets/pulls/3", `{"title":"t"}`, true, false, "/repos/acme/widgets/pulls/3", "PATCH pulls/#"},
+		{"PATCH", "/repos/acme/widgets/issues/comments/77", `{"body":"b"}`, true, false, "/repos/acme/widgets/issues/comments/77", "PATCH issues/comments/#"},
 	}
 	for _, c := range ok {
 		r, err := ClassifyREST(c.method, c.target, []byte(c.body), nil)
@@ -124,7 +124,9 @@ func TestClassifyREST(t *testing.T) {
 			t.Errorf("%s %s: %v", c.method, c.target, err)
 			continue
 		}
-		if r.Write != c.write || r.Follow != c.follow || r.Authored != c.authored {
+		// Each target is already in the form the parse rebuilds, so the
+		// upstream path is the target unchanged.
+		if r.Write != c.write || r.Follow != c.follow || r.Authored != c.authored || r.Route != c.route || r.Path != c.target {
 			t.Errorf("%s %s = %+v", c.method, c.target, r)
 		}
 	}
@@ -147,6 +149,7 @@ func TestClassifyREST(t *testing.T) {
 		{"POST", "/repos/acme/widgets/pulls/3/requested_reviewers", `{"team_reviewers":["core"]}`},
 		{"POST", "/repos/acme/widgets/releases", `{}`},
 		{"GET", "/repos/acme/%2e%2e/secret", ``},
+		{"GET", "/repos/acme/widgets.git", ``},
 		{"GET", "/repos/acme/widgets/../../user/repos", ``},
 		{"GET", "/repositories/123/contents", ``},
 		{"GET", "/orgs/acme/repos", ``},
@@ -162,5 +165,9 @@ func TestClassifyREST(t *testing.T) {
 		if r, err := ClassifyREST(c.method, c.target, []byte(c.body), nil); err == nil {
 			t.Errorf("%s %s %s: allowed (%+v)", c.method, c.target, c.body, r)
 		}
+	}
+	// No read pattern can name Deployments, so the refusal offers no command.
+	if _, err := ClassifyREST("GET", "/repos/acme/widgets/Deployments", nil, nil); err == nil || strings.Contains(err.Error(), "To allow it") {
+		t.Errorf("GET Deployments: %v", err)
 	}
 }

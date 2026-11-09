@@ -128,10 +128,20 @@ type out struct {
 	w  io.Writer
 }
 
+// frame writes data in as many frames as it takes, since GitHub's ref list
+// for a repo with many refs can outgrow the largest frame ReadFrame takes.
 func (o *out) frame(kind byte, data []byte) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	return WriteFrame(o.w, kind, data)
+	for {
+		c := min(len(data), 64<<10)
+		if err := WriteFrame(o.w, kind, data[:c]); err != nil {
+			return err
+		}
+		if data = data[c:]; len(data) == 0 {
+			return nil
+		}
+	}
 }
 
 func (o *out) writer(kind byte) io.Writer {
@@ -141,15 +151,10 @@ func (o *out) writer(kind byte) io.Writer {
 type frameFunc func([]byte) error
 
 func (f frameFunc) Write(p []byte) (int, error) {
-	n := len(p)
-	for len(p) > 0 {
-		c := min(len(p), 64<<10)
-		if err := f(p[:c]); err != nil {
-			return 0, err
-		}
-		p = p[c:]
+	if err := f(p); err != nil {
+		return 0, err
 	}
-	return n, nil
+	return len(p), nil
 }
 
 func (s *Server) handle(conn net.Conn, lim limits) {

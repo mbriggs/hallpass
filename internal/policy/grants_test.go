@@ -23,6 +23,8 @@ func TestCheckRead(t *testing.T) {
 		// The floor, directly and through wildcards.
 		"secrets", "actions/secrets", "actions/secrets/*", "actions/*", "actions/**",
 		"environments/*/secrets", "environments/**", "environments/*/*", "hooks/#",
+		// * matches numbers too, so # reaches the floor's * segments.
+		"environments/#/secrets", "environments/#/variables",
 		"branches/*/protection", "branches/**", "branches/*/*", "branches/main/protection/required_status_checks",
 	} {
 		if err := CheckRead(bad); err == nil {

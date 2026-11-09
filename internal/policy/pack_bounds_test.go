@@ -20,6 +20,7 @@ type packEntry struct {
 	ofs   int    // for typ 6: index of the base entry
 	base  string // for typ 7: base object ID
 	claim int    // if set, the size the header declares instead of len(data)
+	rel   int64  // for typ 6, if set: the offset written instead of the distance to ofs
 }
 
 // buildPack writes entries as a version 2 pack with its trailer.
@@ -47,7 +48,10 @@ func buildPack(t *testing.T, entries []packEntry) []byte {
 		switch e.typ {
 		case 6:
 			// Offset back to the base, in git's offset encoding.
-			d := offs[i] - offs[e.ofs]
+			d := uint64(offs[i] - offs[e.ofs])
+			if e.rel != 0 {
+				d = uint64(e.rel)
+			}
 			enc := []byte{byte(d & 0x7f)}
 			for d >>= 7; d > 0; d >>= 7 {
 				d--
@@ -108,16 +112,19 @@ func TestReadPackRefusesDeltaExpansion(t *testing.T) {
 	const copies = 120
 	delta := append(varint(len(base)), varint(copies*len(base))...)
 	delta = append(delta, bytes.Repeat([]byte{0x80}, copies)...)
-	entries := []packEntry{{typ: 3, data: base}}
-	for range maxTotal/(copies*len(base)) + 2 {
-		entries = append(entries, packEntry{typ: 6, data: delta, ofs: 0})
-	}
-	raw := buildPack(t, entries)
-	if len(raw) > 64<<10 {
-		t.Fatalf("test pack is %d bytes, meant to be small", len(raw))
-	}
-	if _, err := readFast(t, raw); err == nil || !strings.Contains(err.Error(), "too large") {
-		t.Errorf("ReadPack = %v, want a too-large refusal", err)
+	// Offset deltas and ref deltas count alike.
+	for _, d := range []packEntry{{typ: 6, data: delta, ofs: 0}, {typ: 7, data: delta, base: objectID("blob", base)}} {
+		entries := []packEntry{{typ: 3, data: base}}
+		for range maxTotal/(copies*len(base)) + 2 {
+			entries = append(entries, d)
+		}
+		raw := buildPack(t, entries)
+		if len(raw) > 64<<10 {
+			t.Fatalf("test pack is %d bytes, meant to be small", len(raw))
+		}
+		if _, err := readFast(t, raw); err == nil || !strings.Contains(err.Error(), "too large") {
+			t.Errorf("type %d deltas: ReadPack = %v, want a too-large refusal", d.typ, err)
+		}
 	}
 }
 
@@ -132,6 +139,15 @@ func TestReadPackBigObjectSize(t *testing.T) {
 	bomb := packEntry{typ: 3, data: bytes.Repeat([]byte("b"), 64<<20), claim: maxKept + 1}
 	if _, err := readFast(t, buildPack(t, []packEntry{bomb})); err == nil {
 		t.Error("ReadPack accepted an object that inflates past its header")
+	}
+	short := packEntry{typ: 3, data: big, claim: maxKept + 2}
+	if _, err := readFast(t, buildPack(t, []packEntry{short})); err == nil {
+		t.Error("ReadPack accepted a big object that inflates short of its header")
+	}
+	// A delta on a blob too big to keep makes another blob nobody reads.
+	onBig := []packEntry{{typ: 3, data: big}, {typ: 6, data: appendOne(len(big)), ofs: 0}}
+	if _, err := readFast(t, buildPack(t, onBig)); err != nil {
+		t.Errorf("ReadPack of a delta on a big blob = %v, want nil", err)
 	}
 }
 
@@ -244,5 +260,37 @@ func TestReadPackChargesDeclaredSize(t *testing.T) {
 	b.Write(sum[:])
 	if _, err := readFast(t, b.Bytes()); err == nil || !strings.Contains(err.Error(), "too large") {
 		t.Errorf("ReadPack = %v, want a too-large refusal", err)
+	}
+}
+
+// Packs git would refuse, each refused for its own reason.
+func TestReadPackRefusesMalformed(t *testing.T) {
+	blob := packEntry{typ: 3, data: []byte("a")}
+	delta := func(d ...byte) []packEntry { return []packEntry{blob, {typ: 6, data: d, ofs: 0}} }
+	// A delta at the start of the pack whose offset points forward, at the
+	// blob after it. Any negative offset takes 10 bytes, so the first build
+	// measures the delta's entry.
+	fwd := packEntry{typ: 6, data: appendOne(1), rel: -1}
+	fwd.rel = -int64(len(buildPack(t, []packEntry{fwd})) - 12 - sha1.Size)
+	v4 := buildPack(t, []packEntry{blob})
+	v4 = v4[:len(v4)-sha1.Size]
+	v4[7] = 4
+	cases := []struct {
+		name string
+		raw  []byte
+		want string
+	}{
+		{"version 4", withTrailer(v4), "pack version 4"},
+		{"offset delta on itself", buildPack(t, []packEntry{blob, {typ: 6, data: appendOne(1), ofs: 1}}), "malformed pack delta"},
+		{"offset delta on a later entry", buildPack(t, []packEntry{fwd, blob}), "malformed pack delta"},
+		{"empty delta", buildPack(t, delta()), "malformed pack delta"},
+		{"delta for another source size", buildPack(t, delta(2, 1, 1, 'x')), "malformed pack delta"},
+		{"delta too large to keep", buildPack(t, delta(append([]byte{1}, varint(1<<62)...)...)), "malformed pack delta"},
+		{"insert past the delta's end", buildPack(t, delta(1, 5, 5, 'a', 'b')), "malformed pack delta"},
+	}
+	for _, c := range cases {
+		if _, err := readFast(t, c.raw); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: ReadPack = %v, want %q", c.name, err, c.want)
+		}
 	}
 }

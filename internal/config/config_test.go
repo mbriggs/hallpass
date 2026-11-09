@@ -52,19 +52,31 @@ func TestLoadIgnoresVia(t *testing.T) {
 }
 
 func TestWriteLoad(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "hallpass.toml")
+	// Write creates the directory, as it does /etc/hallpass on a first
+	// install.
+	path := filepath.Join(t.TempDir(), "etc", "hallpass.toml")
 	if c, err := Load(path); err != nil || c.Token != nil {
 		t.Fatalf("missing file: %+v, %v", c, err)
 	}
-	c := &Config{UIDs: []uint32{1000}, Repos: []Repo{{Match: "acme/*"}}}
+	c := &Config{
+		UIDs:    []uint32{1000},
+		Token:   &Token{Secret: "tpm:/x", Source: "pat"},
+		SSH:     &Key{Key: "file:/y"},
+		Signing: &Key{Key: "file:/z"},
+		Repos:   []Repo{{Match: "acme/*"}, {Match: "acme/site", Access: "read"}, {Match: "acme/api", Access: "write"}},
+	}
 	if err := c.Write(path); err != nil {
 		t.Fatal(err)
 	}
 	got, err := Load(path)
-	if err != nil || len(got.Repos) != 1 || got.UIDs[0] != 1000 {
+	if err != nil || len(got.Repos) != 3 || got.UIDs[0] != 1000 {
 		t.Fatalf("Load = %+v, %v", got, err)
 	}
 	for _, bad := range []*Config{
+		{Token: &Token{Secret: "/x", Source: "pat"}},
+		{Token: &Token{Secret: "tpm:/x", Source: "paste"}},
+		{SSH: &Key{Key: "y"}},
+		{Repos: []Repo{{Match: "acme/x", Access: "admin"}}},
 		{Repos: []Repo{{Match: "acme"}}},
 		{Allow: []Grant{"pr.mrege"}},
 		{Repos: []Repo{{Match: "acme/x", Deny: []Grant{"nope"}}}},
@@ -78,6 +90,10 @@ func TestWriteLoad(t *testing.T) {
 		if err := bad.Write(path); err == nil {
 			t.Errorf("wrote %+v", bad)
 		}
+	}
+	// A missing SSH key mustn't end the walk before the signing key.
+	if err := (&Config{Signing: &Key{Key: "z"}}).Validate(); err == nil {
+		t.Fatal("a bad signing key passed when there's no SSH key")
 	}
 }
 

@@ -75,12 +75,27 @@ func TestGraphQLAllowsGhReads(t *testing.T) {
 
 func TestGraphQLUses(t *testing.T) {
 	g, err := ClassifyGraphQL(gql(`query($o:String!,$n:String!){repository(owner:$o,name:$n){pullRequest(number:1){title headRepository{nameWithOwner} author{login}}}}`, map[string]any{"o": "acme", "n": "widgets"}), nil)
-	if err != nil || len(g.Repos) != 1 || g.Repos[0].Repo.String() != "acme/widgets" || g.Mutation {
+	if err != nil || len(g.Repos) != 1 || g.Repos[0].String() != "acme/widgets" || g.Mutation {
 		t.Fatalf("%+v %v", g, err)
 	}
 	g, err = ClassifyGraphQL(gql(`mutation{updatePullRequest(input:{pullRequestId:"PR_1",title:"t"}){pullRequest{url}}}`, nil), nil)
 	if err != nil || len(g.Nodes) != 1 || !g.Nodes[0].Authored || !g.Nodes[0].Write || g.Nodes[0].ID != "PR_1" {
 		t.Fatalf("%+v %v", g, err)
+	}
+
+	// A node read may resolve to a repo or to something in one, but not to
+	// a team, which isn't in any repo, or a user, whose repository(name:)
+	// looks one up.
+	g, err = ClassifyGraphQL(gql(`{node(id:"X"){id}}`, nil), nil)
+	if err != nil || len(g.Nodes) != 1 {
+		t.Fatalf("%+v %v", g, err)
+	}
+	r := github.Repo{Owner: "acme", Name: "widgets"}
+	reads := func(github.Repo) (bool, op.Set, bool) { return false, op.Defaults(), true }
+	for typ, want := range map[string]bool{"Repository": true, "Issue": true, "Team": false, "User": false} {
+		if err := CheckNode(g.Nodes[0], Node{Type: typ, Repo: r}, reads); (err == nil) != want {
+			t.Errorf("node read of a %s: %v", typ, err)
+		}
 	}
 }
 
@@ -99,6 +114,7 @@ func TestGraphQLOps(t *testing.T) {
 		{"submit approve", gql(`mutation{submitPullRequestReview(input:{pullRequestReviewId:"X",event:APPROVE}){clientMutationId}}`, nil), []op.Op{op.ReviewComment, op.ReviewVerdict}},
 		{"labels on create", gql(`mutation{createIssue(input:{repositoryId:"R",title:"t",labelIds:["L"]}){clientMutationId}}`, nil), []op.Op{op.IssueCreate, op.Labels}},
 		{"assign on edit", gql(`mutation{updatePullRequest(input:{pullRequestId:"X",assigneeIds:["U"]}){clientMutationId}}`, nil), []op.Op{op.PREdit, op.Assign}},
+		{"assign and label on edit", gql(`mutation{updateIssue(input:{id:"X",assigneeIds:["U"],labelIds:["L"]}){clientMutationId}}`, nil), []op.Op{op.IssueEdit, op.Assign, op.Labels}},
 		{"auto-merge", gql(`mutation{enablePullRequestAutoMerge(input:{pullRequestId:"X",mergeMethod:SQUASH}){clientMutationId}}`, nil), []op.Op{op.PRMerge}},
 		{"merge queue", gql(`mutation{enqueuePullRequest(input:{pullRequestId:"X"}){clientMutationId}}`, nil), []op.Op{op.PRMerge}},
 		{"add labels", gql(`mutation{addLabelsToLabelable(input:{labelableId:"X",labelIds:["L"]}){clientMutationId}}`, nil), []op.Op{op.Labels}},

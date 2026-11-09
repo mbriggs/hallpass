@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -20,6 +21,7 @@ func TestRESTReadsStayInRepo(t *testing.T) {
 		"/repos/acme/widgets/git/trees/abc1234":                 "full SHA",
 		"/repos/acme/widgets/git/commits/abcdef12":              "full SHA",
 		"/repos/acme/widgets/git/blobs/abcd":                    "full SHA",
+		"/repos/acme/widgets/git/tags/abcd123":                  "full SHA",
 		"/repos/acme/widgets/contents/README.md?ref=abc1234":    "full SHA",
 		"/repos/acme/widgets/commits?sha=abc1234":               "full SHA",
 		"/repos/acme/widgets/commits/abc1234~0":                 "full SHA",
@@ -79,6 +81,21 @@ func TestRESTStripsCloneTokens(t *testing.T) {
 }
 
 func TestGraphQLReadsStayInRepo(t *testing.T) {
+	ids := func(n int) map[string]any {
+		var l []any
+		for i := range n {
+			l = append(l, fmt.Sprintf("I_%d", i))
+		}
+		return map[string]any{"ids": l}
+	}
+	// Each fragment spreads the next, one level deeper.
+	var spreads strings.Builder
+	spreads.WriteString("{...F0}")
+	for i := range maxDepth + 1 {
+		fmt.Fprintf(&spreads, " fragment F%d on Query{...F%d}", i, i+1)
+	}
+	fmt.Fprintf(&spreads, " fragment F%d on Query{viewer{login}}", maxDepth+1)
+
 	refused := map[string]struct {
 		body []byte
 		want string
@@ -103,6 +120,19 @@ func TestGraphQLReadsStayInRepo(t *testing.T) {
 		"linked issue's repo issues":      {gql(`{repository(owner:"acme",name:"widgets"){issue(number:1){parent{repository{issues(first:1){nodes{body}}}}}}}`, nil), "Repository.issues"},
 		"linked issue's repo code":        {gql(`{repository(owner:"acme",name:"widgets"){issue(number:1){parent{repository{object(expression:"HEAD:README"){id}}}}}}`, nil), "Repository.object"},
 		"viewer's repo by name":           {gql(`{viewer{repository(name:"secret"){defaultBranchRef{name}}}}`, nil), "User.repository"},
+		"parent's default branch commit":  {gql(`{repository(owner:"acme",name:"widgets"){parent{defaultBranchRef{target{id}}}}}`, nil), "Ref.target"},
+		"collaborators' permissions":      {gql(`{repository(owner:"acme",name:"widgets"){collaborators(first:5){edges{permissionSources{organization{login}}}}}}`, nil), "RepositoryCollaboratorEdge.permissionSources"},
+		"101 node IDs":                    {gql(`query($ids:[ID!]!){nodes(ids:$ids){id}}`, ids(101)), "1 to 100 IDs"},
+		"empty node ID":                   {gql(`{node(id:""){id}}`, nil), "string IDs"},
+		"refused field in a fragment":     {gql(`{...F} fragment F on Query{repository(owner:"acme",name:"widgets"){tempCloneToken}}`, nil), "Repository.tempCloneToken"},
+		"deferred fragment":               {gql(`{viewer{... @defer {login}}}`, nil), "@defer"},
+		"too many fields":                 {gql(`{repository(owner:"acme",name:"widgets"){`+strings.Repeat("name ", maxFields)+`}}`, nil), "too many fields"},
+		"deep fields":                     {gql(`{repository(owner:"acme",name:"widgets"){object(expression:"main"){... on Commit{`+strings.Repeat("parents(first:1){nodes{", maxDepth)+"oid"+strings.Repeat("}}", maxDepth)+`}}}}`, nil), "nested too deeply"},
+		"deep inline fragments":           {gql(`{`+strings.Repeat("... on Query{", maxDepth+1)+"viewer{login}"+strings.Repeat("}", maxDepth+1)+`}`, nil), "nested too deeply"},
+		"deep fragment spreads":           {gql(spreads.String(), nil), "nested too deeply"},
+		"search with AND":                 {gql(`query($q:String!){search(query:$q,type:ISSUE,first:5){issueCount}}`, map[string]any{"q": "repo:acme/widgets bug AND feature"}), "boolean operators"},
+		"fractional Int variable":         {gql(`query($n:Int!){repository(owner:"acme",name:"widgets"){issues(first:$n){totalCount}}}`, map[string]any{"n": 1.5}), "cannot use float64 as Int"},
+		"batch":                           {[]byte(`[{"query":"{viewer{login}}"}]`), "one JSON object"},
 	}
 	for name, c := range refused {
 		_, err := ClassifyGraphQL(c.body, nil)
@@ -123,6 +153,8 @@ func TestGraphQLReadsStayInRepo(t *testing.T) {
 		"strict checks":                   {gql(`{repository(owner:"acme",name:"widgets"){pullRequest(number:1){baseRef{branchProtectionRule{requiresStrictStatusChecks}}}}}`, nil), "requiresStrictStatusChecks", ""},
 		"full SHA object":                 {gql(`{repository(owner:"acme",name:"widgets"){object(expression:"`+sha+`:README.md"){id}}}`, nil), sha, ""},
 		"branch object":                   {gql(`{repository(owner:"acme",name:"widgets"){object(expression:"main:README.md"){id}}}`, nil), "main:README.md", ""},
+		"100 node IDs":                    {gql(`query($ids:[ID!]!){nodes(ids:$ids){id}}`, ids(100)), "I_99", ""},
+		"assignees' edges and pages":      {gql(`{repository(owner:"acme",name:"widgets"){pullRequest(number:1){assignees(first:5){edges{node{login}} pageInfo{hasNextPage}}}}}`, nil), "pageInfo", ""},
 	}
 	for name, c := range allowed {
 		g, err := ClassifyGraphQL(c.body, nil)

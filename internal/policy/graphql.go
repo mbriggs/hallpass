@@ -53,12 +53,6 @@ func queryRules() *rules.Rules {
 	return rulesSet
 }
 
-// RepoUse is a repo a request names directly.
-type RepoUse struct {
-	Repo  github.Repo
-	Write bool
-}
-
 // NodeUse is a node ID a request names. The broker resolves it, then checks
 // it with Check.
 type NodeUse struct {
@@ -87,8 +81,10 @@ type GraphQL struct {
 	Mutation bool
 	// Fields names the root fields, for the audit log.
 	Fields []string
-	Repos  []RepoUse
-	Nodes  []NodeUse
+	// Repos are the repos a read names directly. Writes name what they
+	// change by node ID.
+	Repos []github.Repo
+	Nodes []NodeUse
 	// Body is the request to send GitHub: the checked document printed from
 	// the broker's own parse, and the coerced variables.
 	Body []byte
@@ -197,7 +193,7 @@ func (w *walker) queryRoot(set ast.SelectionSet) error {
 			if err := noRenames(f); err != nil {
 				return err
 			}
-			w.g.Repos = append(w.g.Repos, RepoUse{Repo: r})
+			w.g.Repos = append(w.g.Repos, r)
 			return w.selections(f, full, 1)
 		case "node", "nodes":
 			ids := args["ids"]
@@ -228,7 +224,7 @@ func (w *walker) queryRoot(set ast.SelectionSet) error {
 			if err != nil {
 				return err
 			}
-			w.g.Repos = append(w.g.Repos, RepoUse{Repo: r})
+			w.g.Repos = append(w.g.Repos, r)
 			return w.selections(f, full, 1)
 		}
 		return errorf("hallpass doesn't allow the GraphQL query field %s", f.Name)
@@ -411,12 +407,6 @@ func (w *walker) edgeView(v view, owner, field string, child *ast.Definition, lo
 		if (field == "owner" || field == "organization" || field == "repository") && !isConnection(child) && !lookup {
 			return identity, nil
 		}
-		// The repo an object is in, whose name is already in the object's
-		// url. User.repository(name:) and the like take arguments: they look
-		// up any repo, so they stay refused.
-		if field == "repository" && !isConnection(child) && len(w.schema.Types[owner].Fields.ForName(field).Arguments) == 0 {
-			return identity, nil
-		}
 		// The default branch's name, for gh pr create on a fork. Its
 		// target and history are a further hop, which this refuses.
 		if owner == "Repository" && field == "defaultBranchRef" {
@@ -511,12 +501,14 @@ func (w *walker) possible(d *ast.Definition) []string {
 var contentOnce sync.Once
 var contentTypes []string
 
-// repoContentTypes lists every object type with a repository field: what a
-// node ID in a read may resolve to.
+// repoContentTypes lists every object type that's in a repo: what a node
+// ID in a read may resolve to. A repository field that takes arguments,
+// like User.repository(name:), looks up any repo, so it doesn't count.
 func repoContentTypes(s *ast.Schema) []string {
 	contentOnce.Do(func() {
 		for name, t := range s.Types {
-			if t.Kind == ast.Object && (name == "Repository" || t.Fields.ForName("repository") != nil) {
+			f := t.Fields.ForName("repository")
+			if t.Kind == ast.Object && (name == "Repository" || f != nil && len(f.Arguments) == 0) {
 				contentTypes = append(contentTypes, name)
 			}
 		}

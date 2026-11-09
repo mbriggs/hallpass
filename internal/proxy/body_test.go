@@ -6,8 +6,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,5 +50,32 @@ func TestBodyThatNeverArrives(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusRequestTimeout {
 		t.Errorf("status %d, want 408", resp.StatusCode)
+	}
+}
+
+// A body of up to 4 MiB reaches GitHub whole, with the default bodyWait.
+// One byte more is refused, not cut short.
+func TestBodySizeLimit(t *testing.T) {
+	t.Parallel()
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		io.WriteString(w, `{"number":2}`)
+	}))
+	t.Cleanup(up.Close)
+	client := ghClient(t, up.URL, config.Repo{Match: "acme/widgets"})
+	for size, want := range map[int]int{4 << 20: 201, 4<<20 + 1: 413} {
+		pre := `{"title":"t","head":"b","base":"main","body":"`
+		body := pre + strings.Repeat("x", size-len(pre)-2) + `"}`
+		req, _ := http.NewRequest(http.MethodPost, "http://api.github.com/repos/acme/widgets/pulls", strings.NewReader(body))
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		msg, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Errorf("%d-byte body: %d %s", size, resp.StatusCode, msg)
+		}
 	}
 }
