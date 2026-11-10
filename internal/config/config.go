@@ -67,6 +67,9 @@ type Config struct {
 	// ProtectedBranches can't be pushed by agents in any repo, on top of
 	// each repo's default branch. A trailing "/*" matches a prefix.
 	ProtectedBranches []string `toml:"protected_branches"`
+	// ProtectedPaths are files and directories agents can't change in any
+	// repo, on top of policy.Guarded. Each repo entry can add more.
+	ProtectedPaths []string `toml:"protected_paths,omitempty"`
 	// Allow and Deny change which operations agents may do, and what they
 	// may read, in every repo. A repo entry's own lists override these.
 	Allow []Grant `toml:"allow,omitempty"`
@@ -114,6 +117,8 @@ type Repo struct {
 	// covers. An exact entry's lists override an "owner/*" entry's.
 	Allow []Grant `toml:"allow,omitempty"`
 	Deny  []Grant `toml:"deny,omitempty"`
+	// ProtectedPaths add to the global ones for the repos this entry covers.
+	ProtectedPaths []string `toml:"protected_paths,omitempty"`
 }
 
 // Grant is one entry of an allow or deny list:
@@ -161,6 +166,8 @@ type Rule struct {
 	Write bool
 	// Ops is what agents may do there, when Write is set.
 	Ops op.Set
+	// Paths are the config's protected paths there, from every layer.
+	Paths []string
 }
 
 // Decision is whether agents may do one operation in a repo, and which
@@ -188,7 +195,35 @@ func (c *Config) Allowed(repo github.Repo) (Rule, bool) {
 			ops[d.Op] = true
 		}
 	}
-	return Rule{Write: best.Access != "read", Ops: ops}, true
+	var paths []string
+	for _, l := range c.PathLayers(repo) {
+		paths = append(paths, l.Paths...)
+	}
+	return Rule{Write: best.Access != "read", Ops: ops, Paths: paths}, true
+}
+
+// PathLayer is the protected paths one layer of the config adds: "global",
+// or an entry's match.
+type PathLayer struct {
+	From  string
+	Paths []string
+}
+
+// PathLayers lists the layers that protect paths in repo. Every layer
+// adds to the ones before it, and none removes a path, so a narrower entry
+// can't open what a broader one protects.
+func (c *Config) PathLayers(repo github.Repo) []PathLayer {
+	var ls []PathLayer
+	if len(c.ProtectedPaths) > 0 {
+		ls = append(ls, PathLayer{"global", c.ProtectedPaths})
+	}
+	wild, exact := c.entries(repo)
+	for _, e := range []*Repo{wild, exact} {
+		if e != nil && len(e.ProtectedPaths) > 0 {
+			ls = append(ls, PathLayer{e.Match, e.ProtectedPaths})
+		}
+	}
+	return ls
 }
 
 // Anonymous reports whether the broker may send a read it doesn't cover to
@@ -308,7 +343,18 @@ func (c *Config) Validate() error {
 	if err := checkGrants("global", c.Allow, c.Deny, true); err != nil {
 		return err
 	}
+	if err := checkPaths("protected_paths", c.ProtectedPaths); err != nil {
+		return err
+	}
+	seen := map[string]bool{}
 	for _, r := range c.Repos {
+		// Only one entry per match takes effect, so a second would hold
+		// policy and protected paths that silently don't apply.
+		key := strings.ToLower(r.Match)
+		if seen[key] {
+			return fmt.Errorf("repo match %q appears twice; merge the entries", r.Match)
+		}
+		seen[key] = true
 		owner, name, ok := strings.Cut(r.Match, "/")
 		if !ok {
 			return fmt.Errorf("repo match %q: want owner/name or owner/*", r.Match)
@@ -324,6 +370,38 @@ func (c *Config) Validate() error {
 		}
 		if err := checkGrants("repo "+r.Match, r.Allow, r.Deny, false); err != nil {
 			return err
+		}
+		if err := checkPaths("repo "+r.Match+": protected_paths", r.ProtectedPaths); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkPaths refuses protected paths the check can't read as one file or
+// directory from the repo's root.
+func checkPaths(layer string, paths []string) error {
+	for _, p := range paths {
+		why := ""
+		switch {
+		case p == "":
+			why = "is empty"
+		case strings.HasPrefix(p, "/") || strings.HasSuffix(p, "/"):
+			why = "starts or ends with /; write it from the repo's root, like scripts/deploy.sh"
+		case strings.ContainsAny(p, "*?["):
+			why = "has a pattern character; name a file or directory, which covers everything under it"
+		case strings.ContainsRune(p, '\\'):
+			why = "has a backslash; separate directories with /"
+		case strings.ContainsFunc(p, func(r rune) bool { return r < ' ' || r == 0x7f }):
+			why = "has a control character"
+		}
+		for seg := range strings.SplitSeq(p, "/") {
+			if why == "" && (seg == "" || seg == "." || seg == "..") {
+				why = "has an empty, . or .. part"
+			}
+		}
+		if why != "" {
+			return fmt.Errorf("%s: %q %s", layer, p, why)
 		}
 	}
 	return nil

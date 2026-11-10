@@ -13,6 +13,7 @@ import (
 	"github.com/mbriggs/hallpass/internal/config"
 	"github.com/mbriggs/hallpass/internal/github"
 	"github.com/mbriggs/hallpass/internal/op"
+	"github.com/mbriggs/hallpass/internal/policy"
 	"github.com/mbriggs/hallpass/internal/system"
 	"golang.org/x/term"
 )
@@ -233,6 +234,16 @@ func policyShow(args []string) error {
 		}
 		fmt.Println()
 		fmt.Println("Hard denies, like secrets, settings, and workflow edits, aren't operations or API reads, so no policy allows them.")
+		layers := []config.PathLayer{{From: "built in", Paths: policy.Guarded}}
+		if len(cfg.ProtectedPaths) > 0 {
+			layers = append(layers, config.PathLayer{From: "global", Paths: cfg.ProtectedPaths})
+		}
+		for _, r := range cfg.Repos {
+			if len(r.ProtectedPaths) > 0 {
+				layers = append(layers, config.PathLayer{From: r.Match, Paths: r.ProtectedPaths})
+			}
+		}
+		printProtected(layers)
 		return nil
 	}
 
@@ -274,7 +285,17 @@ func policyShow(args []string) error {
 		fmt.Printf("\nAPI fields, every repo:%s", api)
 	}
 	fmt.Println()
+	printProtected(append([]config.PathLayer{{From: "built in", Paths: policy.Guarded}}, cfg.PathLayers(repo)...))
 	return nil
+}
+
+// printProtected lists the paths agents' pushes can't change, by the layer
+// that protects them.
+func printProtected(layers []config.PathLayer) {
+	fmt.Println("\nPaths agents can't change in a push:")
+	for _, l := range layers {
+		fmt.Printf("  %s: %s\n", l.From, strings.Join(l.Paths, ", "))
+	}
 }
 
 // apiChanges lists a layer's field: and read: grants, like

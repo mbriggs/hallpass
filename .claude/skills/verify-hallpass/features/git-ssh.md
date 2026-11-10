@@ -22,6 +22,8 @@ colleagues' branches, tags, or commits that change `.github/workflows` or
 - `git-push-colleague` refuses updating or deleting `colleague`.
 - `git-push-tag` refuses tag pushes.
 - `git-push-workflow` refuses a push whose commits change `.github/workflows`.
+- `git-push-protected-path` refuses a push that adds a path the config's
+  `protected_paths` names, globally or on the repo's entry.
 - `git-allowlist` refuses `ls-remote` on `acme/secret`.
 - `git-readonly` fetches `acme/readonly` and refuses pushes to it.
 - `git-renamed` refuses a repo's old name when the allowlist doesn't cover
@@ -51,6 +53,11 @@ in order, as one journey in `$S/work`:
   can only delete branches they created`, and `agents can't push tags`.
 - `git-push-workflow`: a commit that changes `.github/workflows` is refused
   with `agents can't change .github/workflows`.
+- `git-push-protected-path`: the scratch config protects
+  `scripts/deploy.sh` globally and `.github/actions` on `acme/widgets`.
+  Adding either is refused with `agents can't change PATH, which
+  protected_paths in hallpass's config names`, and a push adding
+  `scripts/lint.sh` beside it goes through.
 - `git-allowlist`: `ls-remote` on `acme/secret` is refused with `isn't in
   hallpass's allowlist`, and the fake never sees it.
 - `git-readonly`: `ls-remote` on `acme/readonly` lists its branches, and a

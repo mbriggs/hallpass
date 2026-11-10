@@ -44,6 +44,15 @@ feature_ssh() {
   check fail "agents can't change .github/workflows" "printf 'on: push\njobs: {x: {}}\n' > .github/workflows/ci.yml && git commit -qam wf && git push origin HEAD:agent/fix"
   check 0 '' 'git reset -q --hard HEAD~1'
 
+  case_ git-push-protected-path
+  # protected_paths has scripts/deploy.sh for every repo and .github/actions
+  # on acme/widgets. Neither exists on the fake, so adding one is a change.
+  check fail "agents can't change scripts/deploy.sh, which protected_paths in hallpass's config names" "mkdir -p scripts && echo evil > scripts/deploy.sh && git add scripts && git commit -qm deploy && git push origin HEAD:agent/fix"
+  check 0 '' 'git reset -q --hard HEAD~1'
+  check fail "agents can't change .github/actions" "mkdir -p .github/actions/x && echo 'runs: {using: composite}' > .github/actions/x/action.yml && git add .github && git commit -qm action && git push origin HEAD:agent/fix"
+  check 0 '' 'git reset -q --hard HEAD~1'
+  check 0 'HEAD -> agent/fix' "mkdir -p scripts && echo lint > scripts/lint.sh && git add scripts && git commit -qm lint && git push origin HEAD:agent/fix"
+
   case_ git-allowlist
   check fail "isn't in hallpass's allowlist" 'git ls-remote https://github.com/acme/secret'
   fake_lacks acme/secret

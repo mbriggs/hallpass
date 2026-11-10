@@ -188,3 +188,61 @@ func TestAPIGrants(t *testing.T) {
 		}
 	}
 }
+
+// Protected paths add up across layers: a narrower entry adds paths and
+// can't remove one a broader layer protects.
+func TestProtectedPathsAdd(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hallpass.toml")
+	os.WriteFile(path, []byte(`protected_paths = ["scripts/deploy.sh"]
+
+[[repo]]
+match = "acme/*"
+protected_paths = [".github/actions"]
+
+[[repo]]
+match = "acme/widgets"
+protected_paths = ["CODEOWNERS"]
+
+[[repo]]
+match = "mbriggs/*"
+`), 0o644)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for repo, want := range map[string][]string{
+		"acme/widgets": {"scripts/deploy.sh", ".github/actions", "CODEOWNERS"},
+		"acme/gadgets": {"scripts/deploy.sh", ".github/actions"},
+		"mbriggs/dots": {"scripts/deploy.sh"},
+	} {
+		r, _ := github.ParseRepo(repo)
+		if rule, _ := c.Allowed(r); !slices.Equal(rule.Paths, want) {
+			t.Errorf("%s: paths %v, want %v", repo, rule.Paths, want)
+		}
+	}
+}
+
+// A path the check would read some other way than as one file or
+// directory from the root is refused at load.
+func TestProtectedPathsRefused(t *testing.T) {
+	for _, p := range []string{"", "/scripts", "scripts/", "a//b", "./a", "a/../b", "..", ".github/*.yml", "a?", "[ab]", `a\b`, "a\nb"} {
+		for name, c := range map[string]*Config{
+			"global": {ProtectedPaths: []string{p}},
+			"repo":   {Repos: []Repo{{Match: "acme/*", ProtectedPaths: []string{p}}}},
+		} {
+			if err := c.Validate(); err == nil {
+				t.Errorf("%s path %q loaded", name, p)
+			}
+		}
+	}
+	// Only one of two entries for a repo applies, so its paths would be
+	// shown and not enforced.
+	twice := &Config{Repos: []Repo{{Match: "me/app", ProtectedPaths: []string{"deploy"}}, {Match: "Me/App"}}}
+	if err := twice.Validate(); err == nil {
+		t.Error("two entries for one repo loaded")
+	}
+	ok := &Config{ProtectedPaths: []string{"CODEOWNERS", ".github/actions", "scripts/deploy.sh", "a b/c-d_e.f"}}
+	if err := ok.Validate(); err != nil {
+		t.Error(err)
+	}
+}

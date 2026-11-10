@@ -87,10 +87,11 @@ func FuzzReadPack(f *testing.F) {
 }
 
 // Whatever pack an agent sends, a push whose tip changes a workflow is
-// refused. git itself is the oracle: the tip's .github/workflows differs
-// from the base's.
+// refused, and so is one whose tip changes a protected path. git itself is
+// the oracle: the tip's .github/workflows differs from the base's, and the
+// code commit's src/main.go does.
 func FuzzWorkflowChanges(f *testing.F) {
-	r, base, _, evil := fuzzRepo(f)
+	r, base, code, evil := fuzzRepo(f)
 	if r.git("", "rev-parse", evil+":.github/workflows") == r.git("", "rev-parse", base+":.github/workflows") {
 		f.Fatal("the evil commit doesn't change workflows")
 	}
@@ -108,16 +109,24 @@ func FuzzWorkflowChanges(f *testing.F) {
 		}
 		return out, nil
 	}
-	for _, seed := range seedPacks(r, evil, base) {
+	// The Src/ spelling also walks the case-folding match.
+	protected := []string{"Src/main.go", "missing/dir/file"}
+	pushes := []struct {
+		tip       string
+		protected []string
+	}{{evil, nil}, {evil, protected}, {code, protected}}
+	for _, seed := range append(seedPacks(r, evil, base), seedPacks(r, code, base)...) {
 		// Each seed parses, and the check refuses it, so the property
 		// below isn't vacuous.
 		p, err := ReadPack(bytes.NewReader(withTrailer(seed)))
 		if err != nil {
 			f.Fatalf("seed doesn't parse: %v", err)
 		}
-		u := RefUpdate{Old: zeroOID, New: evil, Ref: "refs/heads/agent/x"}
-		if got, err := WorkflowChanges(p, []RefUpdate{u}, base, fetch); err != nil || got[u.Ref] == "" {
-			f.Fatalf("seed push isn't refused: %v %v", got, err)
+		for _, push := range pushes {
+			u := RefUpdate{Old: zeroOID, New: push.tip, Ref: "refs/heads/agent/x"}
+			if got, err := WorkflowChanges(p, []RefUpdate{u}, base, push.protected, fetch); err != nil || got[u.Ref] == "" {
+				f.Fatalf("seed push isn't refused: %v %v", got, err)
+			}
 		}
 		f.Add(seed)
 	}
@@ -126,14 +135,16 @@ func FuzzWorkflowChanges(f *testing.F) {
 		if err != nil {
 			return // refused before the check
 		}
-		for _, old := range []string{zeroOID, base} {
-			u := RefUpdate{Old: old, New: evil, Ref: "refs/heads/agent/x"}
-			refused, err := WorkflowChanges(p, []RefUpdate{u}, base, fetch)
-			if err != nil {
-				continue // the gate refuses the push on an error
-			}
-			if refused[u.Ref] == "" {
-				t.Fatalf("a push of a workflow edit from %s went through", old[:7])
+		for _, push := range pushes {
+			for _, old := range []string{zeroOID, base} {
+				u := RefUpdate{Old: old, New: push.tip, Ref: "refs/heads/agent/x"}
+				refused, err := WorkflowChanges(p, []RefUpdate{u}, base, push.protected, fetch)
+				if err != nil {
+					continue // the gate refuses the push on an error
+				}
+				if refused[u.Ref] == "" {
+					t.Fatalf("a push of %s from %s, protecting %v, went through", push.tip[:7], old[:7], push.protected)
+				}
 			}
 		}
 	})

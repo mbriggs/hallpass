@@ -59,7 +59,8 @@ both processes. It prints the scratch dir once the broker logs
 `msg=serving` with `token=true ssh=true signing=true`, and fails loudly
 otherwise. The allowlist is `acme/widgets` (write), `acme/readonly` (read),
 and `acme/gadgets`, which the fake answers as widgets's old name. The config
-also sets `protected_branches = ["release/*"]`.
+also sets `protected_branches = ["release/*"]`, and `protected_paths`:
+`scripts/deploy.sh` globally and `.github/actions` on `acme/widgets`.
 
 `$S/env` is what points git and gh at the scratch broker. It sets
 `HALLPASS_RUN_DIR`, puts `$S/bin` first on PATH, sets

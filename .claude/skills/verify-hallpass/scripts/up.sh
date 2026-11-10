@@ -86,10 +86,12 @@ ssh_host_key=$(sed -n 2p "$S/fake.ssh")
 url=$(cat "$S/fake.url")
 
 # The broker's config. protected_branches gives the protected-branch
-# refusal something to hit.
+# refusal something to hit, and protected_paths, global and on
+# acme/widgets, the protected-path refusals.
 cat > "$S/hallpass.toml" <<EOF
 uids = [$(id -u)]
 protected_branches = ["release/*"]
+protected_paths = ["scripts/deploy.sh"]
 api_url = "$url/api"
 ssh_addr = "$ssh_addr"
 ssh_host_keys = ["$ssh_host_key"]
@@ -110,6 +112,7 @@ public = "$(cat "$S/keys/signing.pub")"
 
 [[repo]]
 match = "acme/widgets"
+protected_paths = [".github/actions"]
 
 [[repo]]
 match = "acme/readonly"
