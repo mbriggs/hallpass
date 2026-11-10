@@ -154,6 +154,10 @@ func (e exitStatusError) Error() string { return fmt.Sprintf("exit status %d", i
 func serve(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	cfgPath := fs.String("config", config.Path, "config file")
+	// Whoever starts serve picks its state dir, as with --config. The
+	// installed broker's command line is in its root-owned service unit,
+	// which never sets it, so the ledger commands find the same file.
+	stateDir := fs.String("state-dir", config.StateDir(), "directory for the branch ledger and the push spool")
 	fs.Parse(args)
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -195,10 +199,9 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
-	spoolDir := cfg.SpoolDir
-	if spoolDir == "" {
-		spoolDir = config.SpoolDir()
-	}
+	// The spool is in the state dir because the Linux unit lets the broker
+	// write only there, and its private /tmp may be memory.
+	spoolDir := *stateDir + "/spool"
 	spool, err := sshgate.OpenSpool(spoolDir, sshgate.MaxSpool)
 	if err != nil {
 		log.Error("push spool didn't open; pushes that carry commits will be refused", "dir", spoolDir, "err", err)
@@ -206,7 +209,7 @@ func serve(args []string) error {
 	gate := &sshgate.Server{
 		Config:    cfg,
 		Signer:    creds.SSH,
-		Ledger:    sshgate.OpenLedger(config.StateDir() + "/branches.jsonl"),
+		Ledger:    sshgate.OpenLedger(*stateDir + "/branches.jsonl"),
 		Spool:     spool,
 		Log:       log,
 		Permitted: ctl.Permitted,

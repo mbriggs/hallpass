@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Start a scratch hallpass broker, as you, against a fake GitHub. Nothing
-# here touches /etc/hallpass, /run/hallpass, the live broker, or github.com.
+# here touches /etc/hallpass, /run/hallpass, the live state dir, the live
+# broker, or github.com.
 #
 #   up.sh [SCRATCH_DIR]     default: a new /tmp/hallpass-verify.XXXXXX, or in a
 #                           lane /tmp/hallpass-verify-lane<n>.XXXXXX, which the
@@ -21,8 +22,8 @@ if [ -e "$S/broker.pid" ] && kill -0 "$(cat "$S/broker.pid")" 2>/dev/null; then
   echo "up.sh: a broker from $S is already running; run down.sh $S first" >&2
   exit 1
 fi
-mkdir -p "$S"/{bin,run,gh,gh-root,evidence,keys}
-chmod 700 "$S/keys"
+mkdir -p "$S"/{bin,run,state,gh,gh-root,evidence,keys}
+chmod 700 "$S/keys" "$S/state"
 
 # The binary under test: the checkout, built the way the Makefile builds it.
 make -C "$repo" -s build
@@ -85,15 +86,13 @@ ssh_host_key=$(sed -n 2p "$S/fake.ssh")
 url=$(cat "$S/fake.url")
 
 # The broker's config. protected_branches gives the protected-branch
-# refusal something to hit. spool_dir holds pushed packs, since the scratch
-# broker can't write the state dir.
+# refusal something to hit.
 cat > "$S/hallpass.toml" <<EOF
 uids = [$(id -u)]
 protected_branches = ["release/*"]
 api_url = "$url/api"
 ssh_addr = "$ssh_addr"
 ssh_host_keys = ["$ssh_host_key"]
-spool_dir = "$S/spool"
 
 [token]
 secret = "$backend:$S/keys/broker/token"
@@ -127,8 +126,9 @@ match = "acme/gadgets"
 match = "acme/gizmos"
 EOF
 
-# The broker. HALLPASS_RUN_DIR moves its sockets into the scratch dir.
-nohup env HALLPASS_RUN_DIR="$S/run" "$S/bin/hallpass" serve --config "$S/hallpass.toml" > "$S/evidence/broker.log" 2>&1 &
+# The broker. HALLPASS_RUN_DIR moves its sockets into the scratch dir, and
+# --state-dir its branch ledger and push spool.
+nohup env HALLPASS_RUN_DIR="$S/run" "$S/bin/hallpass" serve --config "$S/hallpass.toml" --state-dir "$S/state" > "$S/evidence/broker.log" 2>&1 &
 echo $! > "$S/broker.pid"
 for _ in $(seq 50); do grep -q 'msg=serving' "$S/evidence/broker.log" 2>/dev/null && break; sleep 0.1; done
 grep -q 'msg=serving token=true ssh=true signing=true' "$S/evidence/broker.log" || {

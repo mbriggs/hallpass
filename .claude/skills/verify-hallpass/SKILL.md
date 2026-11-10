@@ -11,8 +11,10 @@ the gh socket, `git` through the SSH socket, and `hallpass status` /
 
 Verification runs a second broker, not the installed one:
 
-- `serve --config FILE` reads a config you write, and `HALLPASS_RUN_DIR`
-  moves all three sockets. The broker runs as you, with no root.
+- `serve --config FILE` reads a config you write, `HALLPASS_RUN_DIR`
+  moves all three sockets, and `--state-dir $S/state` holds the branch
+  ledger and the push spool, so the scratch broker never opens the live state dir. The broker
+  runs as you, with no root.
 - The config's `api_url`, `ssh_addr`, and `ssh_host_keys` point it at
   `scripts/fakegithub`, a local server with canned REST/GraphQL answers for
   `acme/widgets` and an SSH server that runs real `git-upload-pack` and
@@ -82,9 +84,7 @@ name `$S`, that all three sockets exist, that the broker binary matches
 `bin/hallpass`, and that the fake refuses requests without the token. It
 then runs `hallpass status --check` and checks `broker.log` for
 `level=ERROR`. Exit 0 means it's worth driving. Run it first whenever
-anything looks off. After an agent branch push it fails on `level=ERROR`
-because the scratch broker can't write the branch ledger. That failure
-alone isn't a fault; see `features/git-ssh.md`.
+anything looks off.
 
 To check the live install without changing it: `/opt/hallpass/bin/hallpass
 status` (no `--check` unless the user asks; `--check` calls real GitHub).
@@ -102,7 +102,8 @@ Each case prints its command, output, and exit, then `ok` or `FAIL` against
 the expected exit and text, and against the fake's request log and
 `broker.log` where that matters. It writes everything to
 `$S/evidence/transcript.txt`, ends with `#### N failed`, and exits 1 if any
-check failed. It refuses to run unless gh is the plain binary pointed at
+check failed. Every run also checks that `broker.log` has no `ledger write
+failed` line. It refuses to run unless gh is the plain binary pointed at
 `$S/gh`. `features/README.md` maps each feature to a file that says what
 each case proves.
 

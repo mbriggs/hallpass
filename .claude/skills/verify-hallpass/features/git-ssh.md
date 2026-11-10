@@ -15,6 +15,8 @@ colleagues' branches, tags, or commits that change `.github/workflows` or
   `ssh://git@github.com/` URLs.
 - `git-push-new` pushes a new agent branch, and the broker records it in its ledger.
 - `git-push-own` force-pushes and deletes a branch the agent created.
+- `git-push-after-restart` force-pushes that branch again after a broker
+  restart, from the ledger in `$S/state`.
 - `git-push-default` refuses pushes to `main`.
 - `git-push-protected` refuses pushes to `release/*`.
 - `git-push-colleague` refuses updating or deleting `colleague`.
@@ -40,6 +42,9 @@ in order, as one journey in `$S/work`:
 - `git-push-new`: pushes `agent/fix` as a new branch, `broker.log` records
   `refs=[refs/heads/agent/fix]`, and the fake gains the branch.
 - `git-push-own`: amends and force-pushes `agent/fix`.
+- `git-push-after-restart`: `$S/state/branches.jsonl` records `agent/fix`,
+  the broker restarts, and another amend and force-push of `agent/fix`
+  succeeds.
 - `git-push-default`, `git-push-protected`, `git-push-colleague`,
   `git-push-tag`: refused with `main is the default branch`, `release/1 is
   protected`, `agents can only update branches they created` and `agents
@@ -84,20 +89,18 @@ with `up.sh` before running `ssh` again.
   delete-only push logs one.
 - The current-name check sends `GET /api/repos/OWNER/REPO` on every git
   command, uncached, so the fake logs one per clone, `ls-remote`, and push.
-- The ledger file is fixed at `branches.jsonl` in the state dir
-  (`/var/lib/hallpass` on Linux, `/var/db/hallpass` on macOS), which the
-  scratch broker can't write. The broker records each push in memory and
-  logs `msg="ledger write failed; after a restart agents can't update this branch"`
-  at `level=ERROR` with `err="open <state dir>/branches.jsonl: permission denied"`.
-  Own-branch updates work until the broker restarts, and doctor's
-  `level=ERROR` check fails from then on. The push.default restart loses
-  the record of `agent/fix`, so run push.default after the main journey.
-- A pushed pack waits on disk while the broker checks it, in `spool/` in
-  the state dir, or `spool_dir` in the config. `up.sh` sets it to
-  `$S/spool`. The broker unlinks each file as soon as it makes it, so the
-  directory looks empty even mid-push. A broker that can't open the spool
-  logs `msg="push spool didn't open; pushes that carry commits will be refused"`
-  and refuses every push with a pack.
+- The scratch broker keeps its state in `$S/state`, from `serve
+  --state-dir`: the ledger in `branches.jsonl` and pushed packs in
+  `spool/`. Without the flag it would use the live state dir
+  (`/var/lib/hallpass` on Linux, `/var/db/hallpass` on macOS), fail to
+  write it, and log `msg="ledger write failed; after a restart agents
+  can't update this branch"`. `drive.sh` fails any run whose `broker.log`
+  has that line.
+- A pushed pack waits in the spool while the broker checks it. The broker
+  unlinks each file as soon as it makes it, so the directory looks empty
+  even mid-push. A broker that can't open the spool logs `msg="push spool
+  didn't open; pushes that carry commits will be refused"` and refuses
+  every push with a pack.
 - An agent may update a branch only from the tip it last pushed. If
   anything else moves the branch, the push is refused with
   `<branch> has changed since an agent last pushed it`. The fix it names,
