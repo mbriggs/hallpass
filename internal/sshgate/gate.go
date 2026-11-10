@@ -51,10 +51,16 @@ type Server struct {
 	// covers the new name too. Nil, as on a machine with no token, skips
 	// the check.
 	CurrentName func(context.Context, github.Repo) (github.Repo, error)
+	// GitURL is where the gate fetches repos outside the allowlist, without
+	// a credential. It defaults to DefaultGitURL; tests point it at a local
+	// server.
+	GitURL string
 
 	limits limits
 	// checks holds a slot for each push the gate is checking.
 	checks chan struct{}
+	// anonymous holds a slot for each fetch without a credential.
+	anonymous chan struct{}
 
 	mu sync.Mutex
 	// last is the address the last connection reached, tried first next
@@ -77,14 +83,16 @@ const (
 // long a client has to send its header, and how long a connection may go
 // with nothing moving in either direction. It also bounds how many pushes
 // the gate checks at once, since each check can hold about 2 GB, and how
-// long a push waits for its turn. Zero fields take the defaults; tests set
-// tighter ones.
+// long a push waits for its turn, and how many of the connections may be
+// fetches without a credential, so those leave room for the allowlist's
+// repos. Zero fields take the defaults; tests set tighter ones.
 type limits struct {
 	conns      int
 	headerWait time.Duration
 	idle       time.Duration
 	checks     int
 	checkWait  time.Duration
+	anonymous  int
 }
 
 func (l limits) withDefaults() limits {
@@ -103,6 +111,9 @@ func (l limits) withDefaults() limits {
 	if l.checkWait == 0 {
 		l.checkWait = 2 * time.Minute
 	}
+	if l.anonymous == 0 {
+		l.anonymous = 16
+	}
 	return l
 }
 
@@ -110,6 +121,7 @@ func (s *Server) Serve(ln net.Listener) error {
 	lim := s.limits.withDefaults()
 	slots := make(chan struct{}, lim.conns)
 	s.checks = make(chan struct{}, lim.checks)
+	s.anonymous = make(chan struct{}, lim.anonymous)
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -240,6 +252,10 @@ func (s *Server) handle(conn net.Conn, lim limits) {
 		return rule, ""
 	}
 	rule, why := check(repo)
+	if _, listed := s.Config.Allowed(repo); !listed && !write && s.Config.Anonymous(&repo) {
+		s.serveAnonymous(repo, h.GitProtocol, why, in, o, log, fail, lim.idle)
+		return
+	}
 	switch {
 	case why != "":
 		fail(why)
@@ -315,6 +331,35 @@ func (s *Server) handle(conn net.Conn, lim limits) {
 	}
 	_ = o.frame(FrameExit, []byte{code})
 	log.Info("allowed", "exit", code)
+}
+
+// serveAnonymous serves a fetch of a repo the allowlist doesn't cover,
+// without a credential. why is the allowlist's refusal.
+func (s *Server) serveAnonymous(repo github.Repo, gitProtocol, why string, in *bufio.Reader, o *out, log *slog.Logger, fail func(string, ...any), idle time.Duration) {
+	if !wantsV2(gitProtocol) {
+		fail("hallpass fetches repos outside the allowlist without a credential only over git protocol v2, and this git asked for an older one. Run it with git -c protocol.version=2. " + why)
+		return
+	}
+	select {
+	case s.anonymous <- struct{}{}:
+		defer func() { <-s.anonymous }()
+	default:
+		fail("the broker is handling too many fetches without a credential; try again")
+		return
+	}
+	now, err := s.fetchAnonymous(repo, why, in, o.writer(FrameStdout), idle)
+	log = log.With("anonymous", true)
+	if now != repo {
+		log = log.With("now", now.String())
+	}
+	if err != nil {
+		log.Warn("refused", "reason", err.Error())
+		_ = o.frame(FrameStderr, []byte("hallpass: "+err.Error()+"\n"))
+		_ = o.frame(FrameExit, []byte{1})
+		return
+	}
+	_ = o.frame(FrameExit, []byte{0})
+	log.Info("allowed", "exit", 0)
 }
 
 // relayPush runs a receive-pack exchange, checking the push before any of it

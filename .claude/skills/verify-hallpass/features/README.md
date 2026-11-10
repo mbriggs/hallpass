@@ -14,7 +14,13 @@ allowlisted, and the fake answers it as the old name of `acme/private`,
 which isn't, so git under it is refused. `acme/secret` isn't on the
 allowlist, and the fake answers it 401 without the token.
 `octo/public` isn't either, and the fake shows it to anyone, as GitHub does
-a public repo.
+a public repo, over the API and over git's smart HTTP, where real
+`git http-backend` serves a bare repo with commits `one` and `two`.
+`acme/private` is a bare copy of widgets outside the allowlist: the fake's
+SSH would serve it to the broker's key, and its smart HTTP answers it, and
+every other repo, 401. On smart HTTP, `octo/old` redirects to
+`octo/public`, `octo/away` redirects to another host, and `octo/busy`
+answers 429.
 
 ## Driving conventions
 

@@ -24,7 +24,19 @@ colleagues' branches, tags, or commits that change `.github/workflows` or
 - `git-push-workflow` refuses a push whose commits change `.github/workflows`.
 - `git-push-protected-path` refuses a push that adds a path the config's
   `protected_paths` names, globally or on the repo's entry.
-- `git-allowlist` refuses `ls-remote` on `acme/secret`.
+- `git-allowlist` refuses `ls-remote` on `acme/secret`, after GitHub's
+  smart HTTP answers it 401 without a credential.
+- `git-anonymous-private` refuses a clone of `acme/private`, and nothing
+  of it reaches git.
+- `git-anonymous-clone` clones, fetches, shallow-clones, and partially
+  clones `octo/public` without a credential.
+- `git-anonymous-push` refuses a push to `octo/public`.
+- `git-anonymous-renamed` follows `octo/old`'s redirect to `octo/public`.
+- `git-anonymous-other-host` doesn't follow `octo/away`'s redirect.
+- `git-anonymous-throttled` says when GitHub rate limits.
+- `git-anonymous-v0` refuses a fetch outside the allowlist over protocol v0.
+- `git-anonymous-denied` refuses `octo/public` when the policy denies
+  `anonymous`, and still fetches `acme/widgets` with the key.
 - `git-readonly` fetches `acme/readonly` and refuses pushes to it.
 - `git-renamed` refuses a repo's old name when the allowlist doesn't cover
   the new one.
@@ -58,8 +70,38 @@ in order, as one journey in `$S/work`:
   Adding either is refused with `agents can't change PATH, which
   protected_paths in hallpass's config names`, and a push adding
   `scripts/lint.sh` beside it goes through.
-- `git-allowlist`: `ls-remote` on `acme/secret` is refused with `isn't in
-  hallpass's allowlist`, and the fake never sees it.
+- `git-allowlist`: `ls-remote` on `acme/secret` is refused with `Without a
+  token, GitHub answered 401 Unauthorized. acme/secret isn't in hallpass's
+  allowlist`. The fake sees `GET /acme/secret.git/info/refs` with auth
+  `none` and status 401, and no SSH for it. `broker.log` has
+  `anonymous=true`.
+- `git-anonymous-private`: a clone of `acme/private` is refused with the
+  same 401, no `README` reaches the clone, and the fake sees neither SSH
+  for `acme/private.git` nor a POST to its `git-upload-pack`.
+- `git-anonymous-clone`: `octo/public` clones, and its `README` says
+  `public`. The fake sees `GET /octo/public.git/info/refs` and `POST
+  /octo/public.git/git-upload-pack` with auth `none`, no SSH for the repo,
+  and no `wrong` auth. `broker.log` has `repo=octo/public op=upload-pack
+  anonymous=true exit=0`. A fetch in the clone works, a `--depth 1` clone
+  has one commit, and a `--filter=blob:none` clone checks out `second`,
+  which needs the lazy fetch of its blob to go through too.
+- `git-anonymous-push`: a push from that clone is refused with `octo/public
+  isn't in hallpass's allowlist`, and the fake sees no `receive-pack`.
+- `git-anonymous-renamed`: `ls-remote` on `octo/old` lists `main`, the fake
+  sees the POST under `octo/public`, and `broker.log` has `anonymous=true
+  now=octo/public`.
+- `git-anonymous-other-host`: `octo/away` is refused with `GitHub
+  redirected somewhere hallpass doesn't follow`, and the fake never sees
+  the redirect's target, `/away-target`.
+- `git-anonymous-throttled`: `octo/busy` is refused with `GitHub is
+  limiting git without a token from this machine's address (429 Too Many
+  Requests); try again later.`
+- `git-anonymous-v0`: `git -c protocol.version=0 ls-remote` on `octo/public`
+  is refused with `only over git protocol v2`, before the fake sees it.
+- `git-anonymous-denied`: with `deny = ["anonymous"]` in the config and the
+  broker restarted, `octo/public` gets the plain allowlist refusal and the
+  fake never sees it, while `acme/widgets` still lists over SSH with
+  `key-ok`. The case puts the config back and restarts the broker.
 - `git-readonly`: `ls-remote` on `acme/readonly` lists its branches, and a
   push there is refused with `agents may only read acme/readonly`.
 - `git-renamed`: `acme/gizmos` is refused with `acme/gizmos is now

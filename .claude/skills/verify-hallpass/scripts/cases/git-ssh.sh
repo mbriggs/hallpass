@@ -54,8 +54,68 @@ feature_ssh() {
   check 0 'HEAD -> agent/fix' "mkdir -p scripts && echo lint > scripts/lint.sh && git add scripts && git commit -qm lint && git push origin HEAD:agent/fix"
 
   case_ git-allowlist
-  check fail "isn't in hallpass's allowlist" 'git ls-remote https://github.com/acme/secret'
-  fake_lacks acme/secret
+  # A repo outside the allowlist goes to GitHub's smart HTTP with no
+  # credential. The fake answers acme/secret, which it doesn't have, as
+  # GitHub does: a 401.
+  check fail "hallpass: Without a token, GitHub answered 401 Unauthorized. acme/secret isn't in hallpass's allowlist. To allow it: sudo /opt/hallpass/bin/hallpass allow acme/secret" 'git ls-remote https://github.com/acme/secret'
+  fake_has '"method":"GET","path":"/acme/secret.git/info/refs","query":"service=git-upload-pack","auth":"none","status":401'
+  fake_lacks "acme/secret.git'"
+  broker_has 'repo=acme/secret op=upload-pack anonymous=true reason="Without a token'
+
+  case_ git-anonymous-private
+  # acme/private is private: the fake's SSH would serve it to the broker's
+  # key, and its HTTP refuses it without one. Nothing of it reaches git.
+  check fail 'Without a token, GitHub answered 401 Unauthorized. acme/private' "git clone -q https://github.com/acme/private \"$S/private\""
+  if [ -e "$S/private/README" ]; then fail "the private repo's README reached the clone"; else ok "no private README in the clone"; fi
+  fake_lacks "git-upload-pack 'acme/private.git'"
+  fake_lacks '"path":"/acme/private.git/git-upload-pack"'
+
+  case_ git-anonymous-clone
+  rm -rf "$S/public" "$S/public-shallow" "$S/public-partial"
+  check 0 '' "git clone -q https://github.com/octo/public \"$S/public\""
+  check 0 public "cat \"$S/public/README\""
+  fake_has '"method":"GET","path":"/octo/public.git/info/refs","query":"service=git-upload-pack","auth":"none","status":200'
+  fake_has '"method":"POST","path":"/octo/public.git/git-upload-pack","auth":"none","status":200'
+  fake_lacks "octo/public.git'"
+  fake_lacks '"auth":"wrong"'
+  broker_has 'repo=octo/public op=upload-pack anonymous=true exit=0'
+  check 0 '' "git -C \"$S/public\" fetch -q"
+  check 0 '' "git clone -q --depth 1 https://github.com/octo/public \"$S/public-shallow\""
+  check 0 1 "git -C \"$S/public-shallow\" rev-list --count HEAD"
+  check 0 '' "git clone -q --filter=blob:none https://github.com/octo/public \"$S/public-partial\""
+  check 0 two "cat \"$S/public-partial/second\""
+
+  case_ git-anonymous-push
+  check fail "octo/public isn't in hallpass's allowlist. To allow it: sudo /opt/hallpass/bin/hallpass allow octo/public" "git -C \"$S/public\" push origin HEAD:agent/x"
+  fake_lacks receive-pack
+
+  case_ git-anonymous-renamed
+  check 0 refs/heads/main 'git ls-remote https://github.com/octo/old'
+  fake_has '"path":"/octo/old.git/info/refs"'
+  fake_has '"path":"/octo/public.git/git-upload-pack"'
+  broker_has 'repo=octo/old op=upload-pack anonymous=true now=octo/public exit=0'
+
+  case_ git-anonymous-other-host
+  check fail "GitHub redirected somewhere hallpass doesn't follow. octo/away isn't in hallpass's allowlist" 'git ls-remote https://github.com/octo/away'
+  fake_lacks away-target
+
+  case_ git-anonymous-throttled
+  check fail "GitHub is limiting git without a token from this machine's address (429 Too Many Requests); try again later." 'git ls-remote https://github.com/octo/busy'
+
+  case_ git-anonymous-v0
+  check fail 'only over git protocol v2' 'git -c protocol.version=0 ls-remote https://github.com/octo/public'
+  fake_lacks /octo/public.git/
+
+  case_ git-anonymous-denied
+  cp "$S/hallpass.toml" "$S/hallpass.toml.orig"
+  { echo 'deny = ["anonymous"]'; cat "$S/hallpass.toml.orig"; } > "$S/hallpass.toml"
+  restart_broker || return
+  check fail "hallpass: octo/public isn't in hallpass's allowlist. To allow it: sudo /opt/hallpass/bin/hallpass allow octo/public" 'git ls-remote https://github.com/octo/public'
+  fake_lacks /octo/public.git/
+  check 0 refs/heads/main 'git ls-remote https://github.com/acme/widgets'
+  fake_has "git-upload-pack 'acme/widgets.git'\",\"auth\":\"key-ok\""
+  mv "$S/hallpass.toml.orig" "$S/hallpass.toml"
+  restart_broker || return
 
   case_ git-readonly
   check 0 refs/heads/colleague 'git ls-remote git@github.com:acme/readonly'

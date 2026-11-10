@@ -71,6 +71,24 @@ if [ ! -d "$bare" ]; then
   rm -rf "$seed"
   # acme/readonly, for the read-only fetch and push.
   "${plain[@]}" git clone -q --bare "$bare" "$S/gh-root/acme/readonly.git"
+  # acme/private: outside the allowlist and private, so the fake's smart
+  # HTTP answers it with a 401, though its SSH would serve it to the key.
+  "${plain[@]}" git clone -q --bare "$bare" "$S/gh-root/acme/private.git"
+  # octo/public: outside the allowlist and public, served over smart HTTP
+  # to anyone.
+  pub="$S/gh-root/octo/public.git"
+  "${plain[@]}" git init -q --bare -b main "$pub"
+  "${plain[@]}" git -C "$pub" config uploadpack.allowFilter true
+  seed=$(mktemp -d "$S/seed.XXXX")
+  "${plain[@]}" git init -q -b main "$seed"
+  echo public > "$seed/README"
+  "${plain[@]}" git -C "$seed" add README
+  "${plain[@]}" git -C "$seed" commit -q -m one
+  echo two > "$seed/second"
+  "${plain[@]}" git -C "$seed" add second
+  "${plain[@]}" git -C "$seed" commit -q -m two
+  "${plain[@]}" git -C "$seed" push -q "$pub" main
+  rm -rf "$seed"
 fi
 
 # The fake GitHub.
@@ -93,6 +111,7 @@ uids = [$(id -u)]
 protected_branches = ["release/*"]
 protected_paths = ["scripts/deploy.sh"]
 api_url = "$url/api"
+git_url = "$url"
 ssh_addr = "$ssh_addr"
 ssh_host_keys = ["$ssh_host_key"]
 

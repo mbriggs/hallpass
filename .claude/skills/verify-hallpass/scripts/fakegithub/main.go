@@ -1,7 +1,8 @@
 // Command fakegithub stands in for github.com and api.github.com while a
 // scratch hallpass broker is driven for verification. It serves git over
 // SSH from bare repos under -root, running real git-upload-pack and
-// git-receive-pack for the one client key it accepts. It answers the REST
+// git-receive-pack for the one client key it accepts, and git's smart HTTP
+// as GitHub serves it to a client with no credential. It answers the REST
 // and GraphQL calls gh and the broker make for acme/widgets, and refuses
 // any that don't carry the scratch token the broker should have added.
 // Every request it sees goes to -log as one JSON line, so the log shows
@@ -28,6 +29,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/cgi"
 	"net/url"
 	"os"
 	"os/exec"
@@ -115,7 +117,7 @@ func main() {
 			record(entry{Time: now(), Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery, Auth: auth, Status: rec.status, Body: b})
 		}()
 		if !strings.HasPrefix(r.URL.Path, "/api/") {
-			rec.WriteHeader(http.StatusNotFound)
+			gitHTTP(rec, r, *root)
 			return
 		}
 		// octo/public is a public repo outside the allowlist: GitHub shows
@@ -481,6 +483,45 @@ func runGit(command, root string, env []string, ch ssh.Channel) uint32 {
 		return 1
 	}
 	return 0
+}
+
+// gitHTTP answers git's smart HTTP the way GitHub answers a client with no
+// credential. octo/public is public, and real git http-backend serves it.
+// octo/old redirects to it, as a renamed repo does, octo/away redirects to
+// another host, and octo/busy is rate limited. Every other repo, private
+// or missing, is a 401 asking for credentials, which is what GitHub sends.
+func gitHTTP(w http.ResponseWriter, r *http.Request, root string) {
+	switch {
+	case r.Header.Get("Authorization") != "":
+		http.Error(w, "the broker sent a credential", http.StatusBadRequest)
+	case strings.HasPrefix(r.URL.Path, "/octo/public.git/"):
+		git, err := exec.LookPath("git")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// The broker streams each command in chunks, which CGI can't take,
+		// so read it whole first.
+		body, err := io.ReadAll(io.LimitReader(r.Body, 64<<20))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		r.Body, r.ContentLength, r.TransferEncoding = io.NopCloser(bytes.NewReader(body)), int64(len(body)), nil
+		(&cgi.Handler{Path: git, Args: []string{"http-backend"}, Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"}}).ServeHTTP(w, r)
+	case r.URL.Path == "/octo/old.git/info/refs":
+		http.Redirect(w, r, "/octo/public.git/info/refs?"+r.URL.RawQuery, http.StatusMovedPermanently)
+	case r.URL.Path == "/octo/away.git/info/refs":
+		// The same server under another name, so a followed redirect would
+		// show up in the log as /away-target.
+		_, port, _ := net.SplitHostPort(r.Host)
+		http.Redirect(w, r, "http://localhost:"+port+"/away-target/public.git/info/refs?"+r.URL.RawQuery, http.StatusMovedPermanently)
+	case r.URL.Path == "/octo/busy.git/info/refs":
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
+	default:
+		w.Header().Set("WWW-Authenticate", `Basic realm="GitHub"`)
+		http.Error(w, "", http.StatusUnauthorized)
+	}
 }
 
 func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }

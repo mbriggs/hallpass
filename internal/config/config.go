@@ -81,9 +81,12 @@ type Config struct {
 
 	Repos []Repo `toml:"repo"`
 
-	// APIURL, SSHAddr, and SSHHostKeys point the broker at a fake GitHub in
-	// tests. SSHHostKeys are authorized_keys lines that replace GitHub's.
+	// APIURL, GitURL, SSHAddr, and SSHHostKeys point the broker at a fake
+	// GitHub in tests. GitURL replaces https://github.com, where the broker
+	// fetches without a credential. SSHHostKeys are authorized_keys lines
+	// that replace GitHub's.
 	APIURL      string   `toml:"api_url,omitempty"`
+	GitURL      string   `toml:"git_url,omitempty"`
 	SSHAddr     string   `toml:"ssh_addr,omitempty"`
 	SSHHostKeys []string `toml:"ssh_host_keys,omitempty"`
 }
@@ -227,7 +230,8 @@ func (c *Config) PathLayers(repo github.Repo) []PathLayer {
 }
 
 // Anonymous reports whether the broker may send a read it doesn't cover to
-// GitHub without the token. repo is the repo the read names, or nil for a
+// GitHub without the token, or a git fetch of a repo outside the allowlist
+// without any credential. repo is the repo the read names, or nil for a
 // path outside /repos, which only the global lists decide.
 func (c *Config) Anonymous(repo *github.Repo) bool {
 	var wild, exact *Repo

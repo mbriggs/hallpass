@@ -123,7 +123,8 @@ Show them the change and wait for a yes before you make it.
 
 Agents reach only allowed repos. Ask which. Before the first `allow`, warn
 the user: with a token or SSH key, every github.com remote goes through the
-broker, and repos not allowed are refused. Pushing to the default branch is
+broker. Repos not allowed are refused, except that a public one can be
+fetched without a credential, as anyone could. Pushing to the default branch is
 refused too, so the user pushes their own commits with `git personal push`.
 Then have the user run, for each:
 
@@ -194,8 +195,9 @@ Setup is done when all of these hold, for the credentials the user chose:
 - `/opt/hallpass/bin/hallpass status --check` and
   `/opt/hallpass/bin/hallpass doctor` exit 0.
 - `git ls-remote https://github.com/OWNER/REPO` succeeds for an allowed
-  private repo, and fails with `isn't in hallpass's allowlist` for one that
-  isn't.
+  private repo, and fails with `isn't in hallpass's allowlist` for a
+  private repo that isn't. A public repo outside the allowlist succeeds,
+  fetched without a credential.
 - `/opt/hallpass/bin/hallpass gh api repos/OWNER/REPO --jq .full_name`
   prints the allowed repo.
 - With the signing key, a commit in a scratch repo passes
