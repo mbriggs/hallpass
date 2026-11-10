@@ -31,12 +31,13 @@ $(GOLANGCI_LINT):
 
 # Fuzzes the parsers that read what agents send, for FUZZTIME each: pushes,
 # packs, GraphQL requests, repo names, and the audit log lines that hold
-# them. go test runs the seeds on every make test. A failing input lands in
-# the package's testdata/fuzz/; commit it with the fix so the seeds keep it.
+# them, and GitHub's answer to a push. go test runs the seeds on every
+# make test. A failing input lands in the package's testdata/fuzz/; commit
+# it with the fix so the seeds keep it.
 FUZZTIME ?= 30s
 FUZZ_TARGETS := policy:FuzzReadPush policy:FuzzReadPack policy:FuzzWorkflowChanges \
-  policy:FuzzApplyDelta policy:FuzzGraphQLReprint policy:FuzzCodeSearchRepo github:FuzzParseRepo audit:FuzzParse \
-  sshgate:FuzzCopyRequest sshgate:FuzzReadCapabilities
+  policy:FuzzApplyDelta policy:FuzzGraphQLReprint policy:FuzzCodeSearchRepo policy:FuzzReportStatus \
+  github:FuzzParseRepo audit:FuzzParse sshgate:FuzzCopyRequest sshgate:FuzzReadCapabilities
 fuzz:
 	for t in $(FUZZ_TARGETS); do \
 	  go test -run '^$$' -fuzz "^$${t#*:}$$" -fuzztime $(FUZZTIME) ./internal/$${t%%:*}/ || exit 1; \

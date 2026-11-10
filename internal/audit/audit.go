@@ -11,6 +11,7 @@ package audit
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"io"
 	"regexp"
@@ -61,8 +62,8 @@ func (r Record) Refused() bool { return r.Msg == "refused" }
 // Refusal is one reason a request was refused. A push refusal has one per
 // refused ref, since each ref can fail for its own reason.
 type Refusal struct {
-	Ref    string
-	Reason string
+	Ref    string `json:"ref"`
+	Reason string `json:"reason"`
 }
 
 // Refusals splits a refused record into its reasons. It returns nil for a
@@ -78,6 +79,23 @@ func (r Record) Refusals() []Refusal {
 		}
 	}
 	return []Refusal{{Reason: reason}}
+}
+
+// Rejected reads the refs GitHub rejected in a push the broker forwarded:
+// the rejected attr, JSON written by the SSH gate, and rejected_more, how
+// many past those it left out. ok is false when rejected is there but isn't
+// that JSON. A record without the attr, which includes every push line
+// from before the broker logged it, has none.
+func (r Record) Rejected() (refs []Refusal, more int, ok bool) {
+	raw := r.Get("rejected")
+	if raw == "" {
+		return nil, 0, true
+	}
+	if err := json.Unmarshal([]byte(raw), &refs); err != nil {
+		return nil, 0, false
+	}
+	more, _ = strconv.Atoi(r.Get("rejected_more"))
+	return refs, max(more, 0), true
 }
 
 // refStart finds where each entry starts in the fmt rendering of a

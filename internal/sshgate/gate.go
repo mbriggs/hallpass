@@ -366,11 +366,17 @@ func (s *Server) serveAnonymous(repo github.Repo, gitProtocol, why string, in *b
 // reaches GitHub. It returns false when it refused the push and answered git
 // itself.
 func (s *Server) relayPush(client *ssh.Client, repo github.Repo, rule config.Rule, in *bufio.Reader, stdin io.WriteCloser, stdout io.Reader, o *out, log *slog.Logger, procs string, checkWait time.Duration) bool {
+	// failed answers git when the push can't go on for a reason that isn't
+	// a refusal: GitHub or the network failed it.
+	failed := func(msg string) bool {
+		log.Warn("failed", "reason", msg)
+		_ = o.frame(FrameStderr, []byte("hallpass: "+msg+"\n"))
+		return false
+	}
 	up := bufio.NewReader(stdout)
 	adv, err := readAdvertisement(up)
 	if err != nil {
-		_ = o.frame(FrameStderr, []byte("hallpass: couldn't read GitHub's ref list: "+err.Error()+"\n"))
-		return false
+		return failed("couldn't read GitHub's ref list: " + err.Error())
 	}
 	_ = o.frame(FrameStdout, noThin(adv))
 
@@ -400,8 +406,7 @@ func (s *Server) relayPush(client *ssh.Client, repo github.Repo, rule config.Rul
 	}
 	def := <-defCh
 	if def.err != nil {
-		_ = o.frame(FrameStderr, []byte("hallpass: couldn't check the default branch: "+def.err.Error()+"\n"))
-		return false
+		return failed("couldn't check the default branch: " + def.err.Error())
 	}
 	check := func(def string) map[string]string {
 		return policy.CheckPush(push, policy.Branches{
@@ -476,7 +481,8 @@ func (s *Server) relayPush(client *ssh.Client, repo github.Repo, rule config.Rul
 	}()
 	var report bytes.Buffer
 	_, _ = io.Copy(io.MultiWriter(o.writer(FrameStdout), &capped{&report, 1 << 20}), up)
-	accepted := policy.ReportStatus(report.Bytes(), push.SideBand())
+	rep := policy.ReportStatus(report.Bytes(), push.SideBand())
+	accepted := rep.Accepted
 	// Record where each accepted branch now points, so agents can go on
 	// from there and from nowhere else. The default branch stays out:
 	// push.default governs it, not the ledger.
@@ -494,7 +500,7 @@ func (s *Server) relayPush(client *ssh.Client, repo github.Repo, rule config.Rul
 			}
 		}
 	}
-	log.Info("pushed", "refs", accepted)
+	logReport(log, rep)
 	return true
 }
 

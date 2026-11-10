@@ -276,6 +276,67 @@ func FuzzGraphQLReprint(f *testing.F) {
 	})
 }
 
+// The ledger records exactly the refs ReportStatus says GitHub accepted.
+// Reading GitHub's rejections too mustn't change that set for any input,
+// so reportStatusAccepted keeps the reader as it was before it read them.
+func FuzzReportStatus(f *testing.F) {
+	var status bytes.Buffer
+	writePkt(&status, "unpack ok\n")
+	writePkt(&status, "ok refs/heads/agent/x\n")
+	writePkt(&status, "ng refs/heads/agent/y protected branch hook declined\n")
+	writePkt(&status, "ng refs/heads/agent/z\n")
+	writePkt(&status, "ok refs/heads/agent/w")
+	status.WriteString("0000")
+	var framed bytes.Buffer
+	writePkt(&framed, "\x02remote: hello\n")
+	writePkt(&framed, "\x01"+status.String())
+	framed.WriteString("0000")
+	f.Add(status.Bytes(), false)
+	f.Add(framed.Bytes(), true)
+	f.Add([]byte("0000"), true)
+	f.Fuzz(func(t *testing.T, body []byte, sideBand bool) {
+		got := ReportStatus(body, sideBand)
+		if want := reportStatusAccepted(body, sideBand); !reflect.DeepEqual(got.Accepted, want) {
+			t.Fatalf("accepted %q, want %q", got.Accepted, want)
+		}
+		for _, r := range got.Rejected {
+			if strings.Contains(r.Ref, " ") {
+				t.Fatalf("rejected ref %q holds a space", r.Ref)
+			}
+		}
+	})
+}
+
+// reportStatusAccepted is ReportStatus as it was when it returned only the
+// accepted refs.
+func reportStatusAccepted(body []byte, sideBand bool) []string {
+	r := bufio.NewReader(bytes.NewReader(body))
+	var status []byte
+	if sideBand {
+		for {
+			line, flush, _, err := readPkt(r)
+			if err != nil || flush {
+				break
+			}
+			if len(line) > 0 && line[0] == 1 {
+				status = append(status, line[1:]...)
+			}
+		}
+		r = bufio.NewReader(bytes.NewReader(status))
+	}
+	var ok []string
+	for {
+		line, flush, _, err := readPkt(r)
+		if err != nil || flush {
+			break
+		}
+		if ref, found := strings.CutPrefix(strings.TrimSuffix(string(line), "\n"), "ok "); found {
+			ok = append(ok, ref)
+		}
+	}
+	return ok
+}
+
 // fuzzGQL builds a request body, leaving out vars unless it's valid JSON.
 func fuzzGQL(query, vars string) []byte {
 	req := map[string]any{"query": query}

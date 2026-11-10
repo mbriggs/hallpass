@@ -135,6 +135,29 @@ feature_ssh() {
   fake_has "git-upload-pack 'acme/widgets.git'"
   fake_lacks "acme/gadgets.git"
 
+  case_ git-push-github-rejects-some
+  # An update hook on the fake stands in for a GitHub ruleset: it declines
+  # agent/declined. The broker logs both sets, and the ledger takes only
+  # the ref GitHub accepted.
+  local hook="$S/gh-root/acme/widgets.git/hooks/update"
+  printf '#!/bin/sh\ntest "$1" != refs/heads/agent/declined\n' > "$hook" && chmod +x "$hook"
+  check fail 'hook declined' 'git push origin HEAD:agent/taken HEAD:agent/declined'
+  broker_has 'level=WARN msg=pushed'
+  broker_has 'refs=[refs/heads/agent/taken] rejected="[{\"ref\":\"refs/heads/agent/declined\",\"reason\":\"hook declined\"}]"'
+  broker_lacks 'msg=refused'
+  if grep -qF '"branch":"agent/taken"' "$S/state/branches.jsonl" && ! grep -qF '"branch":"agent/declined"' "$S/state/branches.jsonl"; then
+    ok "the ledger records agent/taken and not agent/declined"
+  else fail "the ledger after a partly rejected push:"; sed 's/^/  /' "$S/state/branches.jsonl"; fi
+
+  case_ git-push-github-rejects-all
+  check fail 'hook declined' 'git push origin HEAD:agent/declined'
+  broker_has 'level=WARN msg=rejected'
+  broker_has 'refs=[] rejected="[{\"ref\":\"refs/heads/agent/declined\",\"reason\":\"hook declined\"}]"'
+  broker_lacks 'msg=refused'
+  if grep -qF '"branch":"agent/declined"' "$S/state/branches.jsonl"; then fail "the ledger records agent/declined"; else ok "the ledger doesn't record agent/declined"; fi
+  rm -f "$hook"
+  check 0 '[deleted]         agent/taken' 'git push origin :agent/taken'
+
   case_ git-delete-own
   check 0 '[deleted]         agent/fix' 'git push origin :agent/fix'
 

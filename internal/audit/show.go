@@ -25,6 +25,7 @@ var shown = map[string]bool{
 	"via": true, "uid": true, "pid": true, "procs": true, "repo": true, "now": true,
 	"route": true, "graphql": true, "op": true, "object": true,
 	"status": true, "exit": true, "reason": true, "refs": true,
+	"rejected": true, "rejected_more": true,
 }
 
 // Line renders r on one line for a terminal:
@@ -103,12 +104,37 @@ func (v View) line(e entry) string {
 			}
 			t.add(red, f.Reason)
 		}
-	case r.Msg == "pushed":
+	case r.Msg == "failed":
+		t.add(plain, ": ")
+		t.add(red, r.Get("reason"))
+	case isPush(r):
 		refs := strings.Trim(r.Get("refs"), "[]")
-		if refs == "" {
-			t.add(red, ", GitHub accepted none of the refs")
-		} else {
+		rejected, more, ok := r.Rejected()
+		switch {
+		case !ok:
 			t.add(plain, " "+refs)
+			t.add(red, " rejected="+r.Get("rejected"))
+		case refs == "" && len(rejected) == 0:
+			t.add(red, ", GitHub accepted none of the refs")
+		case refs != "":
+			t.add(plain, " "+refs)
+		}
+		if len(rejected) > 0 {
+			if refs != "" {
+				t.add(plain, ";")
+			} else {
+				t.add(plain, ",")
+			}
+			t.add(plain, " GitHub rejected ")
+			for i, f := range rejected {
+				if i > 0 {
+					t.add(plain, "; ")
+				}
+				t.add(red, f.Ref+": "+f.Reason)
+			}
+			if more > 0 {
+				t.add(red, "; and "+strconv.Itoa(more)+" more")
+			}
 		}
 		if e.result != nil {
 			result(&t, *e.result)
@@ -117,7 +143,9 @@ func (v View) line(e entry) string {
 		result(&t, r)
 	}
 	for _, a := range r.Attrs {
-		if !shown[a.Key] {
+		// action says "without a credential" for an anonymous fetch.
+		inAction := a.Key == "anonymous" && a.Value == "true" && r.Get("op") == "upload-pack"
+		if !shown[a.Key] && !inAction {
 			t.add(plain, " "+a.Key+"="+a.Value)
 		}
 	}
@@ -165,7 +193,7 @@ func msgStyle(r Record) style {
 	switch {
 	case r.Refused():
 		return boldRed
-	case r.Level == "ERROR":
+	case r.Level == "ERROR" || r.Msg == "failed" || r.Msg == "rejected":
 		return red
 	case r.Msg == "pushed" || r.Msg == "signed":
 		return green
@@ -181,6 +209,8 @@ func action(r Record) string {
 		return r.Get("route")
 	case r.Get("graphql") != "":
 		return "graphql " + r.Get("graphql")
+	case r.Get("op") == "upload-pack" && r.Get("anonymous") == "true":
+		return "fetch without a credential"
 	case r.Get("op") == "upload-pack":
 		return "fetch"
 	case r.Get("op") == "receive-pack":
@@ -269,12 +299,17 @@ func routine(r Record) bool {
 
 // endsPush reports whether r is the allowed line that closes the push e
 // began. The broker logs both from one connection's logger, so every attr
-// but pushed's refs and allowed's exit is the same, pid included.
+// but the push line's refs and rejections and allowed's exit is the same,
+// pid included.
 func endsPush(e entry, r Record) bool {
-	return e.Msg == "pushed" && e.result == nil && e.count == 1 &&
+	return isPush(e.Record) && e.result == nil && e.count == 1 &&
 		r.Msg == "allowed" && r.Get("op") == "receive-pack" && r.Get("exit") != "" &&
-		slices.Equal(without(e.Attrs, "refs"), without(r.Attrs, "exit"))
+		slices.Equal(without(e.Attrs, "refs", "rejected", "rejected_more"), without(r.Attrs, "exit"))
 }
+
+// isPush reports whether r is GitHub's answer to a push the broker
+// forwarded: pushed, or rejected when GitHub took none of its refs.
+func isPush(r Record) bool { return r.Msg == "pushed" || r.Msg == "rejected" }
 
 // repeats reports whether r repeats e exactly, time aside: an allowed
 // request from the same process with the same result.
@@ -283,8 +318,8 @@ func repeats(e entry, r Record) bool {
 		e.Level == r.Level && e.Msg == r.Msg && slices.Equal(e.Attrs, r.Attrs)
 }
 
-func without(attrs []Attr, key string) []Attr {
-	return slices.DeleteFunc(slices.Clone(attrs), func(a Attr) bool { return a.Key == key })
+func without(attrs []Attr, keys ...string) []Attr {
+	return slices.DeleteFunc(slices.Clone(attrs), func(a Attr) bool { return slices.Contains(keys, a.Key) })
 }
 
 // Group counts the refusals that share a repo and a reason. A refusal with

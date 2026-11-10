@@ -342,10 +342,25 @@ func RefusePush(p Push, refused map[string]string) []byte {
 	return out.Bytes()
 }
 
+// Report is GitHub's answer to a push: the refs it updated, and the ones
+// it rejected, each with GitHub's reason.
+type Report struct {
+	Accepted []string
+	Rejected []Rejection
+}
+
+// Rejection is a ref GitHub didn't update, and why. Both come from the
+// network, so treat them as untrusted text.
+type Rejection struct {
+	Ref    string `json:"ref"`
+	Reason string `json:"reason"`
+}
+
 // ReportStatus reads the ref results from GitHub's receive-pack response,
-// which the broker relays to git unchanged. It returns the refs GitHub
-// accepted. A response it can't parse yields none, so nothing gets recorded.
-func ReportStatus(body []byte, sideBand bool) []string {
+// which the broker relays to git unchanged: an "ok REF" line for each ref
+// GitHub accepted and an "ng REF REASON" line for each it rejected. A
+// response it can't parse yields neither, so nothing gets recorded.
+func ReportStatus(body []byte, sideBand bool) Report {
 	r := bufio.NewReader(bytes.NewReader(body))
 	var status []byte
 	if sideBand {
@@ -360,17 +375,21 @@ func ReportStatus(body []byte, sideBand bool) []string {
 		}
 		r = bufio.NewReader(bytes.NewReader(status))
 	}
-	var ok []string
+	var rep Report
 	for {
 		line, flush, _, err := readPkt(r)
 		if err != nil || flush {
 			break
 		}
-		if ref, found := strings.CutPrefix(strings.TrimSuffix(string(line), "\n"), "ok "); found {
-			ok = append(ok, ref)
+		l := strings.TrimSuffix(string(line), "\n")
+		if ref, found := strings.CutPrefix(l, "ok "); found {
+			rep.Accepted = append(rep.Accepted, ref)
+		} else if rest, found := strings.CutPrefix(l, "ng "); found {
+			ref, reason, _ := strings.Cut(rest, " ")
+			rep.Rejected = append(rep.Rejected, Rejection{Ref: ref, Reason: reason})
 		}
 	}
-	return ok
+	return rep
 }
 
 // Error is a refusal with a message for the client.

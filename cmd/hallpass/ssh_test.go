@@ -22,6 +22,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/mbriggs/hallpass/internal/audit"
 	"github.com/mbriggs/hallpass/internal/broker"
 	"github.com/mbriggs/hallpass/internal/config"
 	"github.com/mbriggs/hallpass/internal/github"
@@ -96,10 +97,19 @@ func serveSSH(c net.Conn, cfg *ssh.ServerConfig, root string, hook func(string, 
 					if err == nil {
 						g := exec.Command("git", strings.TrimPrefix(svc, "git-"), filepath.Join(root, repo.Owner, repo.Name+".git"))
 						g.Env = append(os.Environ(), env...)
-						g.Stdin, g.Stdout, g.Stderr = ch, ch, ch.Stderr()
+						g.Stdout, g.Stderr = ch, ch.Stderr()
+						var src io.Reader = ch
 						if capture != nil {
-							g.Stdin = io.TeeReader(ch, capture)
+							src = io.TeeReader(ch, capture)
 						}
+						// GitHub ends the channel when git exits, even if the
+						// client never sends anything, as when the repo is
+						// missing. So copy stdin where Wait doesn't wait on it.
+						stdin, _ := g.StdinPipe()
+						go func() {
+							_, _ = io.Copy(stdin, src)
+							stdin.Close()
+						}()
 						if g.Run() == nil {
 							status = 0
 						}
@@ -196,16 +206,34 @@ func TestGitOverSSHThroughBroker(t *testing.T) {
 		t.Fatal(err)
 	}
 	gateConfig := &config.Config{
-		SSH:               &config.Key{},
-		Repos:             []config.Repo{{Match: "acme/widgets"}, {Match: "acme/site", Allow: []config.Grant{config.Grant(op.PushDefault)}}},
+		SSH: &config.Key{},
+		Repos: []config.Repo{{Match: "acme/widgets"}, {Match: "acme/site", Allow: []config.Grant{config.Grant(op.PushDefault)}},
+			// acme/missing is allowed but has no repo, so GitHub sends no ref list.
+			{Match: "acme/missing"}},
 		ProtectedBranches: []string{"main", "release/*"},
+	}
+	// brokerLog is the gate's log, as the broker writes it.
+	brokerLog := new(syncBuffer)
+	// logAfter waits for the line with msg=want that the gate logs after
+	// byte mark, which can come just after git exits, and returns the log
+	// from mark on.
+	logAfter := func(mark int, want string) string {
+		t.Helper()
+		for range 100 {
+			if l := string(brokerLog.Bytes()[mark:]); strings.Contains(l, want) {
+				return l
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatalf("the gate didn't log %s; it logged:\n%s", want, brokerLog.Bytes()[mark:])
+		return ""
 	}
 	gate := &sshgate.Server{
 		Config:    gateConfig,
 		Signer:    key,
 		Ledger:    sshgate.OpenLedger(""),
 		Spool:     spool,
-		Log:       slog.New(slog.DiscardHandler),
+		Log:       slog.New(slog.NewTextHandler(brokerLog, nil)),
 		Permitted: func(p peer.Peer) bool { return p.Known && p.UID == uint32(os.Getuid()) },
 		Addrs:     []string{addr},
 		HostKeys:  []string{hostKey},
@@ -335,13 +363,56 @@ func TestGitOverSSHThroughBroker(t *testing.T) {
 		t.Errorf("the ledger recorded acme/site main at %s", tip)
 	}
 
-	// The ledger records only the refs GitHub accepted.
+	// The ledger records only the refs GitHub accepted, and the log says
+	// which it rejected and why, whether it rejected some refs or all.
 	os.WriteFile(filepath.Join(bare, "hooks", "update"), []byte("#!/bin/sh\ntest \"$1\" != refs/heads/agent/declined\n"), 0o755)
+	mark := len(brokerLog.Bytes())
 	refused("hook declined", "push", "origin", "HEAD:agent/taken", "HEAD:agent/declined")
+	partial := logAfter(mark, "msg=allowed")
+	mark = len(brokerLog.Bytes())
+	refused("hook declined", "push", "origin", "HEAD:agent/declined")
+	whole := logAfter(mark, "msg=allowed")
 	os.Remove(filepath.Join(bare, "hooks", "update"))
 	widgets := github.Repo{Owner: "acme", Name: "widgets"}
 	if gate.Ledger.Tip(widgets, "agent/taken") == "" || gate.Ledger.Tip(widgets, "agent/declined") != "" {
 		t.Errorf("ledger after a half-accepted push: %v", gate.Ledger.Branches(widgets))
+	}
+	declined := `rejected="[{\"ref\":\"refs/heads/agent/declined\",\"reason\":\"hook declined\"}]"`
+	for _, c := range []struct{ name, log, line, shown string }{
+		{"partly rejected", partial, "level=WARN msg=pushed ",
+			"pushed   ssh  acme/widgets  push refs/heads/agent/taken; GitHub rejected refs/heads/agent/declined: hook declined -> exit 0"},
+		{"wholly rejected", whole, "level=WARN msg=rejected ",
+			"rejected  ssh  acme/widgets  push, GitHub rejected refs/heads/agent/declined: hook declined -> exit 0"},
+	} {
+		if !strings.Contains(c.log, c.line) || !strings.Contains(c.log, declined) {
+			t.Errorf("%s push logged:\n%s", c.name, c.log)
+		}
+		var out bytes.Buffer
+		if err := printLog(&out, strings.NewReader(c.log), audit.Filter{}, logOpts{view: utc}); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out.String(), c.shown) {
+			t.Errorf("hallpass log shows the %s push as\n%s\nwant\n%s", c.name, out.String(), c.shown)
+		}
+		if strings.Count(out.String(), "\n") != 1 {
+			t.Errorf("the %s push takes more than one line:\n%s", c.name, out.String())
+		}
+	}
+
+	// A push that fails before the checks, because GitHub sent no ref list
+	// or no default branch, still leaves a line.
+	mark = len(brokerLog.Bytes())
+	refused("couldn't read GitHub's ref list", "push", "https://github.com/acme/missing", "HEAD:agent/x")
+	if l := logAfter(mark, "msg=failed"); !strings.Contains(l, `level=WARN msg=failed via=ssh`) ||
+		!strings.Contains(l, `repo=acme/missing op=receive-pack reason="couldn't read GitHub's ref list: EOF"`) {
+		t.Errorf("a push with no ref list logged:\n%s", l)
+	}
+	gitIn(bare, plain, "symbolic-ref", "HEAD", "refs/heads/nowhere")
+	mark = len(brokerLog.Bytes())
+	refused("couldn't check the default branch", "push", "origin", "HEAD:agent/x")
+	gitIn(bare, plain, "symbolic-ref", "HEAD", "refs/heads/main")
+	if l := logAfter(mark, "msg=failed"); !strings.Contains(l, `repo=acme/widgets op=receive-pack reason="couldn't check the default branch: `) {
+		t.Errorf("a push with no default branch logged:\n%s", l)
 	}
 
 	// The ledger holds the commit agents last pushed, not just the name. A

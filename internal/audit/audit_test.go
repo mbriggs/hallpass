@@ -385,6 +385,7 @@ func FuzzParse(f *testing.F) {
 	for _, v := range hostile {
 		f.Add(`time=2026-11-10T07:20:08Z level=WARN msg=refused reason=push refs="map[refs/heads/` + v + `:` + v + `]"`)
 	}
+	f.Add(`time=2026-11-10T07:20:08Z level=WARN msg=pushed via=ssh refs=[refs/heads/a] rejected="[{\"ref\":\"refs/heads/b\",\"reason\":\"\\u001b[31m\"}]" rejected_more=2`)
 	f.Fuzz(func(t *testing.T, line string) {
 		r, ok := Parse(line)
 		if !ok {
