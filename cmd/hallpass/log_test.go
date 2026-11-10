@@ -25,8 +25,8 @@ func TestPrintLog(t *testing.T) {
 		return out.String()
 	}
 	all := render(audit.Filter{}, false)
-	if n := strings.Count(all, "\n"); n != 84 {
-		t.Errorf("%d lines, want one per record, 84", n)
+	if n := strings.Count(all, "\n"); n != 85 {
+		t.Errorf("%d lines, want one per record, 85", n)
 	}
 	refused := render(audit.Filter{Refused: true, Repo: "acme/widgets"}, false)
 	t.Log("\n" + refused)

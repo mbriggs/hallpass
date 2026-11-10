@@ -14,6 +14,7 @@ import (
 	"errors"
 	"io"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -39,6 +40,19 @@ func (r Record) Get(key string) string {
 		}
 	}
 	return ""
+}
+
+// Repos lists the repos the request names: the repo attr, split on its
+// commas, and after a rename, the name GitHub has now.
+func (r Record) Repos() []string {
+	var out []string
+	if repo := r.Get("repo"); repo != "" {
+		out = strings.Split(repo, ",")
+	}
+	if now := r.Get("now"); now != "" {
+		out = append(out, now)
+	}
+	return out
 }
 
 // Refused reports whether the broker refused the request.
@@ -173,7 +187,8 @@ type Filter struct {
 	Refused bool
 	// Repo keeps only requests for this OWNER/NAME, matched without regard
 	// to case against the name the client asked for and, after a rename,
-	// the current one.
+	// the current one. A GraphQL request that touches several repos logs
+	// them all, joined by commas, and matches any of them.
 	Repo string
 	// Since keeps only records at or after it, when set.
 	Since time.Time
@@ -184,7 +199,7 @@ func (f Filter) Match(r Record) bool {
 	if f.Refused && !r.Refused() {
 		return false
 	}
-	if f.Repo != "" && !strings.EqualFold(r.Get("repo"), f.Repo) && !strings.EqualFold(r.Get("now"), f.Repo) {
+	if f.Repo != "" && !slices.ContainsFunc(r.Repos(), func(repo string) bool { return strings.EqualFold(repo, f.Repo) }) {
 		return false
 	}
 	return f.Since.IsZero() || !r.Time.Before(f.Since)
