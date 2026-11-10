@@ -200,8 +200,8 @@ Setup is done when all of these hold, for the credentials the user chose:
   prints the allowed repo.
 - With the signing key, a commit in a scratch repo passes
   `git verify-commit HEAD`.
-- `journalctl -u hallpass -n 20` on Linux, or `/var/log/hallpass.log` on
-  macOS, shows each of those requests.
+- `sudo /opt/hallpass/bin/hallpass log --since 30m`, which the user runs,
+  shows a line for each of those requests.
 
 Finish by suggesting `sudo -k`, so the user's cached sudo doesn't outlive
 setup.

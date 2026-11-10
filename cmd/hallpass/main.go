@@ -56,6 +56,9 @@ Maintenance, as root:
   policy show [OWNER/REPO]             list the operations and what's in effect
   ledger add OWNER/REPO BRANCH COMMIT  let agents update a branch they didn't create, at COMMIT
   ledger list OWNER/REPO               list the branches agents may update
+  log [--refused] [--repo OWNER/REPO] [--since 2h] [--summary]
+                                       what agents asked for and what was refused;
+                                       --summary counts refusals by repo and reason
   ssh-key remove | signing-key remove | logout
   uninstall [--purge]
   serve                                the broker itself; systemd or launchd runs it
@@ -106,6 +109,8 @@ func main() {
 		err = doctor(args)
 	case "ledger":
 		err = ledger(args)
+	case "log":
+		err = logCmd(args)
 	case "skills":
 		err = skillsCmd(args)
 	case "gh":
