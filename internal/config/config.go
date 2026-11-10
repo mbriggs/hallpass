@@ -40,11 +40,6 @@ func StateDir() string {
 	return "/var/lib/hallpass"
 }
 
-// SpoolDir holds pushed packs while the broker checks them. It's in the
-// state dir because the Linux unit lets the broker write only there, and
-// its private /tmp may be memory.
-func SpoolDir() string { return StateDir() + "/spool" }
-
 // RunDir holds the sockets.
 func RunDir() string {
 	if runtime.GOOS == "darwin" {
@@ -88,10 +83,6 @@ type Config struct {
 	APIURL      string   `toml:"api_url,omitempty"`
 	SSHAddr     string   `toml:"ssh_addr,omitempty"`
 	SSHHostKeys []string `toml:"ssh_host_keys,omitempty"`
-	// SpoolDir is where pushed packs wait while the broker checks them. It
-	// defaults to SpoolDir(); a scratch broker that can't write the state
-	// dir sets its own.
-	SpoolDir string `toml:"spool_dir,omitempty"`
 }
 
 // Token is the GitHub token the broker uses for HTTPS git and gh.

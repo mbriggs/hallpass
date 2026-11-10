@@ -43,13 +43,13 @@ broker_lacks(){ if _since "$S/evidence/broker.log" "$_broker_mark" | grep -qF --
 refs() { GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null git -C "$S/gh-root/acme/widgets.git" for-each-ref --format='%(refname) %(objectname)'; }
 
 # restart_broker stops the scratch broker, after checking its command line
-# names $S, and starts it again on $S/hallpass.toml.
+# names $S, and starts it again on $S/hallpass.toml and $S/state.
 restart_broker() {
   local pid; pid=$(cat "$S/broker.pid")
   case "$(ps -o command= -p "$pid")" in *"$S"*) kill "$pid" ;; *) fail "pid $pid isn't this scratch broker"; return 1 ;; esac
   while kill -0 "$pid" 2>/dev/null; do sleep 0.1; done
   local before; before=$(grep -c 'msg=serving' "$S/evidence/broker.log")
-  nohup env HALLPASS_RUN_DIR="$S/run" "$S/bin/hallpass" serve --config "$S/hallpass.toml" >> "$S/evidence/broker.log" 2>&1 &
+  nohup env HALLPASS_RUN_DIR="$S/run" "$S/bin/hallpass" serve --config "$S/hallpass.toml" --state-dir "$S/state" >> "$S/evidence/broker.log" 2>&1 &
   echo $! > "$S/broker.pid"
   for _ in $(seq 50); do [ "$(grep -c 'msg=serving' "$S/evidence/broker.log")" -gt "$before" ] && return 0; sleep 0.1; done
   fail "the broker didn't come back"; return 1

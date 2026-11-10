@@ -43,6 +43,15 @@ whole=
     FAILS=$((FAILS + $(cat "$S/.drive-fails" 2>/dev/null || echo 0)))
     rm -f "$S/.drive-fails"
   done
+  # Every run, whatever the features: the broker wrote its ledger. Its
+  # state dir is $S/state, so a failure here means it looked elsewhere.
+  echo
+  echo "== ledger-writes"
+  if grep -qF 'ledger write failed' "$S/evidence/broker.log"; then
+    echo "FAIL  broker.log has: ledger write failed"; FAILS=$((FAILS+1))
+  else
+    echo "ok    broker.log lacks: ledger write failed"
+  fi
   echo "#### $FAILS failed"
 } 2>&1 | tee -a "$S/evidence/transcript.txt"
 [ "$(tail -1 "$S/evidence/transcript.txt")" = "#### 0 failed" ] || exit 1

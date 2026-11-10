@@ -23,6 +23,13 @@ feature_ssh() {
   case_ git-push-own
   check 0 '(forced update)' 'git commit -q --amend -m "agent work, amended" && git push --force origin HEAD:agent/fix'
 
+  case_ git-push-after-restart
+  # The ledger in $S/state is what lets the agent update agent/fix after
+  # the broker restarts.
+  if grep -qF '"branch":"agent/fix"' "$S/state/branches.jsonl" 2>/dev/null; then ok "\$S/state/branches.jsonl records agent/fix"; else fail "\$S/state/branches.jsonl doesn't record agent/fix"; fi
+  restart_broker || return
+  check 0 '(forced update)' 'git commit -q --amend -m "agent work, after a restart" && git push --force origin HEAD:agent/fix'
+
   case_ git-push-default
   check fail 'main is the default branch' 'git push origin HEAD:main'
   case_ git-push-protected
