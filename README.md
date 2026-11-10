@@ -222,8 +222,13 @@ includes it from each git's system config:
 git goes over SSH only, and gh uses the token. With a token and no SSH key,
 the git config still sends github.com to the broker, which refuses git and
 says to run `sudo /opt/hallpass/bin/hallpass ssh-key create`. git never falls
-through to your own credentials. The broker dials `github.com:22`, so a
-network that blocks port 22 can't reach GitHub through hallpass.
+through to your own credentials. The broker dials `github.com:22`, and if
+that connection fails, `ssh.github.com:443`, which GitHub serves for
+networks that block port 22. Both present the host keys GitHub publishes at
+`api.github.com/meta`, and the broker refuses any other key. It tries first
+whichever address worked last, so a blocked port 22 costs at most 5 seconds
+once, not on every git command. `hallpass status --check` names the address
+it reached.
 
 ## Policy
 

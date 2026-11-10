@@ -9,7 +9,7 @@ feature_status() {
   check fail '' 'hallpass status | grep "^policy:"'
 
   case_ status-check
-  check 0 '          GitHub accepts it for verifier' 'hallpass status --check'
+  check 0 "          GitHub accepts it for verifier at $(sed -n 1p "$S/fake.ssh")" 'hallpass status --check'
   check fail '' 'hallpass status --check | grep -E "FAILED|BROKEN"'
   fake_has '"path":"/api/user","auth":"token-ok"'
   fake_has '"method":"SSH","path":"shell","auth":"key-ok"'

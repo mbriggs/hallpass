@@ -184,7 +184,7 @@ func TestGitOverSSHThroughBroker(t *testing.T) {
 		Ledger:    sshgate.OpenLedger(""),
 		Log:       slog.New(slog.DiscardHandler),
 		Permitted: func(p peer.Peer) bool { return p.Known && p.UID == uint32(os.Getuid()) },
-		Addr:      addr,
+		Addrs:     []string{addr},
 		HostKeys:  []string{hostKey},
 	}
 	go gate.Serve(ln)

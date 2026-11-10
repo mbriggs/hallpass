@@ -66,8 +66,8 @@ Each is optional:
 - **The SSH key** turns on git, which goes through hallpass over SSH only.
   Most users want it too. With a token and no SSH key, git still goes to
   the broker, which refuses it and says to create a key. The broker dials
-  `github.com:22`, so a network that blocks port 22 can't use git through
-  hallpass.
+  `github.com:22`, and falls back to `ssh.github.com:443` when port 22 is
+  blocked.
 - **The signing key** signs commits and tags, which then show as Verified.
 
 Tell the user that every credential acts as them on GitHub, so agent PRs,

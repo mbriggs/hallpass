@@ -204,8 +204,10 @@ still name `$S`. Then it records the fake's refs and deletes everything in
 
 ## Not covered by the scratch broker
 
-- **Port 22 to real GitHub.** The scratch broker dials the fake through
-  `ssh_addr`, so GitHub's real host keys and network path aren't exercised.
+- **Real GitHub's SSH addresses.** The scratch broker dials the fake through
+  `ssh_addr` alone, so GitHub's real host keys, its network path, and the
+  fallback from `github.com:22` to `ssh.github.com:443` aren't exercised.
+  The sshgate unit tests cover the fallback.
 - **Root setup and maintenance commands** (`install`, `login`,
   `install-pat`, `ssh-key`, `signing-key`, `allow`, `disallow`, `policy`, `ledger`,
   `logout`, `uninstall`). They write `/etc/hallpass` and the live install.
