@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -18,6 +19,8 @@ const (
 	newsyslog = "/etc/newsyslog.d/hallpass.conf"
 	label     = "system/com.github.mbriggs.hallpass"
 	user      = "_hallpass"
+	// logPath is where launchd sends the broker's output, the audit log.
+	logPath = "/var/log/hallpass.log"
 )
 
 // Install creates the service user, copies the binary, writes the git and gh
@@ -65,7 +68,6 @@ func Install(cfg *config.Config) error {
 	if out, err := exec.Command("/usr/bin/tmutil", "addexclusion", "/var/db/hallpass").CombinedOutput(); err != nil {
 		fmt.Fprintf(os.Stderr, "Couldn't exclude /var/db/hallpass from Time Machine (%v: %s). Run: sudo tmutil addexclusion /var/db/hallpass\n", err, bytes.TrimSpace(out))
 	}
-	const logPath = "/var/log/hallpass.log"
 	logf, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640) //nolint:gosec // the broker's own user and group read the audit log; nobody else can
 	if err != nil {
 		return err
@@ -106,7 +108,10 @@ func reload() error {
 
 func Restart() error { return run("launchctl", "kickstart", "-k", label) }
 
-func LogHint() string { return "/var/log/hallpass.log" }
+// OpenLog reads the broker's log, with what newsyslog rotated out of it,
+// oldest first. The file has no index by time, so since is left to the
+// caller's filter.
+func OpenLog(time.Time) (io.ReadCloser, error) { return openLogFiles(logPath) }
 
 func Uninstall(purge bool) error {
 	_ = exec.Command("launchctl", "bootout", label).Run()

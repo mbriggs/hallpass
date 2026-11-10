@@ -122,10 +122,14 @@ It mitigates these:
   few months, which revokes the old one.
 - **Not knowing what happened.** The broker logs every request it allows or
   refuses, with the client's uid and process chain, for example
-  `git push origin fix < claude`. Read the log with
-  `sudo journalctl -u hallpass` on Linux, or `sudo cat /var/log/hallpass.log`
-  on macOS. The client controls its command line, so treat the chain as a
-  lead, not proof.
+  `git push origin fix < claude`. `sudo /opt/hallpass/bin/hallpass log`
+  prints it a line per request, and `--refused`, `--repo`, and `--since`
+  narrow it down. `log --summary` counts the refusals by repo and reason,
+  and keeps the command that would allow each one where the refusal names
+  it, so you can see which policies agents keep running into. The log
+  itself is in the journal on Linux and `/var/log/hallpass.log` on macOS.
+  The client controls its command line, so treat the chain as a lead, not
+  proof.
 - **Commits made elsewhere in your name.** Anyone can set git's author to
   you. With the signing key, the git config turns on `commit.gpgsign` and
   `tag.gpgsign`, so every git on the machine signs every commit and tag
@@ -421,6 +425,7 @@ Run `hallpass help` for the full list. Root commands go through
 | `disallow OWNER/REPO` | root | Removes an allowlist entry |
 | `policy allow\|deny\|reset OP... [--repo OWNER/REPO]` | root | Changes what agents may do, everywhere or in one entry |
 | `policy show [OWNER/REPO]` | you | Lists the operations, or what's in effect in one repo |
+| `log [--refused] [--repo OWNER/REPO] [--since 2h] [--summary]` | root | Prints the audit log, a line per request, oldest first. `--since` also takes `3d` or a date. `--summary` counts refusals by repo and reason. GraphQL requests that name what they change by ID carry no repo in the log, so `--repo` leaves them out |
 | `uninstall [--purge]` | root | Removes what `install` added. `--purge` also revokes the token and deletes the credentials and config |
 | `status [--check]` | you | Reports the broker's state. `--check` also asks GitHub |
 | `doctor` | you | Checks this machine's git, gh, and signing setup against the broker |

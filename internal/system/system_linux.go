@@ -1,9 +1,12 @@
 package system
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"time"
 
 	"github.com/mbriggs/hallpass/internal/config"
 )
@@ -59,8 +62,41 @@ func Restart() error {
 	return nil
 }
 
-// LogHint tells the user where the audit log is.
-func LogHint() string { return "journalctl -u hallpass" }
+// OpenLog reads the broker's log from the journal, oldest first. A nonzero
+// since asks the journal for only what came after it.
+func OpenLog(since time.Time) (io.ReadCloser, error) {
+	args := []string{"--unit=hallpass", "--output=cat", "--no-pager", "--quiet"}
+	if !since.IsZero() {
+		args = append(args, fmt.Sprintf("--since=@%d", since.Unix()))
+	}
+	cmd := exec.Command("journalctl", args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	return &journal{ReadCloser: out, cmd: cmd, stderr: &stderr}, nil
+}
+
+// journal is journalctl's output. Close waits for journalctl and reports
+// its failure.
+type journal struct {
+	io.ReadCloser
+	cmd    *exec.Cmd
+	stderr *bytes.Buffer
+}
+
+func (j *journal) Close() error {
+	_, _ = io.Copy(io.Discard, j.ReadCloser)
+	if err := j.cmd.Wait(); err != nil {
+		return fmt.Errorf("journalctl: %w: %s", err, bytes.TrimSpace(j.stderr.Bytes()))
+	}
+	return nil
+}
 
 // Uninstall stops the broker and removes what Install added. It leaves the
 // key and config unless purge is set.
