@@ -12,6 +12,9 @@ import (
 	"unicode/utf8"
 )
 
+// utc renders with no color, in UTC.
+var utc = View{Loc: time.UTC}
+
 // testdata/broker.log is a scratch broker's log from a verify-hallpass
 // drive.sh all run, as the broker writes it to /var/log/hallpass.log and
 // journalctl -o cat prints it.
@@ -60,7 +63,7 @@ func TestParseFields(t *testing.T) {
 	if r.Get("procs") != "gh < bash" || r.Get("route") != "PUT pulls/#/merge" || r.Get("uid") != "501" {
 		t.Errorf("attrs: %+v", r.Attrs)
 	}
-	got := Line(r, time.UTC)
+	got := utc.Line(r)
 	wantLine := "2026-11-10 12:20:08  refused  gh   acme/widgets  PUT pulls/#/merge: agents may not merge PRs in acme/widgets. To allow it: sudo /opt/hallpass/bin/hallpass policy allow pr.merge --repo acme/widgets  (uid 501: gh < bash)"
 	if got != wantLine {
 		t.Errorf("Line:\n got %s\nwant %s", got, wantLine)
@@ -102,7 +105,7 @@ func TestRefusalsOfPush(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("Refusals:\n got %q\nwant %q", got, want)
 	}
-	if l := Line(r, time.UTC); !strings.Contains(l, "push: refs/heads/main: main is the default branch;") || !strings.Contains(l, "; refs/tags/v1: agents can't push tags") {
+	if l := utc.Line(r); !strings.Contains(l, "push: refs/heads/main: main is the default branch;") || !strings.Contains(l, "; refs/tags/v1: agents can't push tags") {
 		t.Errorf("Line: %s", l)
 	}
 	// A refs attr in some other form keeps the reason as logged.
@@ -160,7 +163,7 @@ func TestSummary(t *testing.T) {
 		t.Errorf("groups count %d refusals, want 28", total)
 	}
 	var buf bytes.Buffer
-	if err := WriteSummary(&buf, groups, time.UTC); err != nil {
+	if err := utc.WriteSummary(&buf, groups); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
@@ -169,11 +172,20 @@ func TestSummary(t *testing.T) {
 		"sudo /opt/hallpass/bin/hallpass policy allow pr.merge --repo acme/widgets",
 		"sudo /opt/hallpass/bin/hallpass policy allow push.default --repo acme/widgets",
 		"release/1 is protected in hallpass's config",
-		"(no repo)",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("summary lacks %q", want)
 		}
+	}
+	// The refusals with no repo file under the via they came through, and
+	// "(no repo)" is left for a line that doesn't say.
+	for _, g := range groups {
+		if g.Repo == "" && g.What != "gh" && g.What != "ctl sign" {
+			t.Errorf("no-repo group filed under %q: %+v", g.What, g)
+		}
+	}
+	if strings.Contains(out, "(no repo)") {
+		t.Error("summary says (no repo) where the line names its via")
 	}
 	for i := 1; i < len(groups); i++ {
 		if groups[i].Count > groups[i-1].Count {
@@ -214,7 +226,7 @@ func TestMultiRepo(t *testing.T) {
 	if len(g) != 1 || g[0].Repo != "acme/widgets,acme/secret" || g[0].Count != 2 {
 		t.Errorf("summary: %+v", g)
 	}
-	if l := Line(r, time.UTC); !strings.Contains(l, "  acme/widgets,acme/secret  graphql repository,node: node is in") {
+	if l := utc.Line(r); !strings.Contains(l, "  acme/widgets,acme/secret  graphql repository,node: node is in") {
 		t.Errorf("Line: %s", l)
 	}
 }
@@ -248,6 +260,7 @@ func TestSummaryCounts(t *testing.T) {
 var hostile = []string{
 	"\x1b]0;pwned\x07git push",
 	"\x1b[2J\x1b[Hall clear",
+	"\x1b[0mreset and \x1b[1;31mred",
 	"ok\rrefused",
 	"\u009b31m C1 CSI",
 	"evil\u202egnp.exe",
@@ -286,10 +299,10 @@ func TestHostileRoundTrip(t *testing.T) {
 			}
 		}
 		recs = append(recs, r)
-		assertPrintable(t, Line(r, time.UTC))
+		assertPrintable(t, utc.Line(r))
 	}
 	var sum bytes.Buffer
-	if err := WriteSummary(&sum, Summarize(recs), time.UTC); err != nil {
+	if err := utc.WriteSummary(&sum, Summarize(recs)); err != nil {
 		t.Fatal(err)
 	}
 	for l := range strings.SplitSeq(strings.TrimSuffix(sum.String(), "\n"), "\n") {
@@ -377,9 +390,9 @@ func FuzzParse(f *testing.F) {
 		if !ok {
 			return
 		}
-		assertPrintable(t, Line(r, time.UTC))
+		assertPrintable(t, utc.Line(r))
 		var buf bytes.Buffer
-		_ = WriteSummary(&buf, Summarize([]Record{r}), time.UTC)
+		_ = utc.WriteSummary(&buf, Summarize([]Record{r}))
 		for l := range strings.SplitSeq(strings.TrimSuffix(buf.String(), "\n"), "\n") {
 			assertPrintable(t, l)
 		}
