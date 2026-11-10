@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -25,7 +26,7 @@ import (
 )
 
 // GitHubHostKeys are the keys GitHub publishes at api.github.com/meta. The
-// broker talks to nothing else.
+// broker talks to nothing else. ssh.github.com:443 presents the same keys.
 var GitHubHostKeys = []string{
 	"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl",
 	"ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=",
@@ -39,9 +40,9 @@ type Server struct {
 	Ledger    *Ledger
 	Log       *slog.Logger
 	Permitted func(peer.Peer) bool
-	// Addr and HostKeys default to github.com:22 and GitHubHostKeys. Tests
-	// point them at a local server.
-	Addr     string
+	// Addrs and HostKeys default to GitHubAddrs and GitHubHostKeys. Tests
+	// point them at local servers.
+	Addrs    []string
 	HostKeys []string
 	// CurrentName asks GitHub what a repo is called now. The gate follows
 	// an old name left by a rename or transfer only when the allowlist
@@ -50,7 +51,23 @@ type Server struct {
 	CurrentName func(context.Context, github.Repo) (github.Repo, error)
 
 	limits limits
+
+	mu sync.Mutex
+	// last is the address the last connection reached, tried first next
+	// time, so a network that blocks port 22 waits on it only once.
+	last string
 }
+
+// GitHubAddrs are where GitHub serves SSH, in the order the broker tries
+// them: port 22, then port 443 for networks that block 22.
+var GitHubAddrs = []string{"github.com:22", "ssh.github.com:443"}
+
+// An address that has another after it gets quickDial to connect; the last
+// one tried gets fullDial.
+const (
+	quickDial = 5 * time.Second
+	fullDial  = 20 * time.Second
+)
 
 // limits bounds the gate's connections: how many it serves at once, how
 // long a client has to send its header, and how long a connection may go
@@ -238,7 +255,7 @@ func (s *Server) handle(conn net.Conn, lim limits) {
 		}
 	}
 
-	client, err := s.dial()
+	client, _, err := s.dial()
 	if err != nil {
 		fail("couldn't reach GitHub over SSH: "+err.Error(), "err", err)
 		return
@@ -511,17 +528,18 @@ func headBranch(adv []byte) (string, error) {
 	return "", nil
 }
 
-// Check confirms GitHub accepts the key. GitHub answers a session with no
-// command by greeting the account the key belongs to, and then closing it.
-func (s *Server) Check() (string, error) {
-	client, err := s.dial()
+// Check confirms GitHub accepts the key, and says which address it reached.
+// GitHub answers a session with no command by greeting the account the key
+// belongs to, and then closing it.
+func (s *Server) Check() (login, addr string, err error) {
+	client, addr, err := s.dial()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer client.Close()
 	sess, err := client.NewSession()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer sess.Close()
 	// Read the channel's streams directly. They work whether or not GitHub
@@ -530,11 +548,11 @@ func (s *Server) Check() (string, error) {
 	// raced, and lost the greeting about half the time.
 	stdout, err := sess.StdoutPipe()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	stderr, err := sess.StderrPipe()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	go func() { _, _ = io.Copy(io.Discard, stdout) }()
 	_ = sess.Shell()
@@ -542,19 +560,22 @@ func (s *Server) Check() (string, error) {
 	// provide shell access."
 	b, err := io.ReadAll(io.LimitReader(stderr, 4096))
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	msg := string(b)
-	if login, _, ok := strings.Cut(strings.TrimPrefix(msg, "Hi "), "!"); ok && strings.HasPrefix(msg, "Hi ") {
-		return login, nil
+	if name, _, ok := strings.Cut(strings.TrimPrefix(msg, "Hi "), "!"); ok && strings.HasPrefix(msg, "Hi ") {
+		return name, addr, nil
 	}
-	return "", fmt.Errorf("GitHub didn't recognize the key: %s", strings.TrimSpace(msg))
+	return "", "", fmt.Errorf("GitHub didn't recognize the key: %s", strings.TrimSpace(msg))
 }
 
-func (s *Server) dial() (*ssh.Client, error) {
+// dial connects to the first of the addresses that answers, starting with the
+// one that worked last. It moves on only when the TCP connection fails: a
+// host key or auth failure on one address would fail on the others too.
+func (s *Server) dial() (*ssh.Client, string, error) {
 	signer, err := ssh.NewSignerFromSigner(s.Signer)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	keys := s.HostKeys
 	if keys == nil {
@@ -565,16 +586,12 @@ func (s *Server) dial() (*ssh.Client, error) {
 	for _, k := range keys {
 		pk, _, _, _, err := ssh.ParseAuthorizedKey([]byte(k))
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		pinned = append(pinned, pk)
 		algs = append(algs, pk.Type())
 	}
-	addr := s.Addr
-	if addr == "" {
-		addr = "github.com:22"
-	}
-	return ssh.Dial("tcp", addr, &ssh.ClientConfig{
+	cfg := &ssh.ClientConfig{
 		User:              "git",
 		Auth:              []ssh.AuthMethod{ssh.PublicKeys(signer)},
 		HostKeyAlgorithms: algs,
@@ -586,8 +603,54 @@ func (s *Server) dial() (*ssh.Client, error) {
 			}
 			return errors.New("GitHub's host key doesn't match the keys GitHub publishes")
 		},
-		Timeout: 20 * time.Second,
-	})
+	}
+	addrs := s.order()
+	var failed []string
+	for i, addr := range addrs {
+		timeout := fullDial
+		if i < len(addrs)-1 {
+			timeout = quickDial
+		}
+		conn, err := net.DialTimeout("tcp", addr, timeout)
+		if err != nil {
+			failed = append(failed, err.Error())
+			continue
+		}
+		c, chans, reqs, err := ssh.NewClientConn(conn, addr, cfg)
+		if err != nil {
+			return nil, "", err
+		}
+		s.reached(addr)
+		return ssh.NewClient(c, chans, reqs), addr, nil
+	}
+	return nil, "", errors.New(strings.Join(failed, "; "))
+}
+
+// order lists the addresses to try, the one that worked last first.
+func (s *Server) order() []string {
+	addrs := s.Addrs
+	if addrs == nil {
+		addrs = GitHubAddrs
+	}
+	s.mu.Lock()
+	last := s.last
+	s.mu.Unlock()
+	i := slices.Index(addrs, last)
+	if i <= 0 {
+		return addrs
+	}
+	return append([]string{last}, slices.Delete(slices.Clone(addrs), i, i+1)...)
+}
+
+// reached records addr as the one to try first, and logs when that changes.
+func (s *Server) reached(addr string) {
+	s.mu.Lock()
+	changed := s.last != addr
+	s.last = addr
+	s.mu.Unlock()
+	if changed && s.Log != nil {
+		s.Log.Info("reaching GitHub over SSH", "addr", addr)
+	}
 }
 
 type capped struct {

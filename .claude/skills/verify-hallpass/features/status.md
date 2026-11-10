@@ -26,8 +26,8 @@ SSH key.
   the scratch config sets no global allow or deny. Its `audit:` line names
   the live broker's log even here; the scratch broker logs to
   `$S/evidence/broker.log`.
-- `status-check`: `--check` adds `GitHub accepts it for verifier` under
-  `ssh:`, with no `FAILED` or `BROKEN`. The fake sees `GET /api/user` with
+- `status-check`: `--check` adds `GitHub accepts it for verifier at ADDR`
+  under `ssh:`, where ADDR is the fake's SSH address, with no `FAILED` or `BROKEN`. The fake sees `GET /api/user` with
   `token-ok`, and an SSH `shell` session with `key-ok`.
 - `status-json`: `--json` has `"login": "verifier"`, and with `--check`,
   `"checked": true`.

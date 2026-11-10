@@ -115,6 +115,7 @@ type CredStatus struct {
 	Created    time.Time `json:"created,omitzero"`
 	Expires    time.Time `json:"expires,omitzero"`
 	Public     string    `json:"public,omitempty"`
+	Addr       string    `json:"addr,omitempty"`
 	CheckError string    `json:"check_error,omitempty"`
 }
 
@@ -124,8 +125,9 @@ type Server struct {
 	Creds  Creds
 	Log    *slog.Logger
 	HTTP   *http.Client
-	// SSHCheck confirms GitHub accepts the SSH key.
-	SSHCheck func() (string, error)
+	// SSHCheck confirms GitHub accepts the SSH key, and says which address
+	// it reached GitHub at.
+	SSHCheck func() (login, addr string, err error)
 	Version  string
 	Binary   string
 }
@@ -225,10 +227,10 @@ func (s *Server) status(check bool) *Status {
 	if k := cfg.SSH; k != nil {
 		st.SSH = &CredStatus{Problem: s.Creds.Problems["ssh"], Public: k.Public}
 		if check && s.SSHCheck != nil {
-			if login, err := s.SSHCheck(); err != nil {
+			if login, addr, err := s.SSHCheck(); err != nil {
 				st.SSH.CheckError = err.Error()
 			} else {
-				st.SSH.Login = login
+				st.SSH.Login, st.SSH.Addr = login, addr
 			}
 		}
 	}

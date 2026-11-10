@@ -44,7 +44,7 @@ func TestGateChecksBothNames(t *testing.T) {
 		Permitted: func(peer.Peer) bool { return true },
 		// Nothing listens here, so a request that passes every check
 		// fails to reach GitHub.
-		Addr: "127.0.0.1:1",
+		Addrs: []string{"127.0.0.1:1"},
 		CurrentName: func(ctx context.Context, r github.Repo) (github.Repo, error) {
 			// The real lookup is an HTTP request, which fails at once on a
 			// context that's already done.

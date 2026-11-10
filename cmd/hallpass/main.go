@@ -196,8 +196,10 @@ func serve(args []string) error {
 		Ledger:    sshgate.OpenLedger(config.StateDir() + "/branches.jsonl"),
 		Log:       log,
 		Permitted: ctl.Permitted,
-		Addr:      cfg.SSHAddr,
 		HostKeys:  cfg.SSHHostKeys,
+	}
+	if cfg.SSHAddr != "" {
+		gate.Addrs = []string{cfg.SSHAddr}
 	}
 	if creds.Token != "" {
 		gate.CurrentName = px.CurrentName
@@ -327,7 +329,7 @@ func status(args []string) error {
 	})
 	line("ssh", st.SSH, func(c *broker.CredStatus) string {
 		if c.Login != "" {
-			return c.Public + "\n          GitHub accepts it for " + c.Login
+			return c.Public + "\n          GitHub accepts it for " + c.Login + " at " + c.Addr
 		}
 		return c.Public
 	})

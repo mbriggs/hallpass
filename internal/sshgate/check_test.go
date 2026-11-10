@@ -72,9 +72,9 @@ func TestCheckReadsGitHubsGreeting(t *testing.T) {
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	for _, replyFirst := range []bool{true, false} {
 		addr, hostKey := greeter(t, replyFirst, githubGreeting)
-		s := &Server{Signer: key, Addr: addr, HostKeys: []string{hostKey}}
+		s := &Server{Signer: key, Addrs: []string{addr}, HostKeys: []string{hostKey}}
 		for i := range 20 {
-			login, err := s.Check()
+			login, _, err := s.Check()
 			if err != nil || login != "octocat" {
 				t.Fatalf("replyFirst=%v, try %d: Check = %q, %v", replyFirst, i, login, err)
 			}
@@ -82,8 +82,8 @@ func TestCheckReadsGitHubsGreeting(t *testing.T) {
 	}
 	// A greeting that isn't GitHub's names no login, even with a "!" in it.
 	addr, hostKey := greeter(t, true, "Welcome to GitLab, @octocat!\n")
-	s := &Server{Signer: key, Addr: addr, HostKeys: []string{hostKey}}
-	if login, err := s.Check(); err == nil {
+	s := &Server{Signer: key, Addrs: []string{addr}, HostKeys: []string{hostKey}}
+	if login, _, err := s.Check(); err == nil {
 		t.Errorf("Check took %q from another host's greeting", login)
 	}
 }
