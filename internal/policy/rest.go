@@ -36,6 +36,14 @@ type REST struct {
 	// Strip names response fields the broker removes at any depth of a
 	// JSON answer.
 	Strip []string
+	// Answer, when set, checks GitHub's decoded JSON answer to a GET. The
+	// broker refuses the whole answer when it returns an error, and refuses
+	// a successful answer that isn't JSON.
+	Answer func(any) error
+	// NeedsToken marks a read GitHub answers only with a token, so the
+	// broker refuses it outside the allowlist instead of sending it
+	// without one.
+	NeedsToken bool
 	// Anonymous marks a GET the allowlist and read tables don't cover and
 	// no policy denies. The broker may send it without the token, so GitHub
 	// shows only what anyone could fetch. Why is the refusal to give when
@@ -171,6 +179,19 @@ func ClassifyREST(method, target string, body []byte, g *Grants) (*REST, error) 
 			return r.anonymous(err.Error()), nil
 		}
 		r.Repo, r.Route = &repo, "GET /search/issues"
+		return r, nil
+	case method == "GET" && rawPath == "/search/code":
+		// GitHub answers code search only with a token, so a query the
+		// broker can't confine is refused, not sent without one.
+		repo, err := CodeSearchRepo(query.Get("q"))
+		if err != nil {
+			return nil, err
+		}
+		if from := g.deniesContents(repo); from != "" {
+			return nil, errorf("hallpass doesn't search code in %s: the policy for %s denies reading some of its files", repo, from)
+		}
+		r.Repo, r.Route, r.NeedsToken = &repo, "GET /search/code", true
+		r.Strip, r.Answer = []string{"temp_clone_token"}, codeAnswer(repo)
 		return r, nil
 	case len(segs) < 3 || segs[0] != "repos":
 		why := "hallpass doesn't allow " + method + " " + rawPath

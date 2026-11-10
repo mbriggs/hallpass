@@ -375,6 +375,25 @@ A refusal that one of these would fix names it:
 hallpass: hallpass doesn't allow reading repos/{repo}/deployments in acme/widgets. Reads are limited to code, PRs, issues, checks, and Actions runs. To allow it: sudo /opt/hallpass/bin/hallpass policy allow read:deployments --repo acme/widgets
 ```
 
+Agents can also search issues, PRs, and code in one allowed repo, `--read`
+entries included. `gh search issues`, `gh search prs`, and `gh search code`
+need `--repo OWNER/NAME`, which gh sends as `repo:OWNER/NAME`. The broker
+refuses a search without exactly one `repo:`, or with `user:`, `org:`, or
+`owner:` (what `--owner` sends):
+
+```text
+hallpass: hallpass searches code only within one repo; add repo:OWNER/NAME (gh search code --repo OWNER/NAME)
+```
+
+A code search may quote a phrase, but `repo:` must stand outside quotes,
+and `repo:`, `user:`, `org:`, and `owner:` can't appear anywhere else in
+the query, even quoted. The broker also checks GitHub's answer, and if
+any result is from another repo, it refuses the whole answer. A policy
+that denies any `read:contents/...` pattern on a repo turns code search
+off there, since a search would show whether the denied files hold a
+word. There's no separate name for code search. GitHub answers code search only with a token, so the broker
+refuses one in a repo outside the allowlist, public or not.
+
 No name adds a write, and none opens secrets and their names, Actions
 permissions and runners, environment secrets and variables, branch
 protection, Dependabot, Codespaces, hooks, deploy keys, invitations,
@@ -391,7 +410,9 @@ so hallpass suits a machine with one user.
 A REST GET that the allowlist or the read tables don't cover goes to GitHub
 without the token. That covers public repos outside the allowlist, paths
 outside `/repos` like `/users/NAME` and `/search/repositories`, and reads
-in an allowed repo that no table lists. GitHub answers such a request with
+in an allowed repo that no table lists. Code search isn't among them:
+GitHub needs a token for it, so the broker refuses a code search it can't
+send with the token. See [API reads](#api-reads). GitHub answers such a request with
 only what anyone could fetch, so nothing private comes back, and agents
 gain nothing they couldn't already get with `curl`. When GitHub won't
 answer, gh gets the refusal it would have had:

@@ -46,16 +46,65 @@ feature_rest() {
   check fail 'hallpass needs the full SHA, not "abc1234"' 'gh api repos/acme/widgets/commits/abc1234'
   fake_lacks commits/
 
+  case_ rest-code-search
+  check 0 'acme/widgets:src/widget0.go' 'gh search code --repo acme/widgets widget'
+  fake_has '"path":"/api/search/code","query":"page=1\u0026per_page=30\u0026q=widget+repo%3Aacme%2Fwidgets","auth":"token-ok"'
+  broker_has 'repo=acme/widgets route="GET /search/code"'
+
+  case_ rest-code-search-read-entry
+  check 0 'acme/readonly:src/widget0.go' 'gh search code --repo acme/readonly widget'
+  fake_has '"auth":"token-ok"'
+
+  case_ rest-code-search-flags
+  check 0 'acme/widgets:src/widget0.go' "gh search code --repo acme/widgets --language go --filename widget0.go --extension go --match file --limit 5 '\"exact phrase\" widget'"
+  fake_has 'in%3Afile+language%3Ago+repo%3Aacme%2Fwidgets'
+
+  case_ rest-code-search-pages
+  check 0 101 'gh search code --repo acme/widgets --limit 150 --json path --jq length widget'
+  fake_has 'page=1\u0026per_page=100'
+  fake_has 'page=2\u0026per_page=100'
+
+  case_ rest-code-search-no-repo
+  check fail 'add repo:OWNER/NAME (gh search code --repo OWNER/NAME)' 'gh search code widget'
+  fake_lacks search/code
+
+  case_ rest-code-search-owner
+  check fail "doesn't allow user:" 'gh search code --owner acme widget'
+  fake_lacks search/code
+
+  case_ rest-code-search-two-repos
+  check fail 'hallpass allows one repo: per code search' "gh api 'search/code?q=widget+repo:acme/widgets+repo:acme/readonly'"
+  fake_lacks search/code
+
+  case_ rest-code-search-allowlist
+  check fail "acme/secret isn't in hallpass's allowlist" 'gh search code --repo acme/secret widget'
+  fake_lacks search/code
+
+  case_ rest-code-search-other-repo-answer
+  check fail 'with a result from another repo, so hallpass refused the whole answer' 'gh search code --repo acme/widgets leak'
+  fake_has '"path":"/api/search/code"'
+  broker_has 'msg=refused'
+
+  # Code search's limit is 10 a minute. Running out of it is GitHub's to
+  # report, and doesn't make the broker hold back the hourly reserve.
+  case_ rest-code-search-throttled
+  check fail 'API rate limit exceeded' 'gh search code --repo acme/widgets throttled'
+  check 0 acme/widgets 'gh api repos/acme/widgets --jq .full_name'
+
   # Each of these changes the config, restarts the broker, and puts the
   # config back.
   local cfg="$S/hallpass.toml"
   cp "$cfg" "$S/hallpass.toml.before-anonymous"
   # The deny line goes right under the acme/widgets entry's match.
-  awk '{print} /^match = "acme\/widgets"$/ {print "deny = [\"read:deployments\"]"}' "$S/hallpass.toml.before-anonymous" > "$cfg"
+  awk '{print} /^match = "acme\/widgets"$/ {print "deny = [\"read:deployments\", \"read:contents/src/**\"]"}' "$S/hallpass.toml.before-anonymous" > "$cfg"
   restart_broker || return
   case_ rest-anonymous-denied
   check fail 'The policy for acme/widgets denies it' 'gh api repos/acme/widgets/deployments'
   fake_lacks deployments
+
+  case_ rest-code-search-denied-path
+  check fail "the policy for acme/widgets denies reading some of its files" 'gh search code --repo acme/widgets widget'
+  fake_lacks search/code
 
   { echo 'deny = ["anonymous"]'; cat "$S/hallpass.toml.before-anonymous"; } > "$cfg"
   restart_broker || return
