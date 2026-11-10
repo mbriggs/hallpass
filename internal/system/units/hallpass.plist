@@ -14,6 +14,15 @@
   <string>_hallpass</string>
   <key>GroupName</key>
   <string>_hallpass</string>
+  <!-- launchd has no memory cap. The broker checks one push at a time, so
+       it holds about 3 GB at most, and GOMEMLIMIT makes Go collect garbage
+       before its heap doubles past that. hallpass.service explains the
+       numbers. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>GOMEMLIMIT</key>
+    <string>3500MiB</string>
+  </dict>
   <key>Umask</key>
   <integer>63</integer>
   <key>RunAtLoad</key>

@@ -234,6 +234,42 @@ func (m *runtimeMem) read() {
 	m.total = s.TotalAlloc
 }
 
+// What the reader keeps is about what maxTotal counts, so the bound on it
+// bounds the broker's memory.
+func TestReadPackHoldsWhatItCounts(t *testing.T) {
+	var entries []packEntry
+	for i := range 32 {
+		entries = append(entries, packEntry{typ: 2, data: bytes.Repeat([]byte{byte(i)}, 1<<20)})
+	}
+	raw := buildPack(t, entries)
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	p, err := ReadPack(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	if held := int64(after.HeapAlloc) - int64(before.HeapAlloc); held > 40<<20 {
+		t.Errorf("32 MB of trees held %d MB", held>>20)
+	}
+	runtime.KeepAlive(p)
+}
+
+// An object whose zlib checksum is wrong is refused, though its bytes
+// inflate in full.
+func TestReadPackChecksZlibChecksum(t *testing.T) {
+	raw := buildPack(t, []packEntry{{typ: 3, data: []byte("hello, checksum")}})
+	raw = raw[:len(raw)-20]
+	raw[len(raw)-1] ^= 0xff // the last byte of the object's Adler-32
+	sum := sha1.Sum(raw)
+	raw = append(raw, sum[:]...)
+	if _, err := readFast(t, raw); err == nil || !strings.Contains(err.Error(), "malformed pack data") {
+		t.Errorf("ReadPack = %v, want malformed pack data", err)
+	}
+}
+
 // Every object counts against maxInflated by the size it declares, before
 // any of it inflates, including blobs too big to keep. So a pack can't make
 // the broker inflate more than that, however well its blobs compress.

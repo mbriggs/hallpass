@@ -19,11 +19,15 @@ Restart=on-failure
 # journald drops lines past its rate limit, so a flood of cheap refusals
 # could hide a real request. Keep every line instead.
 LogRateLimitIntervalSec=0
-# Each push the broker checks can hold its pack, up to 512 MB, and the
-# commits and trees in it, up to 1 GB. Cap the total, so a client sending
-# many large pushes at once runs the broker out of memory, and systemd
-# restarts it, instead of the kernel killing the user's other processes.
+# Pushed packs wait on disk in the state dir. The broker checks one push at
+# a time, and a check holds at most about 2 GB: up to 1 GB of commits and
+# trees from the pack, and up to 1 GB more fetched from GitHub. Each of the
+# 64 connections adds up to about 10 MB of buffers. Cap the total, so a
+# miscount makes systemd restart the broker instead of the kernel killing
+# the user's other processes. Go lets its heap grow to twice what's live
+# before collecting, so GOMEMLIMIT makes it collect sooner near the cap.
 MemoryMax=4G
+Environment=GOMEMLIMIT=3500MiB
 
 NoNewPrivileges=yes
 CapabilityBoundingSet=
