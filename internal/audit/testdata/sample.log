@@ -1,0 +1,13 @@
+time=2026-11-10T08:03:42.101Z level=INFO msg=allowed uid=501 pid=61001 procs="hallpass < git < zsh < 2.1.322 < zsh" op=status check=false
+time=2026-11-10T08:03:42.102Z level=INFO msg=signed uid=501 pid=61001 procs="hallpass < git < zsh < 2.1.322 < zsh" object="commit \"wip protected paths\""
+time=2026-11-10T08:11:39.500Z level=WARN msg=refused via=ssh uid=501 pid=61020 procs="hallpass < git < ruby < ruby < zsh" repo=rubysec/ruby-advisory-db op=upload-pack reason="rubysec/ruby-advisory-db isn't in hallpass's allowlist. To allow it: sudo /opt/hallpass/bin/hallpass allow rubysec/ruby-advisory-db"
+time=2026-11-10T08:19:14.300Z level=INFO msg=pushed via=ssh uid=501 pid=61042 procs="hallpass < git < bash < zsh < 2.1.322" repo=mbriggs/hallpass op=receive-pack refs=[refs/heads/worktree-agent-ae346336cc682db5b]
+time=2026-11-10T08:19:14.301Z level=INFO msg=allowed via=ssh uid=501 pid=61042 procs="hallpass < git < bash < zsh < 2.1.322" repo=mbriggs/hallpass op=receive-pack exit=0
+time=2026-11-10T08:19:23.010Z level=INFO msg=allowed via=gh uid=501 pid=61050 procs="gh < hallpass < zsh < 2.1.322 < zsh" graphql=node status=200
+time=2026-11-10T08:19:34.020Z level=INFO msg=allowed via=gh uid=501 pid=61050 procs="gh < hallpass < zsh < 2.1.322 < zsh" graphql=node status=200
+time=2026-11-10T08:19:44.030Z level=INFO msg=allowed via=gh uid=501 pid=61050 procs="gh < hallpass < zsh < 2.1.322 < zsh" graphql=node status=200
+time=2026-11-10T08:40:01.000Z level=WARN msg=refused via=gh uid=501 pid=61060 procs="gh < zsh < 2.1.322 < zsh" route="GET /search/code (anonymous)" reason="Without a token, GitHub answered 401 Unauthorized. hallpass doesn't allow GET /search/code"
+time=2026-11-10T08:52:01.000Z level=WARN msg=refused via=gh uid=501 pid=61061 procs="gh < zsh < 2.1.322 < zsh" route="GET /search/code (anonymous)" reason="Without a token, GitHub answered 401 Unauthorized. hallpass doesn't allow GET /search/code"
+time=2026-11-10T09:02:36.000Z level=INFO msg=serving token=true ssh=true signing=true repos=4
+time=2026-11-10T09:03:10.000Z level=WARN msg=refused via=gh uid=501 pid=61070 procs="gh < zsh < 2.1.322 < zsh" route="GET /search/code (anonymous)" reason="Without a token, GitHub answered 401 Unauthorized. hallpass doesn't allow GET /search/code"
+time=2026-11-10T09:03:20.000Z level=WARN msg=refused uid=501 pid=61080 procs="python3 < zsh" reason="malformed request"

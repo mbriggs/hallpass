@@ -56,8 +56,9 @@ Maintenance, as root:
   policy show [OWNER/REPO]             list the operations and what's in effect
   ledger add OWNER/REPO BRANCH COMMIT  let agents update a branch they didn't create, at COMMIT
   ledger list OWNER/REPO               list the branches agents may update
-  log [--refused] [--repo OWNER/REPO] [--since 2h] [--summary]
-                                       what agents asked for and what was refused;
+  log [--refused] [--repo OWNER/REPO] [--since 2h] [--summary] [--all] [--color WHEN]
+                                       what agents asked for and what was refused,
+                                       routine status checks hidden; --all shows them.
                                        --summary counts refusals by repo and reason
   ssh-key remove | signing-key remove | logout
   uninstall [--purge]

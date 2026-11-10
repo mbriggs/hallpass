@@ -5,11 +5,19 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
 )
+
+// View says how to render records: in which time zone, and whether to color
+// them with ANSI escapes.
+type View struct {
+	Loc   *time.Location
+	Color bool
+}
 
 // shown are the attrs Line puts in their own places, or leaves out: pid is
 // noise next to the process chain.
@@ -19,59 +27,150 @@ var shown = map[string]bool{
 	"status": true, "exit": true, "reason": true, "refs": true,
 }
 
-// Line renders r on one line for a terminal, in loc's time:
+// Line renders r on one line for a terminal:
 //
 //	2026-11-10 07:20:08  refused  gh   acme/widgets  PUT pulls/#/merge: agents may not ...  (uid 501: gh < zsh < claude)
 //
 // Every value goes through clean, so nothing a client sent can reach the
-// terminal as a control character.
-func Line(r Record, loc *time.Location) string {
-	var b strings.Builder
+// terminal as a control character. Only Line adds escape sequences, around
+// text that is already clean.
+func (v View) Line(r Record) string { return v.line(entry{Record: r, count: 1}) }
+
+// entry is what one output line shows: a record, and either the record that
+// ends the push it began or the later records that repeat it.
+type entry struct {
+	Record
+	// result is the allowed record that ends a push, folded into its pushed
+	// record.
+	result *Record
+	// count is how many identical records the line stands for, and last is
+	// when the last of them was logged.
+	count int
+	last  time.Time
+}
+
+func (v View) line(e entry) string {
+	r := e.Record
+	t := text{color: v.Color}
+	t.add(faint, r.Time.In(v.Loc).Format(time.DateTime))
 	via := r.Get("via")
 	if via == "" && r.Get("uid") != "" {
 		via = "ctl" // the control socket: status and signing
 	}
-	fmt.Fprintf(&b, "%s  %-7s  %-3s", r.Time.In(loc).Format(time.DateTime), clean(r.Msg), clean(via))
+	if via == "" {
+		// The broker's own line, not a request: no via, repo, or process.
+		msg, st := r.Msg, msgStyle(r)
+		if msg == "serving" {
+			msg, st = "broker started", bold
+		}
+		t.add(plain, "  ")
+		t.add(st, msg)
+		for _, a := range r.Attrs {
+			t.add(plain, " "+a.Key+"="+a.Value)
+		}
+		return t.String()
+	}
+	t.add(plain, "  ")
+	t.pad(msgStyle(r), r.Msg, 7)
+	t.add(plain, "  ")
+	what := action(r)
+	if r.Get("repo") == "" && what == "" {
+		t.add(plain, via) // a reason follows it at once
+	} else {
+		t.pad(plain, via, 3)
+	}
 	if repo := r.Get("repo"); repo != "" {
-		b.WriteString("  " + clean(repo))
+		t.add(plain, "  ")
+		t.add(cyan, repo)
 		if now := r.Get("now"); now != "" {
-			b.WriteString(" (now " + clean(now) + ")")
+			t.add(plain, " (now ")
+			t.add(cyan, now)
+			t.add(plain, ")")
 		}
 	}
-	if what := action(r); what != "" {
-		b.WriteString("  " + clean(what))
+	if what != "" {
+		t.add(plain, "  "+what)
 	}
 	switch {
 	case r.Refused():
-		var why []string
-		for _, f := range r.Refusals() {
-			if f.Ref != "" {
-				why = append(why, clean(f.Ref)+": "+clean(f.Reason))
-			} else {
-				why = append(why, clean(f.Reason))
+		t.add(plain, ": ")
+		for i, f := range r.Refusals() {
+			if i > 0 {
+				t.add(plain, "; ")
 			}
+			if f.Ref != "" {
+				t.add(red, f.Ref+": ")
+			}
+			t.add(red, f.Reason)
 		}
-		b.WriteString(": " + strings.Join(why, "; "))
 	case r.Msg == "pushed":
-		b.WriteString(" " + clean(strings.Trim(r.Get("refs"), "[]")))
-	case r.Get("status") != "":
-		b.WriteString(" -> " + clean(r.Get("status")))
-	case r.Get("exit") != "":
-		b.WriteString(" -> exit " + clean(r.Get("exit")))
+		refs := strings.Trim(r.Get("refs"), "[]")
+		if refs == "" {
+			t.add(red, ", GitHub accepted none of the refs")
+		} else {
+			t.add(plain, " "+refs)
+		}
+		if e.result != nil {
+			result(&t, *e.result)
+		}
+	default:
+		result(&t, r)
 	}
 	for _, a := range r.Attrs {
 		if !shown[a.Key] {
-			b.WriteString(" " + clean(a.Key) + "=" + clean(a.Value))
+			t.add(plain, " "+a.Key+"="+a.Value)
 		}
+	}
+	if e.count > 1 {
+		layout := time.TimeOnly
+		if e.last.In(v.Loc).YearDay() != r.Time.In(v.Loc).YearDay() || e.last.Year() != r.Time.Year() {
+			layout = time.DateTime
+		}
+		t.add(plain, "  ")
+		t.add(bold, "x"+strconv.Itoa(e.count))
+		t.add(plain, " until "+e.last.In(v.Loc).Format(layout))
 	}
 	if uid := r.Get("uid"); uid != "" {
-		b.WriteString("  (uid " + clean(uid))
+		chain := "(uid " + uid
 		if procs := r.Get("procs"); procs != "" {
-			b.WriteString(": " + clean(procs))
+			chain += ": " + procs
 		}
-		b.WriteString(")")
+		t.add(plain, "  ")
+		t.add(faint, chain+")")
 	}
-	return b.String()
+	return t.String()
+}
+
+// result writes what came of an allowed request: GitHub's HTTP status, or
+// git's exit code. A failure is red.
+func result(t *text, r Record) {
+	if s := r.Get("status"); s != "" {
+		n, err := strconv.Atoi(s)
+		t.add(plain, " -> ")
+		t.add(failStyle(err != nil || n >= 400), s)
+	} else if x := r.Get("exit"); x != "" {
+		t.add(plain, " -> ")
+		t.add(failStyle(x != "0"), "exit "+x)
+	}
+}
+
+func failStyle(failed bool) style {
+	if failed {
+		return red
+	}
+	return plain
+}
+
+func msgStyle(r Record) style {
+	switch {
+	case r.Refused():
+		return boldRed
+	case r.Level == "ERROR":
+		return red
+	case r.Msg == "pushed" || r.Msg == "signed":
+		return green
+	}
+	return plain
 }
 
 // action names what the client asked for: a REST route, GraphQL fields, a
@@ -92,9 +191,108 @@ func action(r Record) string {
 	return r.Get("op")
 }
 
-// Group counts the refusals that share a repo and a reason.
+// Printer writes records a line each, as Scan hands them over. Unless All
+// is set it keeps the output short in three ways that can't hide a refusal:
+//
+//   - It leaves out allowed status checks on the control socket. git asks
+//     for one before every signature, to see whether the key is the
+//     broker's.
+//   - It folds a push's pushed line and the allowed line that ends the same
+//     connection into one.
+//   - It collapses a run of identical allowed requests from one process,
+//     such as gh pr checks --watch polling, into one line with a count.
+type Printer struct {
+	View
+	All bool
+
+	w       io.Writer
+	pending *entry
+	shown   int
+	hidden  int
+}
+
+// NewPrinter returns a Printer that writes to w.
+func NewPrinter(w io.Writer, v View, all bool) *Printer {
+	return &Printer{View: v, All: all, w: w}
+}
+
+// Add takes the next record.
+func (p *Printer) Add(r Record) error {
+	if p.All {
+		return p.write(entry{Record: r, count: 1})
+	}
+	if routine(r) {
+		p.hidden++
+		return nil
+	}
+	if e := p.pending; e != nil {
+		switch {
+		case endsPush(*e, r):
+			e.result = &r
+			return nil
+		case repeats(*e, r):
+			e.count++
+			e.last = r.Time
+			return nil
+		}
+	}
+	err := p.Flush()
+	p.pending = &entry{Record: r, count: 1, last: r.Time}
+	return err
+}
+
+// Flush writes the line Add is holding back, if any.
+func (p *Printer) Flush() error {
+	if p.pending == nil {
+		return nil
+	}
+	e := *p.pending
+	p.pending = nil
+	return p.write(e)
+}
+
+func (p *Printer) write(e entry) error {
+	p.shown++
+	_, err := fmt.Fprintln(p.w, p.line(e))
+	return err
+}
+
+// Counts reports how many lines the Printer wrote and how many routine
+// records it left out.
+func (p *Printer) Counts() (shown, hidden int) { return p.shown, p.hidden }
+
+// routine reports whether r is an allowed status check on the control
+// socket.
+func routine(r Record) bool {
+	return r.Msg == "allowed" && r.Get("via") == "" && r.Get("op") == "status"
+}
+
+// endsPush reports whether r is the allowed line that closes the push e
+// began. The broker logs both from one connection's logger, so every attr
+// but pushed's refs and allowed's exit is the same, pid included.
+func endsPush(e entry, r Record) bool {
+	return e.Msg == "pushed" && e.result == nil && e.count == 1 &&
+		r.Msg == "allowed" && r.Get("op") == "receive-pack" && r.Get("exit") != "" &&
+		slices.Equal(without(e.Attrs, "refs"), without(r.Attrs, "exit"))
+}
+
+// repeats reports whether r repeats e exactly, time aside: an allowed
+// request from the same process with the same result.
+func repeats(e entry, r Record) bool {
+	return e.result == nil && r.Msg == "allowed" && r.Get("pid") != "" &&
+		e.Level == r.Level && e.Msg == r.Msg && slices.Equal(e.Attrs, r.Attrs)
+}
+
+func without(attrs []Attr, key string) []Attr {
+	return slices.DeleteFunc(slices.Clone(attrs), func(a Attr) bool { return a.Key == key })
+}
+
+// Group counts the refusals that share a repo and a reason. A refusal with
+// no repo files under What instead: the via and what it asked for, as far
+// as the log says.
 type Group struct {
 	Repo   string
+	What   string
 	Reason string
 	Count  int
 	Last   time.Time
@@ -102,17 +300,21 @@ type Group struct {
 
 // Summarize groups the refusals in records by repo and reason, most first.
 func Summarize(records []Record) []Group {
-	type key struct{ repo, reason string }
+	type key struct{ repo, what, reason string }
 	at := map[key]int{}
 	var groups []Group
 	for _, r := range records {
+		what := ""
+		if r.Get("repo") == "" {
+			what = request(r)
+		}
 		for _, f := range r.Refusals() {
-			k := key{strings.ToLower(r.Get("repo")), f.Reason}
+			k := key{strings.ToLower(r.Get("repo")), what, f.Reason}
 			i, ok := at[k]
 			if !ok {
 				i = len(groups)
 				at[k] = i
-				groups = append(groups, Group{Repo: r.Get("repo"), Reason: f.Reason})
+				groups = append(groups, Group{Repo: r.Get("repo"), What: what, Reason: f.Reason})
 			}
 			groups[i].Count++
 			if r.Time.After(groups[i].Last) {
@@ -126,33 +328,97 @@ func Summarize(records []Record) []Group {
 	return groups
 }
 
+// request names a request by its via and action, such as "gh GET
+// /search/code" or "ctl".
+func request(r Record) string {
+	via := r.Get("via")
+	if via == "" && r.Get("uid") != "" {
+		via = "ctl"
+	}
+	return strings.TrimSpace(via + " " + action(r))
+}
+
 // WriteSummary prints groups, each as a count, repo, and last time, with
 // the full reason under it. A reason that names the command that would
 // allow the request keeps it.
-func WriteSummary(w io.Writer, groups []Group, loc *time.Location) error {
+func (v View) WriteSummary(w io.Writer, groups []Group) error {
 	if len(groups) == 0 {
 		_, err := fmt.Fprintln(w, "No refusals.")
 		return err
 	}
 	width := 0
 	for _, g := range groups {
-		width = max(width, utf8.RuneCountInString(repoName(g.Repo)))
+		_, name := groupName(g)
+		width = max(width, utf8.RuneCountInString(clean(name)))
 	}
 	for _, g := range groups {
-		if _, err := fmt.Fprintf(w, "%5d  %-*s  last %s\n       %s\n",
-			g.Count, width, repoName(g.Repo), g.Last.In(loc).Format("2006-01-02 15:04"), clean(g.Reason)); err != nil {
+		t := text{color: v.Color}
+		t.add(bold, fmt.Sprintf("%5d", g.Count))
+		t.add(plain, "  ")
+		st, name := groupName(g)
+		t.pad(st, name, width)
+		t.add(plain, "  ")
+		t.add(faint, "last "+g.Last.In(v.Loc).Format("2006-01-02 15:04"))
+		t.b.WriteString("\n       ")
+		t.add(plain, g.Reason)
+		if _, err := fmt.Fprintln(w, t.String()); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func repoName(repo string) string {
-	if repo == "" {
-		return "(no repo)"
+func groupName(g Group) (style, string) {
+	switch {
+	case g.Repo != "":
+		return cyan, g.Repo
+	case g.What != "":
+		return plain, g.What
 	}
-	return clean(repo)
+	return plain, "(no repo)"
 }
+
+// style is an SGR parameter list, from the 16 basic colors and attributes
+// so it reads on dark and light terminals alike.
+type style string
+
+const (
+	plain   style = ""
+	bold    style = "1"
+	faint   style = "2"
+	red     style = "31"
+	boldRed style = "1;31"
+	green   style = "32"
+	cyan    style = "36"
+)
+
+// text builds a line from cleaned values, and when color is on, wraps each
+// styled value in its escape sequence and a reset. Values go through clean
+// before the escapes go around them, so a value can't open, close, or change
+// a sequence.
+type text struct {
+	b     strings.Builder
+	color bool
+}
+
+// add writes s, cleaned, in style st, and returns how many runes it showed.
+func (t *text) add(st style, s string) int {
+	s = clean(s)
+	if t.color && st != plain {
+		t.b.WriteString("\x1b[" + string(st) + "m" + s + "\x1b[0m")
+	} else {
+		t.b.WriteString(s)
+	}
+	return utf8.RuneCountInString(s)
+}
+
+// pad writes s as add does, then spaces out to width runes.
+func (t *text) pad(st style, s string, width int) {
+	n := t.add(st, s)
+	t.b.WriteString(strings.Repeat(" ", max(0, width-n)))
+}
+
+func (t *text) String() string { return t.b.String() }
 
 // clean makes s safe to print on a terminal: it escapes every rune that
 // isn't printable, as Go would quote it, and every byte that isn't UTF-8.
