@@ -195,10 +195,19 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
+	spoolDir := cfg.SpoolDir
+	if spoolDir == "" {
+		spoolDir = config.SpoolDir()
+	}
+	spool, err := sshgate.OpenSpool(spoolDir, sshgate.MaxSpool)
+	if err != nil {
+		log.Error("push spool didn't open; pushes that carry commits will be refused", "dir", spoolDir, "err", err)
+	}
 	gate := &sshgate.Server{
 		Config:    cfg,
 		Signer:    creds.SSH,
 		Ledger:    sshgate.OpenLedger(config.StateDir() + "/branches.jsonl"),
+		Spool:     spool,
 		Log:       log,
 		Permitted: ctl.Permitted,
 		HostKeys:  cfg.SSHHostKeys,

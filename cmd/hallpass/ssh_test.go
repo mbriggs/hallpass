@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -16,6 +18,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -29,8 +32,9 @@ import (
 
 // fakeGitHubSSH runs real git-upload-pack and git-receive-pack over bare
 // repos in root, for clients that authenticate with clientKey. hook, if
-// set, runs before each command with its service and environment.
-func fakeGitHubSSH(t *testing.T, root string, clientKey ssh.PublicKey, hook func(svc string, env []string)) (addr, hostKey string) {
+// set, runs before each command with its service and environment, and may
+// return a writer that gets a copy of the command's stdin.
+func fakeGitHubSSH(t *testing.T, root string, clientKey ssh.PublicKey, hook func(svc string, env []string) io.Writer) (addr, hostKey string) {
 	t.Helper()
 	hk, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	hs, _ := ssh.NewSignerFromSigner(hk)
@@ -58,7 +62,7 @@ func fakeGitHubSSH(t *testing.T, root string, clientKey ssh.PublicKey, hook func
 	return ln.Addr().String(), strings.TrimSpace(string(ssh.MarshalAuthorizedKey(hs.PublicKey())))
 }
 
-func serveSSH(c net.Conn, cfg *ssh.ServerConfig, root string, hook func(string, []string)) {
+func serveSSH(c net.Conn, cfg *ssh.ServerConfig, root string, hook func(string, []string) io.Writer) {
 	_, chans, reqs, err := ssh.NewServerConn(c, cfg)
 	if err != nil {
 		return
@@ -85,13 +89,17 @@ func serveSSH(c net.Conn, cfg *ssh.ServerConfig, root string, hook func(string, 
 					req.Reply(true, nil)
 					svc, repo, err := sshgate.ParseCommand(cmd.C)
 					status := uint32(1)
+					var capture io.Writer
 					if err == nil && hook != nil {
-						hook(svc, env)
+						capture = hook(svc, env)
 					}
 					if err == nil {
 						g := exec.Command("git", strings.TrimPrefix(svc, "git-"), filepath.Join(root, repo.Owner, repo.Name+".git"))
 						g.Env = append(os.Environ(), env...)
 						g.Stdin, g.Stdout, g.Stderr = ch, ch, ch.Stderr()
+						if capture != nil {
+							g.Stdin = io.TeeReader(ch, capture)
+						}
 						if g.Run() == nil {
 							status = 0
 						}
@@ -157,15 +165,23 @@ func TestGitOverSSHThroughBroker(t *testing.T) {
 	// the broker's blobless fetch, which comes after it reads a push's pack
 	// and before it forwards the push.
 	var flipHead atomic.Pointer[string]
-	addr, hostKey := fakeGitHubSSH(t, root, pub, func(svc string, env []string) {
+	// upstream, when set, gets a copy of what the next receive-pack reads.
+	var upstream atomic.Pointer[syncBuffer]
+	addr, hostKey := fakeGitHubSSH(t, root, pub, func(svc string, env []string) io.Writer {
+		if svc == "git-receive-pack" {
+			if b := upstream.Swap(nil); b != nil {
+				return b
+			}
+		}
 		if svc != "git-upload-pack" || !slices.Contains(env, "GIT_PROTOCOL=version=2") {
-			return
+			return nil
 		}
 		if to := flipHead.Swap(nil); to != nil {
 			if out, err := exec.Command("git", "-C", bare, "symbolic-ref", "HEAD", "refs/heads/"+*to).CombinedOutput(); err != nil {
 				t.Errorf("symbolic-ref: %s", out)
 			}
 		}
+		return nil
 	})
 
 	t.Setenv("HALLPASS_RUN_DIR", tmp)
@@ -174,14 +190,21 @@ func TestGitOverSSHThroughBroker(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close()
+	spoolDir := filepath.Join(tmp, "spool")
+	spool, err := sshgate.OpenSpool(spoolDir, sshgate.MaxSpool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateConfig := &config.Config{
+		SSH:               &config.Key{},
+		Repos:             []config.Repo{{Match: "acme/widgets"}, {Match: "acme/site", Allow: []config.Grant{config.Grant(op.PushDefault)}}},
+		ProtectedBranches: []string{"main", "release/*"},
+	}
 	gate := &sshgate.Server{
-		Config: &config.Config{
-			SSH:               &config.Key{},
-			Repos:             []config.Repo{{Match: "acme/widgets"}, {Match: "acme/site", Allow: []config.Grant{config.Grant(op.PushDefault)}}},
-			ProtectedBranches: []string{"main", "release/*"},
-		},
+		Config:    gateConfig,
 		Signer:    key,
 		Ledger:    sshgate.OpenLedger(""),
+		Spool:     spool,
 		Log:       slog.New(slog.DiscardHandler),
 		Permitted: func(p peer.Peer) bool { return p.Known && p.UID == uint32(os.Getuid()) },
 		Addrs:     []string{addr},
@@ -222,7 +245,17 @@ func TestGitOverSSHThroughBroker(t *testing.T) {
 	if out, _ := gitIn(work, append(env, "GIT_TRACE_PACKET=1"), "ls-remote", "origin", "main"); !strings.Contains(out, "< version 2") {
 		t.Errorf("ls-remote didn't speak protocol v2:\n%s", out)
 	}
-	ok("push", "-q", "origin", "HEAD:agent/fix")
+	// The pack waits on disk while the broker checks it, then reaches
+	// GitHub byte for byte as git sent it. The broker writes the commands
+	// out again, so compare from the pack on.
+	sent := filepath.Join(tmp, "sent")
+	got := new(syncBuffer)
+	upstream.Store(got)
+	ok("-c", "core.sshCommand=tee "+sent+" | "+self+" ssh", "push", "-q", "origin", "HEAD:agent/fix")
+	packOf := func(b []byte) []byte { return b[max(bytes.Index(b, []byte("PACK")), 0):] }
+	if want, _ := os.ReadFile(sent); !bytes.HasPrefix(packOf(want), []byte("PACK")) || !bytes.Equal(packOf(got.Bytes()), packOf(want)) {
+		t.Errorf("GitHub got a %d-byte pack, git sent %d bytes", len(packOf(got.Bytes())), len(packOf(want)))
+	}
 	ok("commit", "-q", "--amend", "--allow-empty", "-m", "amended")
 	ok("push", "-q", "--force", "origin", "HEAD:agent/fix")
 	// Refusals change nothing on either side, so they run at once.
@@ -253,6 +286,14 @@ func TestGitOverSSHThroughBroker(t *testing.T) {
 		[]string{"agents can't change .github/workflows", "push", "origin", "HEAD:agent/fix"},
 		[]string{"agents can't change .github/workflows", "push", "origin", "HEAD:agent/new"},
 	)
+	// None of a refused pack reaches GitHub.
+	got = new(syncBuffer)
+	upstream.Store(got)
+	refused("agents can't change .github/workflows", "push", "origin", "HEAD:agent/new")
+	if bytes.Contains(got.Bytes(), []byte("PACK")) {
+		t.Errorf("GitHub got a refused pack: %q", got.Bytes())
+	}
+	upstream.Store(nil)
 	// Code changes on top of the last pushed commit still go through.
 	gitIn(work, env, "reset", "-q", "--hard", "origin/agent/fix")
 	os.WriteFile(filepath.Join(work, "README"), []byte("code\n"), 0o644)
@@ -359,4 +400,95 @@ func TestGitOverSSHThroughBroker(t *testing.T) {
 	if got, _ := gitIn(bare, plain, "rev-parse", "agent/moved"); got != head {
 		t.Errorf("agent/moved on GitHub is %s, want %s", got, head)
 	}
+	if left, _ := os.ReadDir(spoolDir); len(left) > 0 {
+		t.Errorf("the spool kept %d files", len(left))
+	}
+
+	// A second gate whose spool holds 16 KB in all.
+	tmp2, err := os.MkdirTemp("/tmp", "hpssh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(tmp2) })
+	small, err := sshgate.OpenSpool(filepath.Join(tmp2, "spool"), 16<<10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln2, err := broker.Listen("ssh", filepath.Join(tmp2, "ssh.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln2.Close()
+	gate2 := &sshgate.Server{
+		Config:    gateConfig,
+		Signer:    key,
+		Ledger:    gate.Ledger,
+		Spool:     small,
+		Log:       gate.Log,
+		Permitted: gate.Permitted,
+		Addrs:     gate.Addrs,
+		HostKeys:  gate.HostKeys,
+	}
+	go gate2.Serve(ln2)
+	env = append(env, "HALLPASS_RUN_DIR="+tmp2)
+
+	// A push past the spool's room is refused before any of it reaches
+	// GitHub.
+	noise := make([]byte, 64<<10)
+	rand.Read(noise)
+	os.WriteFile(filepath.Join(work, "noise"), noise, 0o644)
+	gitIn(work, env, "add", "noise")
+	gitIn(work, env, "commit", "-q", "-m", "noise")
+	refused("the broker is holding too many pushes", "push", "origin", "HEAD:agent/big")
+	if out, err := gitIn(bare, plain, "rev-parse", "--verify", "-q", "agent/big"); err == nil {
+		t.Errorf("agent/big reached GitHub at %s", out)
+	}
+
+	// A client that sends most of the room and goes away gives it back.
+	c, err := net.Dial("unix", filepath.Join(tmp2, "ssh.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Write([]byte(`{"service":"git-receive-pack","repo":"acme/widgets"}` + "\n"))
+	if _, _, err := sshgate.ReadFrame(c); err != nil {
+		t.Fatal(err)
+	}
+	cmd := strings.Repeat("0", 40) + " " + strings.Repeat("1", 40) + " refs/heads/agent/gone-away\x00report-status\n"
+	c.Write(fmt.Appendf(nil, "%04x%s0000PACK", len(cmd)+4, cmd))
+	c.Write(make([]byte, 16000))
+	c.Close()
+	gitIn(work, env, "reset", "-q", "--hard", "HEAD~1")
+	gitIn(work, env, "commit", "-q", "--allow-empty", "-m", "small")
+	for start := time.Now(); ; {
+		out, err := gitIn(work, env, "push", "-q", "origin", "HEAD:agent/small")
+		if err == nil {
+			break
+		}
+		if time.Since(start) > 5*time.Second || !strings.Contains(out, "too many pushes") {
+			t.Fatalf("push after a client went away: %s", out)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if left, _ := os.ReadDir(filepath.Join(tmp2, "spool")); len(left) > 0 {
+		t.Errorf("the small spool kept %d files", len(left))
+	}
+}
+
+// syncBuffer is a bytes.Buffer the fake's goroutines can write while the
+// test reads it.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) Bytes() []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return bytes.Clone(s.b.Bytes())
 }

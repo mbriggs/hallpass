@@ -17,10 +17,13 @@ package policy
 // the config references, so an agent allowed push.default could send them
 // to a server of its own.
 
-import "maps"
-
 // guarded are the entries of .github a push may not change.
 var guarded = []string{"workflows", "dependabot.yml", "dependabot.yaml"}
+
+// maxWant bounds the commits the check asks GitHub for. A push names
+// that many only by building on that many commits outside its pack, and
+// each costs memory here and a line in the fetch.
+const maxWant = 1 << 16
 
 // Fetch returns the commits and trees of the given commits already on
 // GitHub, without blobs.
@@ -30,9 +33,17 @@ type Fetch func(commits []string) (map[string]Object, error)
 // commit changes workflows, or the broker couldn't tell. defaultHead is the
 // default branch's commit, or "" for an empty repo.
 func WorkflowChanges(p *Pack, updates []RefUpdate, defaultHead string, fetch Fetch) (map[string]string, error) {
-	objs := p.Objects
+	// The pack's objects win over GitHub's, as they're what the push sends.
+	var extra map[string]Object
+	get := func(id string) (Object, bool) {
+		if o, ok := p.Objects[id]; ok {
+			return o, true
+		}
+		o, ok := extra[id]
+		return o, ok
+	}
 	commitOf := func(id string) (Commit, bool, error) {
-		o, ok := objs[id]
+		o, ok := get(id)
 		if !ok || o.Type != "commit" {
 			return Commit{}, false, nil
 		}
@@ -46,13 +57,13 @@ func WorkflowChanges(p *Pack, updates []RefUpdate, defaultHead string, fetch Fet
 	want := map[string]bool{}
 	need := func(id string) {
 		if id != "" && id != zeroOID {
-			if _, ok := objs[id]; !ok {
+			if _, ok := p.Objects[id]; !ok {
 				want[id] = true
 			}
 		}
 	}
 	need(defaultHead)
-	for _, o := range objs {
+	for _, o := range p.Objects {
 		if o.Type != "commit" {
 			continue
 		}
@@ -70,19 +81,18 @@ func WorkflowChanges(p *Pack, updates []RefUpdate, defaultHead string, fetch Fet
 			need(u.Old)
 		}
 	}
+	if len(want) > maxWant {
+		return nil, errorf("this push builds on too many commits for hallpass to check")
+	}
 	if len(want) > 0 {
 		var ids []string
 		for id := range want {
 			ids = append(ids, id)
 		}
-		extra, err := fetch(ids)
-		if err != nil {
+		var err error
+		if extra, err = fetch(ids); err != nil {
 			return nil, err
 		}
-		merged := make(map[string]Object, len(objs)+len(extra))
-		maps.Copy(merged, extra)
-		maps.Copy(merged, objs)
-		objs = merged
 	}
 
 	entry := func(commit string) (string, bool) {
@@ -93,7 +103,7 @@ func WorkflowChanges(p *Pack, updates []RefUpdate, defaultHead string, fetch Fet
 		if err != nil || !ok {
 			return "", false
 		}
-		t, ok := objs[c.Tree]
+		t, ok := get(c.Tree)
 		if !ok || t.Type != "tree" {
 			return "", false
 		}
@@ -107,7 +117,7 @@ func WorkflowChanges(p *Pack, updates []RefUpdate, defaultHead string, fetch Fet
 		if mode != "40000" {
 			return mode + " " + id, true
 		}
-		gh, ok := objs[id]
+		gh, ok := get(id)
 		if !ok || gh.Type != "tree" {
 			return "", false
 		}

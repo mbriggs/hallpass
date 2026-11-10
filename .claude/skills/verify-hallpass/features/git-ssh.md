@@ -92,6 +92,12 @@ with `up.sh` before running `ssh` again.
   Own-branch updates work until the broker restarts, and doctor's
   `level=ERROR` check fails from then on. The push.default restart loses
   the record of `agent/fix`, so run push.default after the main journey.
+- A pushed pack waits on disk while the broker checks it, in `spool/` in
+  the state dir, or `spool_dir` in the config. `up.sh` sets it to
+  `$S/spool`. The broker unlinks each file as soon as it makes it, so the
+  directory looks empty even mid-push. A broker that can't open the spool
+  logs `msg="push spool didn't open; pushes that carry commits will be refused"`
+  and refuses every push with a pack.
 - An agent may update a branch only from the tip it last pushed. If
   anything else moves the branch, the push is refused with
   `<branch> has changed since an agent last pushed it`. The fix it names,

@@ -85,13 +85,15 @@ ssh_host_key=$(sed -n 2p "$S/fake.ssh")
 url=$(cat "$S/fake.url")
 
 # The broker's config. protected_branches gives the protected-branch
-# refusal something to hit.
+# refusal something to hit. spool_dir holds pushed packs, since the scratch
+# broker can't write the state dir.
 cat > "$S/hallpass.toml" <<EOF
 uids = [$(id -u)]
 protected_branches = ["release/*"]
 api_url = "$url/api"
 ssh_addr = "$ssh_addr"
 ssh_host_keys = ["$ssh_host_key"]
+spool_dir = "$S/spool"
 
 [token]
 secret = "$backend:$S/keys/broker/token"

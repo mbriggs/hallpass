@@ -28,14 +28,19 @@ type Object struct {
 }
 
 // maxKept bounds the inflated size of one object the reader keeps, and
-// maxTotal all of them. maxInflated bounds every object the reader
-// inflates, kept or not, so a small pack of highly compressed blobs can't
-// make it inflate without end. A push that needs more can't be checked, so
-// it's refused.
+// maxTotal all of them, with perObject charged for each object on top of
+// its data. maxInflated bounds every object the reader inflates, kept or
+// not, so a small pack of highly compressed blobs can't make it inflate
+// without end. A push that needs more can't be checked, so it's refused.
+//
+// perObject is what the reader's records and maps hold per object. It
+// measured 230 to 320 bytes, so a pack of millions of tiny objects stays
+// inside maxTotal too.
 const (
 	maxKept     = 8 << 20
 	maxTotal    = 1 << 30
 	maxInflated = 4 << 30
+	perObject   = 512
 )
 
 type rawObject struct {
@@ -97,7 +102,7 @@ func ReadPack(r io.Reader) (*Pack, error) {
 		if err != nil {
 			return nil, err
 		}
-		if total += len(obj.data); total > maxTotal {
+		if total += len(obj.data) + perObject; total > maxTotal {
 			return nil, errorf("this push is too large for hallpass to check")
 		}
 		raws[off] = obj
@@ -273,13 +278,20 @@ func readEntry(cr *countingReader, h io.Writer, off int64, inflate *uint64) (*ra
 	}
 	keep := size <= maxKept
 	if keep {
-		o.data = make([]byte, 0, size)
-		buf := bytes.NewBuffer(o.data)
-		if _, err := io.Copy(buf, io.LimitReader(zr, int64(size)+1)); err != nil {
-			return nil, errorf("malformed pack data")
+		// Read into a slice of exactly the declared size. A bytes.Buffer
+		// grows to twice that plus 512 bytes, past what maxTotal counts.
+		o.data = make([]byte, size)
+		n := 0
+		for n < len(o.data) && err == nil {
+			var k int
+			k, err = zr.Read(o.data[n:])
+			n += k
 		}
-		o.data = buf.Bytes()
-		if uint64(len(o.data)) != size {
+		switch {
+		case err != nil && !errors.Is(err, io.EOF):
+			// zlib's checksum error can come with the last bytes.
+			return nil, errorf("malformed pack data")
+		case n < len(o.data):
 			return nil, errorf("pack object size doesn't match")
 		}
 	} else {
@@ -293,8 +305,12 @@ func readEntry(cr *countingReader, h io.Writer, off int64, inflate *uint64) (*ra
 	}
 	// Reading to EOF makes zlib check its trailer.
 	var one [1]byte
-	if n, _ := zr.Read(one[:]); n != 0 {
+	n, err := zr.Read(one[:])
+	if n != 0 {
 		return nil, errorf("pack object is longer than it says")
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, errorf("malformed pack data")
 	}
 	return o, nil
 }

@@ -94,33 +94,53 @@ func fetchTrees(client *ssh.Client, repo github.Repo, commits []string) (map[str
 	stdin.Close()
 
 	// The response is sections: shallow-info, then packfile, whose lines
-	// carry the pack on side-band 1.
-	var pack bytes.Buffer
+	// carry the pack on side-band 1. ReadPack reads the pack as it arrives,
+	// so only what it keeps stays in memory.
+	pr, pw := io.Pipe()
+	type result struct {
+		p   *policy.Pack
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		p, err := policy.ReadPack(pr)
+		// Take whatever follows, so the loop below never blocks on a
+		// reader that has stopped.
+		_, _ = io.Copy(io.Discard, pr)
+		done <- result{p, err}
+	}()
+	fail := func(err error) (map[string]policy.Object, error) {
+		pw.CloseWithError(err)
+		<-done
+		return nil, err
+	}
 	inPack := false
+	var n int
 	for {
 		line, kind, err := pkt(r)
 		if err != nil {
-			return nil, err
+			return fail(err)
 		}
 		switch {
 		case kind == flush:
-			p, err := policy.ReadPack(&pack)
-			if err != nil {
-				return nil, err
+			_ = pw.Close()
+			res := <-done
+			if res.err != nil {
+				return nil, res.err
 			}
-			return p.Objects, nil
+			return res.p.Objects, nil
 		case kind == delim:
 		case !inPack && string(line) == "packfile\n":
 			inPack = true
 		case inPack && len(line) > 0:
 			switch line[0] {
 			case 1:
-				pack.Write(line[1:])
-				if pack.Len() > 1<<30 {
-					return nil, errors.New("GitHub's answer is too large")
+				if n += len(line) - 1; n > 1<<30 {
+					return fail(errors.New("GitHub's answer is too large"))
 				}
+				_, _ = pw.Write(line[1:])
 			case 3:
-				return nil, fmt.Errorf("GitHub: %s", strings.TrimSpace(string(line[1:])))
+				return fail(fmt.Errorf("GitHub: %s", strings.TrimSpace(string(line[1:]))))
 			}
 		}
 	}

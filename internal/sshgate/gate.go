@@ -35,9 +35,12 @@ var GitHubHostKeys = []string{
 
 // Server serves the SSH socket.
 type Server struct {
-	Config    *config.Config
-	Signer    crypto.Signer
-	Ledger    *Ledger
+	Config *config.Config
+	Signer crypto.Signer
+	Ledger *Ledger
+	// Spool holds each pushed pack while the gate checks it. Without one,
+	// the gate refuses pushes that carry a pack.
+	Spool     *Spool
 	Log       *slog.Logger
 	Permitted func(peer.Peer) bool
 	// Addrs and HostKeys default to GitHubAddrs and GitHubHostKeys. Tests
@@ -51,6 +54,8 @@ type Server struct {
 	CurrentName func(context.Context, github.Repo) (github.Repo, error)
 
 	limits limits
+	// checks holds a slot for each push the gate is checking.
+	checks chan struct{}
 
 	mu sync.Mutex
 	// last is the address the last connection reached, tried first next
@@ -71,12 +76,16 @@ const (
 
 // limits bounds the gate's connections: how many it serves at once, how
 // long a client has to send its header, and how long a connection may go
-// with nothing moving in either direction. Zero fields take the defaults;
-// tests set tighter ones.
+// with nothing moving in either direction. It also bounds how many pushes
+// the gate checks at once, since each check can hold about 2 GB, and how
+// long a push waits for its turn. Zero fields take the defaults; tests set
+// tighter ones.
 type limits struct {
 	conns      int
 	headerWait time.Duration
 	idle       time.Duration
+	checks     int
+	checkWait  time.Duration
 }
 
 func (l limits) withDefaults() limits {
@@ -89,12 +98,19 @@ func (l limits) withDefaults() limits {
 	if l.idle == 0 {
 		l.idle = 10 * time.Minute
 	}
+	if l.checks == 0 {
+		l.checks = 1
+	}
+	if l.checkWait == 0 {
+		l.checkWait = 2 * time.Minute
+	}
 	return l
 }
 
 func (s *Server) Serve(ln net.Listener) error {
 	lim := s.limits.withDefaults()
 	slots := make(chan struct{}, lim.conns)
+	s.checks = make(chan struct{}, lim.checks)
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -279,7 +295,7 @@ func (s *Server) handle(conn net.Conn, lim limits) {
 	}
 
 	if write {
-		if !s.relayPush(client, repo, rule.Ops, in, stdin, stdout, o, log, p.Procs) {
+		if !s.relayPush(client, repo, rule.Ops, in, stdin, stdout, o, log, p.Procs, lim.checkWait) {
 			_ = o.frame(FrameExit, []byte{0})
 			return
 		}
@@ -305,7 +321,7 @@ func (s *Server) handle(conn net.Conn, lim limits) {
 // relayPush runs a receive-pack exchange, checking the push before any of it
 // reaches GitHub. It returns false when it refused the push and answered git
 // itself.
-func (s *Server) relayPush(client *ssh.Client, repo github.Repo, ops op.Set, in *bufio.Reader, stdin io.WriteCloser, stdout io.Reader, o *out, log *slog.Logger, procs string) bool {
+func (s *Server) relayPush(client *ssh.Client, repo github.Repo, ops op.Set, in *bufio.Reader, stdin io.WriteCloser, stdout io.Reader, o *out, log *slog.Logger, procs string, checkWait time.Duration) bool {
 	up := bufio.NewReader(stdout)
 	adv, err := readAdvertisement(up)
 	if err != nil {
@@ -369,19 +385,18 @@ func (s *Server) relayPush(client *ssh.Client, repo github.Repo, ops op.Set, in 
 	}
 
 	// GitHub doesn't stop SSH pushes that change workflows, so the broker
-	// reads the pack and checks before sending any of it.
-	var pack bytes.Buffer
+	// reads the pack and checks before sending any of it. The pack waits on
+	// disk meanwhile.
+	var pack *spooled
 	if push.HasPack() {
-		p, err := policy.ReadPack(io.TeeReader(io.LimitReader(in, maxPack), &pack))
-		if err != nil {
+		var err error
+		if pack, err = s.Spool.take(in); err != nil {
 			return refuse(all(push, err.Error()))
 		}
-		head := refOID(adv, "refs/heads/"+def.name)
-		refused, err := policy.WorkflowChanges(p, push.Updates, head, func(commits []string) (map[string]policy.Object, error) {
-			return fetchTrees(client, repo, commits)
-		})
+		defer pack.release()
+		refused, err := s.checkPack(pack, push, adv, def.name, client, repo, checkWait)
 		if err != nil {
-			return refuse(all(push, "hallpass couldn't check this push for workflow changes: "+err.Error()))
+			return refuse(all(push, err.Error()))
 		}
 		if len(refused) > 0 {
 			return refuse(refused)
@@ -399,10 +414,18 @@ func (s *Server) relayPush(client *ssh.Client, repo github.Repo, ops op.Set, in 
 				return refuse(refused)
 			}
 		}
+		if err := pack.rewind(); err != nil {
+			return refuse(all(push, "hallpass couldn't read this push back from disk: "+err.Error()))
+		}
 	}
 
 	_, _ = stdin.Write(push.Raw)
-	_, _ = stdin.Write(pack.Bytes())
+	if pack != nil {
+		_, _ = io.Copy(stdin, pack)
+		// GitHub can take a while to answer a large push, so free the
+		// disk now.
+		pack.release()
+	}
 	go func() {
 		_, _ = io.Copy(stdin, in)
 		stdin.Close()
@@ -431,8 +454,32 @@ func (s *Server) relayPush(client *ssh.Client, repo github.Repo, ops op.Set, in 
 	return true
 }
 
-// maxPack bounds the pack the broker holds while it checks a push.
-const maxPack = 512 << 20
+// checkPack reads a spooled pack and checks it for workflow changes. It
+// waits for a check slot first, since a check can hold about 2 GB of commits
+// and trees, half from the pack and half fetched from GitHub. The error is
+// the refusal for every ref.
+func (s *Server) checkPack(pack io.Reader, push policy.Push, adv []byte, def string, client *ssh.Client, repo github.Repo, wait time.Duration) (map[string]string, error) {
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case s.checks <- struct{}{}:
+	case <-t.C:
+		return nil, errors.New("the broker is checking too many pushes; try again")
+	}
+	defer func() { <-s.checks }()
+	p, err := policy.ReadPack(pack)
+	if err != nil {
+		return nil, err
+	}
+	head := refOID(adv, "refs/heads/"+def)
+	refused, err := policy.WorkflowChanges(p, push.Updates, head, func(commits []string) (map[string]policy.Object, error) {
+		return fetchTrees(client, repo, commits)
+	})
+	if err != nil {
+		return nil, errors.New("hallpass couldn't check this push for workflow changes: " + err.Error())
+	}
+	return refused, nil
+}
 
 func all(p policy.Push, reason string) map[string]string {
 	m := map[string]string{}
