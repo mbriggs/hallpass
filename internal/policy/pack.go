@@ -448,20 +448,3 @@ func ParseCommit(data []byte) (Commit, error) {
 	}
 	return c, nil
 }
-
-// TreeEntry finds name in a tree object. It returns the entry's mode and ID,
-// or "" when the tree has no such entry.
-func TreeEntry(data []byte, name string) (mode, id string, err error) {
-	for len(data) > 0 {
-		sp := bytes.IndexByte(data, ' ')
-		nul := bytes.IndexByte(data, 0)
-		if sp < 0 || nul < sp || nul+21 > len(data) {
-			return "", "", errorf("malformed tree")
-		}
-		if string(data[sp+1:nul]) == name {
-			return string(data[:sp]), hex.EncodeToString(data[nul+1 : nul+21]), nil
-		}
-		data = data[nul+21:]
-	}
-	return "", "", nil
-}

@@ -89,7 +89,8 @@ It prevents these:
   changes, so the broker reads every pushed pack and refuses a branch whose
   new commit changes `.github/workflows`. It refuses changes to
   `.github/dependabot.yml` the same way, since a registry that file names
-  gets the Dependabot secrets it references. That check is the only guard: the
+  gets the Dependabot secrets it references, and changes to any path you
+  name in [`protected_paths`](#protected-paths). That check is the only guard: the
   token's missing `workflow` scope doesn't apply, because pushes don't use
   the token. Through gh, the broker refuses every write to the contents API,
   and `login` and `install-pat` refuse tokens with `workflow` scope.
@@ -170,11 +171,18 @@ It doesn't protect against these:
   a pattern: agents can create any branch that `protected_branches` in
   `/etc/hallpass/hallpass.toml` doesn't name. The broker doesn't read
   GitHub's rulesets or environments, so add those names there, like
-  `staging` or `deploy/*`.
+  `staging` or `deploy/*`. A script such a workflow runs, like
+  `scripts/deploy.sh`, is the agent's to change unless you name it in
+  [`protected_paths`](#protected-paths). The broker doesn't read workflows
+  to find what they run, so it protects only what you list, and not what
+  those files load in turn, like a script `deploy.sh` sources or a package
+  it installs.
 - **Bots the filter doesn't know.** The filter covers common
   triggers, not every bot's grammar.
 - **Composite actions.** Like GitHub's, the workflow check covers
   `.github/workflows`, not actions elsewhere in the repo that workflows use.
+  Add their directories, like `.github/actions`, to
+  [`protected_paths`](#protected-paths), and pushes can't change them.
 
 ## Protection by platform
 
@@ -290,6 +298,57 @@ GraphQL: hallpass: agents may not merge PRs or add them to the merge queue in ac
 
 The settings live in `/etc/hallpass/hallpass.toml` as `allow` and `deny`
 lists, at the top level and on each `[[repo]]`.
+
+### Protected paths
+
+A push can't change `.github/workflows` or Dependabot's config in any repo.
+`protected_paths` adds files and directories to that check, like the
+scripts your workflows run with secrets, composite actions, or
+`CODEOWNERS`:
+
+```toml
+protected_paths = ["scripts/deploy.sh"]   # every repo
+
+[[repo]]
+match = "acme/widgets"
+protected_paths = [".github/actions", "CODEOWNERS"]
+```
+
+Like `protected_branches`, there's no command for it. Edit the file as
+root, then run `sudo /opt/hallpass/bin/hallpass install`, which checks the
+config and restarts the broker. `hallpass policy show acme/widgets` lists
+the paths in effect there and which layer added each.
+
+The layers add up: a repo gets the built-in paths, the global ones, its
+`OWNER/*` entry's, and its own entry's. Unlike an operation, which the
+narrowest layer decides, an entry can't remove a path a broader layer
+protects, and nothing removes the built-in ones.
+
+The rule is the one workflows get. A branch's new commit must match, at
+every one of these paths, one commit GitHub already trusts for that ref:
+the ref's old commit, or the default branch's head. So rebasing onto
+a default branch where you changed a protected file passes, since the
+branch carries your version. The refusal names the path:
+
+```text
+hallpass: agents can't change scripts/deploy.sh, which protected_paths in hallpass's config names. Push that change yourself with git personal push
+```
+
+A path is a file or a directory from the repo's root, and a directory
+covers everything under it. Writing one where none was is a change too, so
+agents can't add `.github/actions/new` under a protected `.github/actions`.
+So is putting a symlink, a submodule, or a file where a protected
+directory was. Names match without regard to case, since a checkout on
+macOS or Windows reads `Scripts/deploy.sh` as `scripts/deploy.sh`.
+Patterns like `*.sh` aren't supported, and the config refuses them, along
+with absolute paths and `..`.
+
+The check sees only what's stored at each path. A root `.gitattributes`
+can change how a protected file checks out, such as its line endings, a
+protected symlink can point at a file outside the path, and a protected
+submodule's URL lives in `.gitmodules`. Protect those too if it matters.
+A rename on GitHub that the allowlist follows applies the new name's
+entry, so its paths are the ones that count.
 
 ### API reads
 
@@ -424,7 +483,7 @@ Run `hallpass help` for the full list. Root commands go through
 | `allow OWNER/REPO [--read]` | root | Lets agents use a repo, or `OWNER/*` |
 | `disallow OWNER/REPO` | root | Removes an allowlist entry |
 | `policy allow\|deny\|reset OP... [--repo OWNER/REPO]` | root | Changes what agents may do, everywhere or in one entry |
-| `policy show [OWNER/REPO]` | you | Lists the operations, or what's in effect in one repo |
+| `policy show [OWNER/REPO]` | you | Lists the operations and protected paths, or what's in effect in one repo |
 | `log [--refused] [--repo OWNER/REPO] [--since 2h] [--summary]` | root | Prints the audit log, a line per request, oldest first. `--since` also takes `3d` or a date. `--summary` counts refusals by repo and reason. A GraphQL request lists every repo it touches, named or reached by node ID, and `--repo` matches any of them. One that hallpass refuses before it knows a repo, such as a document it can't parse, has none |
 | `uninstall [--purge]` | root | Removes what `install` added. `--purge` also revokes the token and deletes the credentials and config |
 | `status [--check]` | you | Reports the broker's state. `--check` also asks GitHub |

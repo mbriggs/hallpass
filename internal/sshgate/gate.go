@@ -20,7 +20,6 @@ import (
 
 	"github.com/mbriggs/hallpass/internal/config"
 	"github.com/mbriggs/hallpass/internal/github"
-	"github.com/mbriggs/hallpass/internal/op"
 	"github.com/mbriggs/hallpass/internal/peer"
 	"github.com/mbriggs/hallpass/internal/policy"
 )
@@ -295,7 +294,7 @@ func (s *Server) handle(conn net.Conn, lim limits) {
 	}
 
 	if write {
-		if !s.relayPush(client, repo, rule.Ops, in, stdin, stdout, o, log, p.Procs, lim.checkWait) {
+		if !s.relayPush(client, repo, rule, in, stdin, stdout, o, log, p.Procs, lim.checkWait) {
 			_ = o.frame(FrameExit, []byte{0})
 			return
 		}
@@ -321,7 +320,7 @@ func (s *Server) handle(conn net.Conn, lim limits) {
 // relayPush runs a receive-pack exchange, checking the push before any of it
 // reaches GitHub. It returns false when it refused the push and answered git
 // itself.
-func (s *Server) relayPush(client *ssh.Client, repo github.Repo, ops op.Set, in *bufio.Reader, stdin io.WriteCloser, stdout io.Reader, o *out, log *slog.Logger, procs string, checkWait time.Duration) bool {
+func (s *Server) relayPush(client *ssh.Client, repo github.Repo, rule config.Rule, in *bufio.Reader, stdin io.WriteCloser, stdout io.Reader, o *out, log *slog.Logger, procs string, checkWait time.Duration) bool {
 	up := bufio.NewReader(stdout)
 	adv, err := readAdvertisement(up)
 	if err != nil {
@@ -362,7 +361,7 @@ func (s *Server) relayPush(client *ssh.Client, repo github.Repo, ops op.Set, in 
 	check := func(def string) map[string]string {
 		return policy.CheckPush(push, policy.Branches{
 			Default:   def,
-			Ops:       ops,
+			Ops:       rule.Ops,
 			Protected: s.Config.ProtectedBranches,
 			Tip:       func(b string) string { return s.Ledger.Tip(repo, b) },
 			Repo:      repo,
@@ -394,7 +393,7 @@ func (s *Server) relayPush(client *ssh.Client, repo github.Repo, ops op.Set, in 
 			return refuse(all(push, err.Error()))
 		}
 		defer pack.release()
-		refused, err := s.checkPack(pack, push, adv, def.name, client, repo, checkWait)
+		refused, err := s.checkPack(pack, push, adv, def.name, rule.Paths, client, repo, checkWait)
 		if err != nil {
 			return refuse(all(push, err.Error()))
 		}
@@ -454,11 +453,11 @@ func (s *Server) relayPush(client *ssh.Client, repo github.Repo, ops op.Set, in 
 	return true
 }
 
-// checkPack reads a spooled pack and checks it for workflow changes. It
-// waits for a check slot first, since a check can hold about 2 GB of commits
-// and trees, half from the pack and half fetched from GitHub. The error is
-// the refusal for every ref.
-func (s *Server) checkPack(pack io.Reader, push policy.Push, adv []byte, def string, client *ssh.Client, repo github.Repo, wait time.Duration) (map[string]string, error) {
+// checkPack reads a spooled pack and checks it for changes to workflows and
+// protected paths. It waits for a check slot first, since a check can hold
+// about 2 GB of commits and trees, half from the pack and half fetched from
+// GitHub. The error is the refusal for every ref.
+func (s *Server) checkPack(pack io.Reader, push policy.Push, adv []byte, def string, protected []string, client *ssh.Client, repo github.Repo, wait time.Duration) (map[string]string, error) {
 	t := time.NewTimer(wait)
 	defer t.Stop()
 	select {
@@ -472,7 +471,7 @@ func (s *Server) checkPack(pack io.Reader, push policy.Push, adv []byte, def str
 		return nil, err
 	}
 	head := refOID(adv, "refs/heads/"+def)
-	refused, err := policy.WorkflowChanges(p, push.Updates, head, func(commits []string) (map[string]policy.Object, error) {
+	refused, err := policy.WorkflowChanges(p, push.Updates, head, protected, func(commits []string) (map[string]policy.Object, error) {
 		return fetchTrees(client, repo, commits)
 	})
 	if err != nil {

@@ -16,9 +16,22 @@ package policy
 // default branch, and a registry it names receives the Dependabot secrets
 // the config references, so an agent allowed push.default could send them
 // to a server of its own.
+//
+// The config's protected_paths add paths to the same check, like the
+// scripts a workflow runs with secrets, or composite actions. A path is a
+// file or a directory, compared by its entry's mode and ID, so a directory
+// covers everything under it.
 
-// guarded are the entries of .github a push may not change.
-var guarded = []string{"workflows", "dependabot.yml", "dependabot.yaml"}
+import (
+	"bytes"
+	"encoding/hex"
+	"slices"
+	"strings"
+)
+
+// Guarded are the paths a push may not change in any repo. No config or
+// policy removes them.
+var Guarded = []string{".github/workflows", ".github/dependabot.yml", ".github/dependabot.yaml"}
 
 // maxWant bounds the commits the check asks GitHub for. A push names
 // that many only by building on that many commits outside its pack, and
@@ -30,9 +43,10 @@ const maxWant = 1 << 16
 type Fetch func(commits []string) (map[string]Object, error)
 
 // WorkflowChanges returns, per ref, why the push can't go through: its new
-// commit changes workflows, or the broker couldn't tell. defaultHead is the
-// default branch's commit, or "" for an empty repo.
-func WorkflowChanges(p *Pack, updates []RefUpdate, defaultHead string, fetch Fetch) (map[string]string, error) {
+// commit changes workflows or a protected path, or the broker couldn't
+// tell. defaultHead is the default branch's commit, or "" for an empty
+// repo. protected are the config's paths, checked on top of Guarded.
+func WorkflowChanges(p *Pack, updates []RefUpdate, defaultHead string, protected []string, fetch Fetch) (map[string]string, error) {
 	// The pack's objects win over GitHub's, as they're what the push sends.
 	var extra map[string]Object
 	get := func(id string) (Object, bool) {
@@ -95,71 +109,145 @@ func WorkflowChanges(p *Pack, updates []RefUpdate, defaultHead string, fetch Fet
 		}
 	}
 
-	entry := func(commit string) (string, bool) {
+	paths := append(slices.Clone(Guarded), protected...)
+	// states returns what each path holds at commit, or false when an
+	// object it needs is in neither the pack nor GitHub's answer.
+	states := func(commit string) ([]string, bool) {
+		out := make([]string, len(paths))
 		if commit == "" || commit == zeroOID {
-			return "", true
+			return out, true
 		}
 		c, ok, err := commitOf(commit)
 		if err != nil || !ok {
-			return "", false
+			return nil, false
 		}
-		t, ok := get(c.Tree)
-		if !ok || t.Type != "tree" {
-			return "", false
-		}
-		mode, id, err := TreeEntry(t.Data, ".github")
-		if err != nil {
-			return "", false
-		}
-		if id == "" {
-			return "", true
-		}
-		if mode != "40000" {
-			return mode + " " + id, true
-		}
-		gh, ok := get(id)
-		if !ok || gh.Type != "tree" {
-			return "", false
-		}
-		var key string
-		for _, name := range guarded {
-			mode, id, err := TreeEntry(gh.Data, name)
-			if err != nil {
-				return "", false
-			}
-			// Absent entries add nothing, so a .github with none of them
-			// matches no .github at all.
-			if id != "" {
-				key += name + "=" + mode + " " + id + ";"
+		for i, path := range paths {
+			if out[i], ok = pathState(get, c.Tree, path); !ok {
+				return nil, false
 			}
 		}
-		return key, true
+		return out, true
 	}
 
 	const unknown = "hallpass couldn't check this push for workflow changes"
 	refused := map[string]string{}
-	base, baseOK := entry(defaultHead)
+	base, baseOK := states(defaultHead)
 	for _, u := range updates {
 		if u.Delete() {
 			continue
 		}
-		tip, ok := entry(u.New)
+		tip, ok := states(u.New)
 		if !ok || !baseOK {
 			refused[u.Ref] = unknown
 			continue
 		}
-		trusted := tip == base
+		// The tip must match one baseline at every path at once, as a
+		// mix of the two is something neither baseline ran.
+		trusted := slices.Equal(tip, base)
+		var old []string
 		if !u.Create() {
-			old, ok := entry(u.Old)
-			if !ok {
+			if old, ok = states(u.Old); !ok {
 				refused[u.Ref] = unknown
 				continue
 			}
-			trusted = trusted || tip == old
+			trusted = trusted || slices.Equal(tip, old)
 		}
 		if !trusted {
-			refused[u.Ref] = "agents can't change .github/workflows or Dependabot's config. Push that change yourself with git personal push"
+			refused[u.Ref] = changedPaths(paths, tip, base, old)
 		}
 	}
 	return refused, nil
+}
+
+// changedPaths says which paths the tip changed: those that match neither
+// baseline, or when each matches one but not the same one, those that
+// differ from the default branch.
+func changedPaths(paths, tip, base, old []string) string {
+	var changed []string
+	for i := range paths {
+		if tip[i] != base[i] && (old == nil || tip[i] != old[i]) {
+			changed = append(changed, paths[i])
+		}
+	}
+	if len(changed) == 0 {
+		for i := range paths {
+			if tip[i] != base[i] {
+				changed = append(changed, paths[i])
+			}
+		}
+	}
+	for _, p := range changed {
+		if slices.Contains(Guarded, p) {
+			return "agents can't change .github/workflows or Dependabot's config. Push that change yourself with git personal push"
+		}
+	}
+	return "agents can't change " + strings.Join(slices.Compact(changed), ", ") + ", which protected_paths in hallpass's config names. Push that change yourself with git personal push"
+}
+
+// pathState describes what path holds under the tree root: each entry on
+// the way whose name matches the path's, case-insensitively, since a
+// checkout on macOS or Windows reads Scripts/ as scripts/. An entry that
+// should be a directory and isn't, like a symlink or a submodule, ends the
+// walk and goes in the state, so replacing a directory with one is a
+// change. An absent path is "". It's false when a tree it needs is missing,
+// or when more than maxMatches entries match, since a crafted tree that
+// repeats a name would otherwise multiply the walk at every level.
+func pathState(get func(string) (Object, bool), root, path string) (string, bool) {
+	type at struct{ id, path string }
+	cur := []at{{root, ""}}
+	segs := strings.Split(path, "/")
+	var state strings.Builder
+	left := maxMatches
+	for i, seg := range segs {
+		var next []at
+		for _, d := range cur {
+			t, ok := get(d.id)
+			if !ok || t.Type != "tree" {
+				return "", false
+			}
+			entries, err := foldEntries(t.Data, seg, left)
+			if err != nil {
+				return "", false
+			}
+			left -= len(entries)
+			for _, e := range entries {
+				name := d.path + e.name
+				if i < len(segs)-1 && e.mode == "40000" {
+					next = append(next, at{e.id, name + "/"})
+					continue
+				}
+				state.WriteString(name + "=" + e.mode + " " + e.id + ";")
+			}
+		}
+		cur = next
+	}
+	return state.String(), true
+}
+
+type treeEntry struct{ mode, name, id string }
+
+// maxMatches bounds the entries one path's walk may match. A real tree has
+// one entry per name, and maybe a second that differs in case.
+const maxMatches = 64
+
+// foldEntries returns the entries of a tree whose names match name,
+// ignoring case. It fails past limit matches.
+func foldEntries(data []byte, name string, limit int) ([]treeEntry, error) {
+	var out []treeEntry
+	want := []byte(name)
+	for len(data) > 0 {
+		sp := bytes.IndexByte(data, ' ')
+		nul := bytes.IndexByte(data, 0)
+		if sp < 0 || nul < sp || nul+21 > len(data) {
+			return nil, errorf("malformed tree")
+		}
+		if n := data[sp+1 : nul]; bytes.EqualFold(n, want) {
+			if len(out) == limit {
+				return nil, errorf("a tree in this push repeats a name")
+			}
+			out = append(out, treeEntry{string(data[:sp]), string(n), hex.EncodeToString(data[nul+1 : nul+21])})
+		}
+		data = data[nul+21:]
+	}
+	return out, nil
 }

@@ -13,6 +13,23 @@ import (
 	"github.com/mbriggs/hallpass/internal/system"
 )
 
+// allowEntry adds an allowlist entry for match, or sets the access of the
+// one there. Allowing a repo again changes its access, not its policy or
+// protected paths.
+func allowEntry(cfg *config.Config, match string, read bool) {
+	access := ""
+	if read {
+		access = "read"
+	}
+	for i, r := range cfg.Repos {
+		if strings.EqualFold(r.Match, match) {
+			cfg.Repos[i].Match, cfg.Repos[i].Access = match, access
+			return
+		}
+	}
+	cfg.Repos = append(cfg.Repos, config.Repo{Match: match, Access: access})
+}
+
 func allow(args []string) error {
 	fs := flag.NewFlagSet("allow", flag.ExitOnError)
 	read := fs.Bool("read", false, "agents may read but not write")
@@ -31,21 +48,7 @@ func allow(args []string) error {
 	if err != nil {
 		return err
 	}
-	entry := config.Repo{Match: match}
-	if *read {
-		entry.Access = "read"
-	}
-	replaced := false
-	for i, r := range cfg.Repos {
-		if strings.EqualFold(r.Match, match) {
-			// Allowing a repo again changes its access, not its policy.
-			entry.Allow, entry.Deny = r.Allow, r.Deny
-			cfg.Repos[i], replaced = entry, true
-		}
-	}
-	if !replaced {
-		cfg.Repos = append(cfg.Repos, entry)
-	}
+	allowEntry(cfg, match, *read)
 	if err := commit(cfg); err != nil {
 		return err
 	}

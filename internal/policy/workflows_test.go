@@ -93,7 +93,7 @@ func TestWorkflowChanges(t *testing.T) {
 		if from != "skip" {
 			p = r.pack(tip, from)
 		}
-		got, err := WorkflowChanges(p, []RefUpdate{{Old: old, New: tip, Ref: "refs/heads/agent/x"}}, def, r.fetch)
+		got, err := WorkflowChanges(p, []RefUpdate{{Old: old, New: tip, Ref: "refs/heads/agent/x"}}, def, nil, r.fetch)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -227,15 +227,15 @@ func TestReadPackStopsAtTrailer(t *testing.T) {
 	}
 }
 
-func TestTreeEntryRefusesMalformed(t *testing.T) {
+func TestFoldEntriesRefusesMalformed(t *testing.T) {
 	id := bytes.Repeat([]byte{1}, 20)
 	for name, data := range map[string]string{
 		"no space":     "40000.github\x00" + string(id),
 		"no NUL":       "40000 .github" + string(id),
 		"truncated ID": "40000 .github\x00" + string(id[:10]),
 	} {
-		if mode, id, err := TreeEntry([]byte(data), ".github"); err == nil {
-			t.Errorf("%s: read as %q %q", name, mode, id)
+		if entries, err := foldEntries([]byte(data), ".github", maxMatches); err == nil {
+			t.Errorf("%s: read as %v", name, entries)
 		}
 	}
 }
@@ -370,7 +370,7 @@ func TestWorkflowChangesHandBuilt(t *testing.T) {
 		for _, c := range cases {
 			p := &Pack{Objects: map[string]Object{}}
 			updates := c.pack(p.Objects)
-			got, err := WorkflowChanges(p, updates, c.def, fetch)
+			got, err := WorkflowChanges(p, updates, c.def, nil, fetch)
 			if err != nil {
 				t.Fatalf("%s: %v", c.name, err)
 			}
