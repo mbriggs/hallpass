@@ -35,7 +35,8 @@ $(GOLANGCI_LINT):
 # the package's testdata/fuzz/; commit it with the fix so the seeds keep it.
 FUZZTIME ?= 30s
 FUZZ_TARGETS := policy:FuzzReadPush policy:FuzzReadPack policy:FuzzWorkflowChanges \
-  policy:FuzzApplyDelta policy:FuzzGraphQLReprint policy:FuzzCodeSearchRepo github:FuzzParseRepo audit:FuzzParse
+  policy:FuzzApplyDelta policy:FuzzGraphQLReprint policy:FuzzCodeSearchRepo github:FuzzParseRepo audit:FuzzParse \
+  sshgate:FuzzCopyRequest sshgate:FuzzReadCapabilities
 fuzz:
 	for t in $(FUZZ_TARGETS); do \
 	  go test -run '^$$' -fuzz "^$${t#*:}$$" -fuzztime $(FUZZTIME) ./internal/$${t%%:*}/ || exit 1; \

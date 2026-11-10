@@ -15,12 +15,15 @@ Verification runs a second broker, not the installed one:
   moves all three sockets, and `--state-dir $S/state` holds the branch
   ledger and the push spool, so the scratch broker never opens the live state dir. The broker
   runs as you, with no root.
-- The config's `api_url`, `ssh_addr`, and `ssh_host_keys` point it at
-  `scripts/fakegithub`, a local server with canned REST/GraphQL answers for
-  `acme/widgets` and an SSH server that runs real `git-upload-pack` and
-  `git-receive-pack`. The API returns 401 to any request without the
-  scratch token, and SSH accepts only the broker's key, so a success there
-  shows the broker added its credential.
+- The config's `api_url`, `git_url`, `ssh_addr`, and `ssh_host_keys` point
+  it at `scripts/fakegithub`, a local server with canned REST/GraphQL
+  answers for `acme/widgets`, an SSH server that runs real
+  `git-upload-pack` and `git-receive-pack`, and git's smart HTTP for the
+  public `octo/public`, through real `git http-backend`. The API returns
+  401 to any request without the scratch token, and SSH accepts only the
+  broker's key, so a success there shows the broker added its credential.
+  Smart HTTP serves only `octo/public`, and only to a request with no
+  credential.
 - The token, SSH key, and signing key are scratch credentials in
   `$S/keys/broker`, made by `scripts/scratchcreds` with the platform's
   backend: `sealed:` on macOS, `file:` elsewhere. That's what the installed
@@ -54,7 +57,8 @@ to the other scripts. In a lane, the harness refuses `S=$(...)`.
 `up.sh [DIR]` builds `bin/hallpass` with `make build`, copies it to `$S/bin`,
 builds the fake, makes a token and P-256 SSH and signing keys, seeds the
 bare repo `acme/widgets` (branches `main` and `colleague`, and
-`.github/workflows/ci.yml`) and a copy of it as `acme/readonly`, and starts
+`.github/workflows/ci.yml`), copies of it as `acme/readonly` and the
+unallowlisted `acme/private`, and the public `octo/public`, and starts
 both processes. It prints the scratch dir once the broker logs
 `msg=serving` with `token=true ssh=true signing=true`, and fails loudly
 otherwise. The allowlist is `acme/widgets` (write), `acme/readonly` (read),

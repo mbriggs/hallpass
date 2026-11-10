@@ -215,6 +215,7 @@ func serve(args []string) error {
 		Log:       log,
 		Permitted: ctl.Permitted,
 		HostKeys:  cfg.SSHHostKeys,
+		GitURL:    cfg.GitURL,
 	}
 	if cfg.SSHAddr != "" {
 		gate.Addrs = []string{cfg.SSHAddr}

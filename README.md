@@ -58,8 +58,8 @@ It prevents these:
   platform; see [Protection by platform](#protection-by-platform).
 - **Reaching repos you didn't allow.** The broker refuses any repo the
   allowlist doesn't cover, for git, gh, and GraphQL node IDs, except a
-  REST read, which goes without the token and so sees only what anyone
-  could. GraphQL
+  REST read or a git fetch, which go without a credential and so see only
+  what anyone could. GraphQL
   reads that walk from an allowed repo into another one, through an owner,
   an author, a fork, or a cross-reference, see only names, IDs, numbers,
   titles, and states, never bodies, code, or comments. Of a repo reached
@@ -221,7 +221,10 @@ includes it from each git's system config:
   github.com it sends the git command to the broker's socket and relays the
   data. The broker connects to GitHub with its key, checking GitHub's
   published host keys, and runs only `git-upload-pack` and
-  `git-receive-pack`. For any other host, `hallpass ssh` runs the real ssh.
+  `git-receive-pack`. A fetch of a repo outside the allowlist goes to
+  `https://github.com` instead, with no credential; see
+  [Reads without the token](#reads-without-the-token). For any other
+  host, `hallpass ssh` runs the real ssh.
 - **gh.** `hallpass gh` runs gh with `GH_CONFIG_DIR=/etc/hallpass/gh`, whose
   `http_unix_socket` setting sends gh's requests as plain HTTP to the broker.
   The broker classifies each REST route and GraphQL document against
@@ -231,9 +234,10 @@ includes it from each git's system config:
   which signs only git commits and tags. Everything else goes to the real
   `ssh-keygen`.
 
-git goes over SSH only, and gh uses the token. With a token and no SSH key,
-the git config still sends github.com to the broker, which refuses git and
-says to run `sudo /opt/hallpass/bin/hallpass ssh-key create`. git never falls
+git reaches the broker over SSH only, and gh uses the token. With a token
+and no SSH key, the git config still sends github.com to the broker, which
+refuses git in allowed repos and says to run
+`sudo /opt/hallpass/bin/hallpass ssh-key create`. git never falls
 through to your own credentials. The broker dials `github.com:22`, and if
 that connection fails, `ssh.github.com:443`, which GitHub serves for
 networks that block port 22. Both present the host keys GitHub publishes at
@@ -428,7 +432,33 @@ outside the allowlist are still refused. Requests without a token share
 GitHub's limit of 60 an hour for the machine's address, and don't count
 against the token's.
 
-The `anonymous` operation turns this off, everywhere or for one entry:
+A git fetch, clone, or `ls-remote` of a repo the allowlist doesn't cover
+also goes without a credential. The broker sends it to
+`https://github.com/OWNER/REPO.git` over git's smart HTTP, with neither
+the token nor the SSH key, and relays GitHub's answer to git. A public repo
+clones and fetches, shallow (`--depth`) and partial (`--filter`) clones
+included, and so do public submodules. A private repo, or one that doesn't
+exist, gets the refusal:
+
+```text
+hallpass: Without a token, GitHub answered 401 Unauthorized. acme/secret isn't in hallpass's allowlist. To allow it: sudo /opt/hallpass/bin/hallpass allow acme/secret
+```
+
+A push to a repo outside the allowlist is still refused, and an allowed
+repo still uses the SSH key. The broker follows a redirect, as GitHub
+sends for a renamed public repo, only to another repo on github.com.
+Fetches need git's protocol v2, which current git uses by default; an older
+protocol is refused with a note to run `git -c protocol.version=2`. GitHub
+limits git without a credential by the machine's address, and when it
+does, git gets `GitHub is limiting git without a token from this machine's
+address`. The broker runs at most 16 of these fetches at once, which leaves
+the rest of its 64 git connections for allowed repos, and cuts one off
+after two hours, or after 10 minutes with nothing moving. The audit log marks
+them `anonymous=true`. Git LFS isn't covered: `hallpass ssh` refuses
+`git-lfs-authenticate` in every repo.
+
+The `anonymous` operation turns all of this off, everywhere or for one
+entry:
 
 ```sh
 sudo /opt/hallpass/bin/hallpass policy deny anonymous
