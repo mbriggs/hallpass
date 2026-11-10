@@ -2,6 +2,7 @@ package audit
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"regexp"
 	"strconv"
@@ -67,6 +68,9 @@ func TestSampleOutput(t *testing.T) {
 2026-11-10 09:02:36  broker started token=true ssh=true signing=true repos=4
 2026-11-10 09:03:10  refused  gh   GET /search/code (anonymous): Without a token, GitHub answered 401 Unauthorized. hallpass doesn't allow GET /search/code  (uid 501: gh < zsh < 2.1.322 < zsh)
 2026-11-10 09:03:20  refused  ctl: malformed request  (uid 501: python3 < zsh)
+2026-11-10 09:10:05  pushed   ssh  mbriggs/hallpass  push refs/heads/agent/a; GitHub rejected refs/heads/agent/b: protected branch hook declined -> exit 0  (uid 501: hallpass < git < bash < zsh < 2.1.322)
+2026-11-10 09:11:40  rejected  ssh  mbriggs/hallpass  push, GitHub rejected refs/heads/agent/a: non-fast-forward -> exit 0  (uid 501: hallpass < git < bash < zsh < 2.1.322)
+2026-11-10 09:12:00  failed   ssh  mbriggs/hallpass  push: couldn't read GitHub's ref list: EOF  (uid 501: hallpass < git < bash < zsh < 2.1.322)
 `
 	if got != want {
 		t.Errorf("got\n%s\nwant\n%s", got, want)
@@ -124,6 +128,21 @@ func TestQuietView(t *testing.T) {
 				logLine(0, "INFO", "allowed", conn("1")+" exit=1"),
 			},
 			[]string{"push refs/heads/a -> exit 1"}},
+		{"a push GitHub rejected part of shows both, and the rest it left out",
+			[]string{
+				logLine(0, "WARN", "pushed", conn("1")+` refs=[refs/heads/a] rejected="[{\"ref\":\"refs/heads/b\",\"reason\":\"no\"},{\"ref\":\"refs/heads/c\",\"reason\":\"a: b; c\"}]" rejected_more=4`),
+				logLine(0, "INFO", "allowed", conn("1")+" exit=0"),
+			},
+			[]string{"push refs/heads/a; GitHub rejected refs/heads/b: no; refs/heads/c: a: b; c; and 4 more -> exit 0"}},
+		{"a rejection from another process doesn't fold",
+			[]string{
+				logLine(0, "WARN", "rejected", conn("1")+` refs=[] rejected="[{\"ref\":\"refs/heads/b\",\"reason\":\"no\"}]"`),
+				logLine(0, "INFO", "allowed", conn("2")+" exit=0"),
+			},
+			[]string{"rejected  ssh  acme/widgets  push, GitHub rejected refs/heads/b: no  (uid", "push -> exit 0"}},
+		{"a rejected attr that isn't JSON shows as logged",
+			[]string{logLine(0, "WARN", "pushed", conn("1")+` refs=[refs/heads/a] rejected="map[refs/heads/b:no]"`)},
+			[]string{"push refs/heads/a rejected=map[refs/heads/b:no]"}},
 		{"a push GitHub rejected says so",
 			[]string{
 				logLine(0, "INFO", "pushed", conn("1")+" refs=[]"),
@@ -151,6 +170,13 @@ func TestQuietView(t *testing.T) {
 				logLine(0, "INFO", "allowed", conn("1")+" exit=0"),
 			},
 			[]string{"push: refs/heads/main: agents can't delete", "push -> exit 0"}},
+		{"a fetch without a credential says so",
+			[]string{
+				logLine(0, "INFO", "allowed", `via=ssh uid=501 pid=1 procs=git repo=octo/public op=upload-pack anonymous=true exit=0`),
+				logLine(1, "WARN", "refused", `via=ssh uid=501 pid=2 procs=git repo=octo/gone op=upload-pack anonymous=true reason="GitHub answered 404"`),
+			},
+			[]string{"allowed  ssh  octo/public  fetch without a credential -> exit 0  (uid 501: git)",
+				"refused  ssh  octo/gone  fetch without a credential: GitHub answered 404  (uid"}},
 		{"a fetch is one line already",
 			[]string{logLine(0, "INFO", "allowed", `via=ssh uid=501 pid=1 procs=git repo=acme/widgets op=upload-pack exit=0`)},
 			[]string{"allowed  ssh  acme/widgets  fetch -> exit 0  (uid 501: git)"}},
@@ -228,9 +254,11 @@ func TestColor(t *testing.T) {
 	color := View{Loc: time.UTC, Color: true}
 	var hostileLog strings.Builder
 	for _, v := range hostile {
-		for _, msg := range []string{"refused", "allowed", "pushed"} {
+		rejected, _ := json.Marshal([]Refusal{{Ref: v, Reason: v}})
+		for _, msg := range []string{"refused", "allowed", "pushed", "rejected", "failed"} {
 			hostileLog.WriteString(logLine(0, "WARN", msg, "via="+strconv.Quote(v)+" uid=501 pid=1 procs="+strconv.Quote(v)+" repo="+strconv.Quote(v)+
-				" route="+strconv.Quote(v)+" reason="+strconv.Quote(v)+" refs="+strconv.Quote("map[refs/heads/"+v+":"+v+"]")+" status="+strconv.Quote(v)+" "+strconv.Quote(v+"k")+"="+strconv.Quote(v)))
+				" route="+strconv.Quote(v)+" reason="+strconv.Quote(v)+" refs="+strconv.Quote("map[refs/heads/"+v+":"+v+"]")+" status="+strconv.Quote(v)+
+				" rejected="+strconv.Quote(string(rejected))+" rejected_more="+strconv.Quote(v)+" "+strconv.Quote(v+"k")+"="+strconv.Quote(v)))
 		}
 		hostileLog.WriteString(logLine(0, "INFO", "serving", strconv.Quote(v+"k")+"="+strconv.Quote(v)))
 	}

@@ -142,7 +142,11 @@ deletes the rest of `$S`.
   or `msg=pushed` line per request (`msg=signed` for a signature), with uid,
   pid, and process chain first and then the request's own fields, as in
   `msg=refused via=gh uid=1000 pid=... procs=... reason=...`. Match on
-  `msg=refused` and the reason separately. These are the lines
+  `msg=refused` and the reason separately. A push where GitHub rejected
+  some refs logs `level=WARN msg=pushed`, and one where it rejected every
+  ref logs `msg=rejected`. Both carry `rejected=`, JSON listing each ref
+  and GitHub's reason. A push that fails before the checks, as when GitHub
+  sends no ref list, logs `level=WARN msg=failed reason=...`. These are the lines
   the live broker writes to `journalctl -u hallpass` on Linux and
   `/var/log/hallpass.log` on macOS.
 - `github-requests.jsonl`: every request that reached the fake, with

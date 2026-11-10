@@ -11,3 +11,8 @@ time=2026-11-10T08:52:01.000Z level=WARN msg=refused via=gh uid=501 pid=61061 pr
 time=2026-11-10T09:02:36.000Z level=INFO msg=serving token=true ssh=true signing=true repos=4
 time=2026-11-10T09:03:10.000Z level=WARN msg=refused via=gh uid=501 pid=61070 procs="gh < zsh < 2.1.322 < zsh" route="GET /search/code (anonymous)" reason="Without a token, GitHub answered 401 Unauthorized. hallpass doesn't allow GET /search/code"
 time=2026-11-10T09:03:20.000Z level=WARN msg=refused uid=501 pid=61080 procs="python3 < zsh" reason="malformed request"
+time=2026-11-10T09:10:05.100Z level=WARN msg=pushed via=ssh uid=501 pid=61090 procs="hallpass < git < bash < zsh < 2.1.322" repo=mbriggs/hallpass op=receive-pack refs=[refs/heads/agent/a] rejected="[{\"ref\":\"refs/heads/agent/b\",\"reason\":\"protected branch hook declined\"}]"
+time=2026-11-10T09:10:05.101Z level=INFO msg=allowed via=ssh uid=501 pid=61090 procs="hallpass < git < bash < zsh < 2.1.322" repo=mbriggs/hallpass op=receive-pack exit=0
+time=2026-11-10T09:11:40.200Z level=WARN msg=rejected via=ssh uid=501 pid=61095 procs="hallpass < git < bash < zsh < 2.1.322" repo=mbriggs/hallpass op=receive-pack refs=[] rejected="[{\"ref\":\"refs/heads/agent/a\",\"reason\":\"non-fast-forward\"}]"
+time=2026-11-10T09:11:40.201Z level=INFO msg=allowed via=ssh uid=501 pid=61095 procs="hallpass < git < bash < zsh < 2.1.322" repo=mbriggs/hallpass op=receive-pack exit=0
+time=2026-11-10T09:12:00.000Z level=WARN msg=failed via=ssh uid=501 pid=61099 procs="hallpass < git < bash < zsh < 2.1.322" repo=mbriggs/hallpass op=receive-pack reason="couldn't read GitHub's ref list: EOF"

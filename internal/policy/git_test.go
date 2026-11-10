@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 
@@ -188,8 +189,12 @@ func TestRefusePushIsReadableStatus(t *testing.T) {
 	writePkt(&framed, "\x02"+strings.Repeat("x", 65520-5))
 	writePkt(&framed, "\x01"+status.String())
 	framed.WriteString("0000")
-	if got := ReportStatus(framed.Bytes(), true); len(got) != 1 || got[0] != "refs/heads/agent/x" {
-		t.Errorf("ReportStatus = %v", got)
+	got := ReportStatus(framed.Bytes(), true)
+	if len(got.Accepted) != 1 || got.Accepted[0] != "refs/heads/agent/x" {
+		t.Errorf("ReportStatus accepted %v", got.Accepted)
+	}
+	if want := []Rejection{{"refs/heads/agent/y", "non-fast-forward"}}; !slices.Equal(got.Rejected, want) {
+		t.Errorf("ReportStatus rejected %q, want %q", got.Rejected, want)
 	}
 }
 

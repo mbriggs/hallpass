@@ -43,6 +43,8 @@ colleagues' branches, tags, or commits that change `.github/workflows` or
 - `git-renamed-allowed` follows an old name when the allowlist covers both
   names.
 - `git-push-default-allowed` pushes `main` once `push.default` is on.
+- `git-push-github-rejects-some` and `git-push-github-rejects-all` log the
+  refs GitHub rejected, and why, and keep them out of the ledger.
 
 ## Driving it
 
@@ -112,6 +114,16 @@ in order, as one journey in `$S/work`:
 - `git-renamed-allowed`: `ls-remote` on `acme/gadgets` lists widgets's
   `main`. The fake sees `GET /api/repos/acme/gadgets` and
   `git-upload-pack 'acme/widgets.git'`, never `acme/gadgets.git`.
+- `git-push-github-rejects-some`: an `update` hook in the fake's bare repo
+  declines `agent/declined`, standing in for a GitHub ruleset. A push of
+  `agent/taken` and `agent/declined` logs `level=WARN msg=pushed
+  refs=[refs/heads/agent/taken]` with `rejected=` naming `agent/declined`
+  and GitHub's `hook declined`, and no `msg=refused`. The ledger records
+  `agent/taken` only.
+- `git-push-github-rejects-all`: a push of `agent/declined` alone logs
+  `level=WARN msg=rejected refs=[]` with the same `rejected=`, and the
+  ledger still lacks it. The case then removes the hook and deletes
+  `agent/taken`.
 - `git-delete-own`: deletes `agent/fix`.
 - `git-refs-unchanged`: the fake's refs match the start. A refused push
   still logs `git-receive-pack`, because the broker reads GitHub's refs
