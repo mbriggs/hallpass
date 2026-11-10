@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -110,7 +111,11 @@ func (s *Server) serveGH(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log = log.With("graphql", strings.Join(g.Fields, ","))
-		if msg := s.checkGraphQL(r.Context(), g); msg != "" {
+		repos, msg := s.checkGraphQL(r.Context(), g)
+		if len(repos) > 0 {
+			log = log.With("repo", joinRepos(repos))
+		}
+		if msg != "" {
 			refuse(http.StatusForbidden, msg)
 			return
 		}
@@ -307,22 +312,25 @@ func stripKeys(v any, keys []string) {
 }
 
 // checkGraphQL checks the repos and node IDs a GraphQL request names. It
-// returns a refusal message, or "".
-func (s *Server) checkGraphQL(ctx context.Context, g *policy.GraphQL) string {
+// returns the repos the request touches, for the audit log, and a refusal
+// message, or "". The repos are those it named and those its node IDs
+// resolved to, as far as the check got before refusing.
+func (s *Server) checkGraphQL(ctx context.Context, g *policy.GraphQL) ([]github.Repo, string) {
 	allowed := func(repo github.Repo) (bool, op.Set, bool) {
 		rule, ok := s.Config.Allowed(repo)
 		return rule.Write, rule.Ops, ok
 	}
+	repos := slices.Clone(g.Repos)
 	for _, r := range g.Repos {
 		if _, _, ok := allowed(r); !ok {
-			return r.String() + " isn't in hallpass's allowlist. To allow it: sudo /opt/hallpass/bin/hallpass allow " + r.String()
+			return repos, r.String() + " isn't in hallpass's allowlist. To allow it: sudo /opt/hallpass/bin/hallpass allow " + r.String()
 		}
 	}
 	if len(g.Nodes) == 0 {
 		if g.Mutation {
-			return "mutation names nothing to check"
+			return repos, "mutation names nothing to check"
 		}
-		return ""
+		return repos, ""
 	}
 	ids := make([]string, len(g.Nodes))
 	for i, n := range g.Nodes {
@@ -330,18 +338,38 @@ func (s *Server) checkGraphQL(ctx context.Context, g *policy.GraphQL) string {
 	}
 	nodes, err := s.resolve(ctx, ids)
 	if err != nil {
-		return "couldn't check which repo an ID belongs to: " + err.Error()
+		return repos, "couldn't check which repo an ID belongs to: " + err.Error()
+	}
+	for _, use := range g.Nodes {
+		if n, ok := nodes[use.ID]; ok {
+			repos = append(repos, n.Repo)
+		}
 	}
 	for _, use := range g.Nodes {
 		n, ok := nodes[use.ID]
 		if !ok {
-			return "couldn't find " + use.Where + " on GitHub"
+			return repos, "couldn't find " + use.Where + " on GitHub"
 		}
 		if err := policy.CheckNode(use, n, allowed); err != nil {
-			return err.Error()
+			return repos, err.Error()
 		}
 	}
-	return ""
+	return repos, ""
+}
+
+// joinRepos writes the repos a request touches as one repo attr: each once,
+// in the order named, joined by commas. A repo name can't hold a comma, so
+// the reader splits on them.
+func joinRepos(repos []github.Repo) string {
+	var out []string
+	seen := map[string]bool{}
+	for _, r := range repos {
+		if !seen[r.Key()] {
+			seen[r.Key()] = true
+			out = append(out, r.String())
+		}
+	}
+	return strings.Join(out, ",")
 }
 
 // resolveQuery asks for what checking a node ID needs.

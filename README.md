@@ -425,7 +425,7 @@ Run `hallpass help` for the full list. Root commands go through
 | `disallow OWNER/REPO` | root | Removes an allowlist entry |
 | `policy allow\|deny\|reset OP... [--repo OWNER/REPO]` | root | Changes what agents may do, everywhere or in one entry |
 | `policy show [OWNER/REPO]` | you | Lists the operations, or what's in effect in one repo |
-| `log [--refused] [--repo OWNER/REPO] [--since 2h] [--summary]` | root | Prints the audit log, a line per request, oldest first. `--since` also takes `3d` or a date. `--summary` counts refusals by repo and reason. GraphQL requests that name what they change by ID carry no repo in the log, so `--repo` leaves them out |
+| `log [--refused] [--repo OWNER/REPO] [--since 2h] [--summary]` | root | Prints the audit log, a line per request, oldest first. `--since` also takes `3d` or a date. `--summary` counts refusals by repo and reason. A GraphQL request lists every repo it touches, named or reached by node ID, and `--repo` matches any of them. One that hallpass refuses before it knows a repo, such as a document it can't parse, has none |
 | `uninstall [--purge]` | root | Removes what `install` added. `--purge` also revokes the token and deletes the credentials and config |
 | `status [--check]` | you | Reports the broker's state. `--check` also asks GitHub |
 | `doctor` | you | Checks this machine's git, gh, and signing setup against the broker |

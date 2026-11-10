@@ -38,7 +38,7 @@ func TestFixtureParses(t *testing.T) {
 	for _, r := range fixture(t) {
 		counts[r.Msg]++
 	}
-	want := map[string]int{"allowed": 39, "refused": 28, "pushed": 4, "signed": 4, "serving": 6,
+	want := map[string]int{"allowed": 37, "refused": 28, "pushed": 4, "signed": 4, "serving": 6,
 		"ledger write failed; after a restart agents can't update this branch": 3}
 	for k, v := range want {
 		if counts[k] != v {
@@ -114,7 +114,7 @@ func TestRefusalsOfPush(t *testing.T) {
 
 func TestFilter(t *testing.T) {
 	recs := fixture(t)
-	since, _ := time.Parse(time.RFC3339, "2026-11-10T07:20:11-05:00")
+	since, _ := time.Parse(time.RFC3339, "2026-11-10T07:49:35-05:00")
 	for _, tc := range []struct {
 		name string
 		f    Filter
@@ -124,13 +124,13 @@ func TestFilter(t *testing.T) {
 		{"refused", Filter{Refused: true}, 28},
 		{"repo", Filter{Repo: "acme/readonly"}, 3},
 		{"repo in another case", Filter{Repo: "ACME/Readonly"}, 3},
-		// 27 lines name it in repo, and one fetch of acme/gadgets names it
+		// 37 lines name it in repo, and one fetch of acme/gadgets names it
 		// as the name GitHub has now.
-		{"repo by its current name", Filter{Repo: "acme/widgets"}, 28},
+		{"repo by its current name", Filter{Repo: "acme/widgets"}, 38},
 		{"repo by its old name", Filter{Repo: "acme/gadgets"}, 1},
 		{"refused in repo", Filter{Refused: true, Repo: "acme/readonly"}, 2},
-		{"since", Filter{Since: since}, 49},
-		{"refused since", Filter{Refused: true, Since: since}, 12},
+		{"since", Filter{Since: since}, 41},
+		{"refused since", Filter{Refused: true, Since: since}, 8},
 	} {
 		n := 0
 		for _, r := range recs {
@@ -179,6 +179,43 @@ func TestSummary(t *testing.T) {
 		if groups[i].Count > groups[i-1].Count {
 			t.Errorf("groups out of order at %d", i)
 		}
+	}
+	// gh pr merge and gh pr review --approve name the PR by node ID. Their
+	// refusals file under the repo the ID resolved to.
+	for _, op := range []string{"pr.merge", "review.verdict"} {
+		found := false
+		for _, g := range groups {
+			if strings.Contains(g.Reason, "policy allow "+op+" ") {
+				found = true
+				if g.Repo != "acme/widgets" {
+					t.Errorf("%s refusal filed under %q", op, g.Repo)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("no %s refusal", op)
+		}
+	}
+}
+
+// A GraphQL request that touches several repos logs them joined by commas.
+// --repo matches any of them, and the summary keeps the set together.
+func TestMultiRepo(t *testing.T) {
+	r, ok := Parse(`time=2026-11-10T07:20:08Z level=WARN msg=refused via=gh uid=501 pid=1 procs=gh graphql=repository,node repo=acme/widgets,acme/secret reason="node is in acme/secret, which isn't in hallpass's allowlist"`)
+	if !ok {
+		t.Fatal("didn't parse")
+	}
+	for repo, want := range map[string]bool{"acme/widgets": true, "ACME/secret": true, "acme/widgets,acme/secret": false, "acme/w": false} {
+		if got := (Filter{Repo: repo}).Match(r); got != want {
+			t.Errorf("--repo %s: %v, want %v", repo, got, want)
+		}
+	}
+	g := Summarize([]Record{r, r})
+	if len(g) != 1 || g[0].Repo != "acme/widgets,acme/secret" || g[0].Count != 2 {
+		t.Errorf("summary: %+v", g)
+	}
+	if l := Line(r, time.UTC); !strings.Contains(l, "  acme/widgets,acme/secret  graphql repository,node: node is in") {
+		t.Errorf("Line: %s", l)
 	}
 }
 
