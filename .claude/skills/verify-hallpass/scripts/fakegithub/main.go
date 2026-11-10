@@ -28,9 +28,11 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -192,6 +194,8 @@ func api(w http.ResponseWriter, r *http.Request, path, body string) {
 		reply(200, `{"id":3,"node_id":"R_3","name":"private","full_name":"acme/private","owner":{"login":"acme"},"default_branch":"main","private":true}`)
 	case path == "/search/issues":
 		reply(200, `{"total_count":0,"incomplete_results":false,"items":[]}`)
+	case path == "/search/code":
+		codeSearch(w, r, reply)
 	case strings.HasPrefix(path, "/repos/acme/widgets/"):
 		rest := strings.Split(strings.TrimPrefix(path, "/repos/acme/widgets/"), "/")
 		if s, ok := actions(r.Method, rest); ok {
@@ -213,6 +217,59 @@ func api(w http.ResponseWriter, r *http.Request, path, body string) {
 	default:
 		reply(404, `{"message":"Not Found"}`)
 	}
+}
+
+// codeSearch answers GET /search/code as GitHub does, with its own rate
+// limit headers. It searches the repo a repo: qualifier names, and every
+// repo the token sees when there's none, as GitHub would. A query holding
+// "leak" also gets a result from acme/private, as if GitHub read the query
+// differently from the broker, and one holding "throttled" gets GitHub's
+// answer when the code search limit is used up. page 1 of 100 results
+// links to a page 2.
+func codeSearch(w http.ResponseWriter, r *http.Request, reply func(int, string)) {
+	q := r.URL.Query()
+	w.Header().Set("X-RateLimit-Resource", "code_search")
+	w.Header().Set("X-RateLimit-Limit", "10")
+	w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(time.Minute).Unix(), 10))
+	if strings.Contains(q.Get("q"), "throttled") {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		reply(403, `{"message":"API rate limit exceeded for user ID 1.","documentation_url":"https://docs.github.com/rest/overview/rate-limits-for-the-rest-api"}`)
+		return
+	}
+	w.Header().Set("X-RateLimit-Remaining", "9")
+	repos := []string{"acme/widgets", "acme/private"}
+	for t := range strings.FieldsSeq(q.Get("q")) {
+		if name, ok := strings.CutPrefix(strings.ToLower(t), "repo:"); ok {
+			repos = []string{name}
+		}
+	}
+	if strings.Contains(q.Get("q"), "leak") {
+		repos = append(repos, "acme/private")
+	}
+	n, total := len(repos), len(repos)
+	if q.Get("per_page") == "100" {
+		total = 101
+		switch q.Get("page") {
+		case "1", "":
+			n = 100
+			next := url.Values{"q": {q.Get("q")}, "per_page": {"100"}, "page": {"2"}}
+			w.Header().Set("Link", `<https://api.github.com/search/code?`+next.Encode()+`>; rel="next", <https://api.github.com/search/code?`+next.Encode()+`>; rel="last"`)
+		default:
+			n = 1
+		}
+	}
+	items := make([]string, n)
+	for i := range items {
+		repo := repos[0]
+		if i < len(repos) {
+			repo = repos[i]
+		}
+		owner, name, _ := strings.Cut(repo, "/")
+		file := fmt.Sprintf("src/widget%d.go", i)
+		items[i] = fmt.Sprintf(`{"name":"widget%d.go","path":"%s","sha":"abc","url":"https://api.github.com/repos/%s/contents/%s","html_url":"https://github.com/%s/blob/main/%s","repository":{"id":1,"name":"%s","full_name":"%s","private":true,"owner":{"login":"%s"}},"score":1,"text_matches":[{"object_type":"FileContent","property":"content","fragment":"func widget() {}","matches":[{"text":"widget","indices":[5,11]}]}]}`,
+			i, file, repo, file, repo, file, name, repo, owner)
+	}
+	reply(200, fmt.Sprintf(`{"total_count":%d,"incomplete_results":false,"items":[%s]}`, total, strings.Join(items, ",")))
 }
 
 // actions answers the Actions, workflow, readme, and release reads gh makes,

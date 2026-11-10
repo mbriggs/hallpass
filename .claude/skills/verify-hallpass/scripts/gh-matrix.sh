@@ -95,6 +95,11 @@ run run download 5
 run search prs --repo acme/widgets matrix
 run search issues --repo acme/widgets matrix
 run search repos widgets
+run search code --repo acme/widgets widget
+run search code --repo acme/widgets --language go --filename main.go --extension go --match file --limit 5 '"exact phrase" widget'
+run search code --repo acme/widgets --match path --limit 150 widget
+run search code widget
+run search code --owner acme widget
 run pr checkout 1
 run release list
 run release view v1.0.0

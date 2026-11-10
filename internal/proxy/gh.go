@@ -101,6 +101,7 @@ func (s *Server) serveGH(w http.ResponseWriter, r *http.Request) {
 	var upBody []byte
 	var follow bool
 	var strip []string
+	var answer func(any) error
 	if graphql {
 		if !tokenReady() {
 			return
@@ -134,7 +135,7 @@ func (s *Server) serveGH(w http.ResponseWriter, r *http.Request) {
 		}
 		if rest.Repo != nil && !listed {
 			why := rest.Repo.String() + " isn't in hallpass's allowlist. To allow it: sudo /opt/hallpass/bin/hallpass allow " + rest.Repo.String()
-			if rest.Write {
+			if rest.Write || rest.NeedsToken {
 				refuse(http.StatusForbidden, why)
 				return
 			}
@@ -180,7 +181,7 @@ func (s *Server) serveGH(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		path, upBody, follow, strip = rest.Path, rest.Body, rest.Follow, rest.Strip
+		path, upBody, follow, strip, answer = rest.Path, rest.Body, rest.Follow, rest.Strip, rest.Answer
 	}
 
 	var rd io.Reader = http.NoBody
@@ -193,6 +194,11 @@ func (s *Server) serveGH(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	copyHeaders(up.Header, r.Header, "Accept", "User-Agent", "X-GitHub-Api-Version", "If-None-Match", "GraphQL-Features", "Time-Zone")
+	if answer != nil {
+		// A 304 skips the answer check, and would confirm a guess at an
+		// answer the broker refused.
+		up.Header.Del("If-None-Match")
+	}
 	if upBody != nil {
 		up.Header.Set("Content-Type", "application/json")
 	}
@@ -216,32 +222,48 @@ func (s *Server) serveGH(w http.ResponseWriter, r *http.Request) {
 		}
 		defer resp.Body.Close()
 	}
+	ok := resp.StatusCode/100 == 2
+	isJSON := strings.Contains(resp.Header.Get("Content-Type"), "json")
+	if answer != nil && ok && !isJSON {
+		refuse(http.StatusBadGateway, "GitHub's answer wasn't JSON, so hallpass couldn't check it")
+		return
+	}
+	// The answer is decoded and checked before any of GitHub's headers are
+	// copied, so a refusal carries none of them.
+	decode := (len(strip) > 0 || answer != nil) && ok && isJSON
+	var v any
+	empty := false
+	if decode {
+		dec := json.NewDecoder(io.LimitReader(resp.Body, 64<<20))
+		dec.UseNumber()
+		err := dec.Decode(&v)
+		switch {
+		case errors.Is(err, io.EOF) && answer == nil:
+			// A write like a dispatch answers with no body.
+			empty = true
+		case err != nil:
+			refuse(http.StatusBadGateway, "GitHub's answer wasn't JSON")
+			return
+		case answer != nil:
+			if err := answer(v); err != nil {
+				refuse(http.StatusForbidden, err.Error())
+				return
+			}
+		}
+	}
 	copyHeaders(w.Header(), resp.Header, "Content-Type", "Content-Encoding", "ETag", "Last-Modified", "Link",
 		"X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "X-RateLimit-Used", "X-RateLimit-Resource",
 		"X-GitHub-Request-Id", "Location", "Retry-After")
-	if len(strip) > 0 && resp.StatusCode/100 == 2 && strings.Contains(resp.Header.Get("Content-Type"), "json") {
-		dec := json.NewDecoder(io.LimitReader(resp.Body, 64<<20))
-		dec.UseNumber()
-		var v any
-		if err := dec.Decode(&v); errors.Is(err, io.EOF) {
-			// A write like a dispatch answers with no body.
-			w.WriteHeader(resp.StatusCode)
-			log.Info("allowed", "status", resp.StatusCode)
-			return
-		} else if err != nil {
-			refuse(http.StatusBadGateway, "GitHub's answer wasn't JSON")
-			return
-		}
+	w.WriteHeader(resp.StatusCode)
+	switch {
+	case !decode:
+		flushCopy(w, w, resp.Body)
+	case !empty:
 		stripKeys(v, strip)
-		w.WriteHeader(resp.StatusCode)
 		enc := json.NewEncoder(w)
 		enc.SetEscapeHTML(false)
 		_ = enc.Encode(v)
-		log.Info("allowed", "status", resp.StatusCode)
-		return
 	}
-	w.WriteHeader(resp.StatusCode)
-	flushCopy(w, w, resp.Body)
 	log.Info("allowed", "status", resp.StatusCode)
 }
 
@@ -502,7 +524,9 @@ func (s *Server) followStorage(ctx context.Context, loc string) (*http.Response,
 
 func (s *Server) noteRate(resp *http.Response) {
 	rem, err := strconv.Atoi(resp.Header.Get("X-RateLimit-Remaining"))
-	if err != nil || resp.Header.Get("X-RateLimit-Resource") == "search" {
+	// Searches have limits of their own, of 30 and 10 a minute, that say
+	// nothing about the hourly one.
+	if res := resp.Header.Get("X-RateLimit-Resource"); err != nil || res == "search" || res == "code_search" {
 		return
 	}
 	reset, _ := strconv.ParseInt(resp.Header.Get("X-RateLimit-Reset"), 10, 64)

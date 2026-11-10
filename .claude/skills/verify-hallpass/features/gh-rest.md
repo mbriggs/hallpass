@@ -27,6 +27,9 @@ answer, gets 403 with a `hallpass: ` reason.
 - `rest-short-sha` refuses an abbreviated SHA, which GitHub resolves across
   forks.
 - `rest-token` adds the token: gh holds only a placeholder.
+- `rest-code-search*` covers `gh search code`, which goes with the token
+  only for one allowlisted repo, and comes back only when every result is
+  in that repo.
 
 ## Driving it
 
@@ -40,7 +43,7 @@ answer, gets 403 with a `hallpass: ` reason.
 - `rest-anonymous`: `gh api repos/octo/public` prints `octo/public`. The
   fake logs the GET with `none`, and `broker.log` logs the route as
   `(anonymous)`.
-- `rest-anonymous-denied`: with `deny = ["read:deployments"]` on the
+- `rest-anonymous-denied`: with `deny = ["read:deployments", "read:contents/src/**"]` on the
   `acme/widgets` entry, `deployments` there is refused with `The policy for
   acme/widgets denies it`, and no request reaches the fake.
 - `rest-anonymous-off`: with `deny = ["anonymous"]` at the top of the
@@ -66,6 +69,33 @@ answer, gets 403 with a `hallpass: ` reason.
   same check covers `git/{trees,commits,blobs,tags}/`, `?ref=`, `?sha=`,
   and expressions like `main~1`.
 - `rest-token`: `$S/gh/hosts.yml` holds only `hallpass-brokered`.
+- `rest-code-search`: `gh search code --repo acme/widgets widget` prints
+  the fake's result. The fake logs the GET with `token-ok`, and
+  `broker.log` logs `repo=acme/widgets route="GET /search/code"`.
+- `rest-code-search-read-entry`: the same works for the `--read` entry
+  `acme/readonly`.
+- `rest-code-search-flags`: `--language`, `--filename`, `--extension`,
+  `--match file`, `--limit`, and a quoted phrase, which gh sends as
+  `"\"exact phrase\" widget"`, pass.
+- `rest-code-search-pages`: `--limit 150` gets 101 results over two pages,
+  the second through the `Link` header the fake sends.
+- `rest-code-search-no-repo` and `rest-code-search-owner` (`--owner`,
+  which gh sends as `user:`) are refused with the advice to use `--repo`,
+  and `rest-code-search-two-repos` with `allows one repo:`. Nothing reaches
+  the fake. Without the check they'd go without the token and get
+  GitHub's 401.
+- `rest-code-search-allowlist`: `--repo acme/secret` gets the allowlist
+  message, and nothing reaches the fake.
+- `rest-code-search-other-repo-answer`: the fake answers a query holding
+  `leak` with a result from `acme/private` too, as if GitHub read the query
+  differently. The broker refuses the whole answer, without naming the
+  other repo.
+- `rest-code-search-throttled`: the fake's code search limit is used up.
+  gh prints GitHub's `API rate limit exceeded`, and a plain read right
+  after still passes, since the code search limit isn't the hourly one.
+- `rest-code-search-denied-path`: with `read:contents/src/**` denied on
+  `acme/widgets`, any code search there is refused before it reaches the
+  fake, since refused-or-empty would tell what the denied files hold.
 
 ## Gotchas
 
