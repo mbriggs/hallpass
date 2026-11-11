@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Tests bin/worktree in a temporary repo with a bare remote and a stub gh.
-# Uses lanes 90-92 only, so live lanes are never touched.
+# Tests what hallpass adds to the shared bin/worktree: bin/worktree.lane, the
+# make install guard and marker, and up.sh's loader, in a temporary repo with
+# a bare remote and a stub gh. The shared script itself is tested in the
+# create-worktree-lanes skill. Uses lanes 90-92 only, so live lanes are never
+# touched.
 #
 #   .claude/skills/worktree/scripts/test.sh     exit 0 when every check passes
 #   KEEP=1 .../test.sh                          keep /tmp/worktree-test.* to debug
@@ -16,11 +19,11 @@ check() { local what=$1; shift; if "$@"; then ok "$what"; else bad "$what"; fi; 
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
-export WORKTREE_LANES=90-92
+export WORKTREE_LANE_RANGE=90-92
 export WORKTREE_GH=$T/gh-stub
 export WORKTREE_INSTALL='env > "$T/installed"'
 export T
-unset WORKTREE_LANE WORKTREE_PRIMARY HALLPASS_VERIFY_PREFIX
+unset WORKTREE_LANE WORKTREE_PRIMARY WORKTREE_KEYS HALLPASS_VERIFY_PREFIX WORKTREE_STAMPS
 
 cleanup() {
   local d
@@ -60,18 +63,19 @@ git init -q --bare -b main "$T/origin.git"
 git init -q -b main "$T/primary"
 P=$T/primary
 mkdir -p "$P/bin" "$P/.claude/skills/verify-hallpass/scripts"
-cp "$src/bin/worktree" "$src/bin/worktree-env.sh" "$P/bin/"
-cp "$src/.claude/skills/verify-hallpass/scripts/down.sh" "$P/.claude/skills/verify-hallpass/scripts/"
+cp "$src/bin/worktree" "$src/bin/worktree.lane" "$src/bin/worktree-env.sh" "$P/bin/"
+cp "$src/.claude/skills/verify-hallpass/scripts/down.sh" "$src/.claude/skills/verify-hallpass/scripts/all.sh" "$P/.claude/skills/verify-hallpass/scripts/"
 cp "$src/.gitignore" "$P/"
 printf 'module example.com/t\n\ngo 1.22\n' > "$P/go.mod"
-cat > "$P/Makefile" <<'EOF'
-WORKTREE := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))bin/worktree
-build:
-	mkdir -p bin && echo built > bin/hallpass
-install:
-	@$(WORKTREE) guard --deny "make install"
-	echo installed
-EOF
+# The real install target's guard and marker lines, with the build and the
+# sudo step stubbed.
+{
+  printf 'WORKTREE := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))bin/worktree\n'
+  printf 'build:\n\tmkdir -p bin && echo built > bin/hallpass\n'
+  printf 'install:\n'
+  sed -n '/^install:/,/^$/p' "$src/Makefile" | grep -e 'guard' -e 'installed"$'
+  printf '\techo installed\n'
+} > "$P/Makefile"
 git -C "$P" add -A
 git -C "$P" add -f .claude
 git -C "$P" commit -q -m init
@@ -81,202 +85,108 @@ git -C "$P" push -q -u origin main
 wt() { git -C "$P" worktree add -q -b "$1" "$P/.claude/worktrees/$1" main; echo "$P/.claude/worktrees/$1"; }
 lane_of() { sed -n 's/^WORKTREE_LANE=//p' "$1/worktree.env"; }
 
-# --- the primary --------------------------------------------------------------
-check "setup refuses in the primary" bash -c "! (cd '$P' && bin/worktree setup) 2>/dev/null"
-check "info in the primary reports the primary" bash -c "(cd '$P' && bin/worktree info) | grep -q 'checkout: primary'"
-check "guard passes in the primary" bash -c "cd '$P' && bin/worktree guard --deny x"
-check "make install passes the guard in the primary" bash -c "make -s -C '$P' install | grep -q installed"
+check "the lane file isn't gitignored" bash -c "! git -C '$P' check-ignore -q bin/worktree.lane"
 
-# --- setup: two racing setups in one worktree ---------------------------------
+# --- the primary --------------------------------------------------------------
+check "info in the primary names the primary's scratch dirs" bash -c "(cd '$P' && bin/worktree info) | grep '/tmp/hallpass-verify.XXXXXX' >/dev/null"
+check "make install passes the guard in the primary" bash -c "make -s -C '$P' install | grep -qx installed"
+check "make install marks the commit installed" \
+  [ "$(cat "$P/.git/worktree-installed" 2>/dev/null)" = "$(git -C "$P" rev-parse HEAD)" ]
+check "sync skips the install that make install marked" \
+  bash -c "cd '$P' && bin/worktree sync | grep -qx installed && [ ! -f '$T/installed' ]"
+
+# --- setup --------------------------------------------------------------------
 A=$(wt a)
-(cd "$A" && bin/worktree setup > "$T/a1.log" 2>&1; echo $? > "$T/a1.rc") &
-(cd "$A" && bin/worktree setup > "$T/a2.log" 2>&1; echo $? > "$T/a2.rc") &
-wait
-check "both racing setups succeed" bash -c "[ \"\$(cat '$T/a1.rc' '$T/a2.rc')\" = \"0
-0\" ]"
-check "the race registers one lane" bash -c "[ \$(grep -lx '$A' '$P'/tmp/worktrees/[0-9]* | wc -l) -eq 1 ]"
+check "setup succeeds" bash -c "cd '$A' && bin/worktree setup >/dev/null 2>&1"
 check "lane a got 90" [ "$(lane_of "$A")" = 90 ]
 check "setup built the lane's own binary" [ -f "$A/bin/hallpass" ]
-check "info in the lane reports lane 90" bash -c "(cd '$A' && bin/worktree info) | grep -q 'checkout: lane 90'"
-check "a second setup is a no-op" bash -c "(cd '$A' && bin/worktree setup) | grep -q 'already provisioned'"
-
-# --- a killed lock holder -----------------------------------------------------
-B=$(wt b)
-perl -MFcntl=:flock -e 'open(my $f, ">>", shift) or die; flock($f, LOCK_EX); sleep 300' "$P/tmp/worktrees/.lock" &
-holder=$!
-sleep 0.3
-(cd "$B" && bin/worktree setup > "$T/b.log" 2>&1; echo $? > "$T/b.rc") &
-setup=$!
-sleep 1
-check "setup waits while the registry lock is held" [ ! -f "$T/b.rc" ]
-kill -9 "$holder"
-wait "$setup"
-check "setup proceeds after the holder is killed" [ "$(cat "$T/b.rc")" = 0 ]
-check "lane b got 91" [ "$(lane_of "$B")" = 91 ]
+check "worktree.env names the lane's verify prefix" grep -qx 'HALLPASS_VERIFY_PREFIX=/tmp/hallpass-verify-lane90' "$A/worktree.env"
+check "info in the lane names its scratch dirs" bash -c "(cd '$A' && bin/worktree info) | grep '/tmp/hallpass-verify-lane90.XXXXXX' >/dev/null"
+check "info in the primary lists lane 90" bash -c "(cd '$P' && bin/worktree info) | grep 'lane 90 .*$A' >/dev/null"
 
 # --- the loader and guard -----------------------------------------------------
-C=$(wt c)
-check "the loader refuses a linked worktree without worktree.env" \
-  bash -c "! (cd '$C' && sh -c '. bin/worktree-env.sh; worktree_load .') 2>/dev/null"
-check "the loader names bin/worktree setup" \
-  bash -c "(cd '$C' && sh -c '. bin/worktree-env.sh; worktree_load .') 2>&1 | grep -q 'bin/worktree setup'"
-check "the loader overrides inherited values" \
-  bash -c "cd '$A' && WORKTREE_LANE=5 HALLPASS_VERIFY_PREFIX=/nope sh -c '. bin/worktree-env.sh; worktree_load .; echo \$HALLPASS_VERIFY_PREFIX' | grep -qx /tmp/hallpass-verify-lane90"
-check "the loader keeps a parent's values for the same lane" \
-  bash -c "cd '$A' && WORKTREE_LANE=90 HALLPASS_VERIFY_PREFIX=/scratch sh -c '. bin/worktree-env.sh; worktree_load .; echo \$HALLPASS_VERIFY_PREFIX \$WORKTREE_PRIMARY' | grep -qx '/scratch $P'"
-check "guard --deny exits 3 in a lane" bash -c "cd '$A'; bin/worktree guard --deny x 2>/dev/null; [ \$? -eq 3 ]"
-check "guard checks its own checkout, not the cwd" bash -c "cd '$P'; '$A/bin/worktree' guard --deny x 2>/dev/null; [ \$? -eq 3 ]"
-check "make install refuses in a lane" bash -c "! make -s -C '$A' install 2>&1 | grep -q installed && make -s -C '$A' install 2>&1 | grep -q 'refuses to run in a lane'"
-check "guard --warn continues in a lane" bash -c "cd '$A' && bin/worktree guard --warn x 2>/dev/null"
-if (: </dev/tty) 2>/dev/null; then
-  echo "skip  guard --confirm without a terminal (this run has one)"
-else
-  check "guard --confirm refuses without a terminal" bash -c "cd '$A'; bin/worktree guard --confirm x 2>/dev/null; [ \$? -eq 3 ]"
-fi
+B=$(wt b)
+# up.sh loads the lane this way before it picks a scratch dir.
+check "up.sh's loader refuses a linked worktree without worktree.env" \
+  bash -c "! (cd '$B' && sh -c '. bin/worktree-env.sh; worktree_load .') 2>/dev/null"
+check "up.sh's loader gives a lane its verify prefix" \
+  bash -c "cd '$A' && sh -c '. bin/worktree-env.sh; worktree_load .; echo \$HALLPASS_VERIFY_PREFIX' | grep -qx /tmp/hallpass-verify-lane90"
+check "make install refuses in a lane" \
+  bash -c "out=\$(make -s -C '$A' install 2>&1); ! printf '%s\n' \"\$out\" | grep -qx installed && printf '%s' \"\$out\" | grep -q 'refuses to run in a lane'"
 
 # --- the hook: a failed setup -------------------------------------------------
 hook=$src/.claude/hooks/worktree-bash.sh
-mv "$C/Makefile" "$C/Makefile.ok"; printf 'build:\n\tfalse\n' > "$C/Makefile"
-printf '{"cwd":"%s"}' "$C" | "$hook" >/dev/null 2>&1; rc=$?
-check "a failed setup blocks the command (exit 2)" [ "$rc" = 2 ]
-check "a failed setup leaves the marker" [ -f "$C/tmp/worktree-setup.failed" ]
-check "a failed setup writes no worktree.env" [ ! -f "$C/worktree.env" ]
-printf '{"cwd":"%s"}' "$C" | "$hook" >/dev/null 2>&1; rc=$?
-check "the next command runs past the marker" [ "$rc" = 0 ]
-check "guarded entry points refuse while setup is broken" \
-  bash -c "! (cd '$C' && sh -c '. bin/worktree-env.sh; worktree_load .') 2>/dev/null"
-mv "$C/Makefile.ok" "$C/Makefile"
-check "a fixed setup succeeds" bash -c "cd '$C' && bin/worktree setup >/dev/null 2>&1"
-check "a fixed setup clears the marker" [ ! -f "$C/tmp/worktree-setup.failed" ]
-check "lane c reused the entry its failed setup wrote" [ "$(lane_of "$C")" = 92 ]
-out=$(printf '{"cwd":"%s"}' "$P" | "$hook" 2>&1); rc=$?
-check "the hook does nothing in the primary" [ "$rc" = 0 -a -z "$out" ]
+mv "$B/Makefile" "$B/Makefile.ok"; printf 'build:\n\tfalse\n' > "$B/Makefile"
+# The hook acts only on worktrees of the project Claude Code opened.
+printf '{"cwd":"%s"}' "$B" | CLAUDE_PROJECT_DIR=$T/origin.git "$hook" >/dev/null 2>&1; rc=$?
+check "the hook ignores another project's worktree" [ "$rc" = 0 -a ! -f "$B/tmp/worktree-setup.failed" ]
+printf '{"cwd":"%s"}' "$B" | CLAUDE_PROJECT_DIR=$P "$hook" >/dev/null 2>&1; rc=$?
+check "a failed build blocks the command (exit 2)" [ "$rc" = 2 ]
+check "a failed build leaves the marker and no worktree.env" [ -f "$B/tmp/worktree-setup.failed" -a ! -f "$B/worktree.env" ]
+mv "$B/Makefile.ok" "$B/Makefile"
+check "a fixed setup succeeds" bash -c "cd '$B' && bin/worktree setup >/dev/null 2>&1 && [ ! -f '$B/tmp/worktree-setup.failed' ]"
+check "lane b got 91" [ "$(lane_of "$B")" = 91 ]
 
 # --- teardown --stale ---------------------------------------------------------
 S=$(mktemp -d /tmp/hallpass-verify-lane91.XXXXXX)
-mkdir -p "$S/bin"; cp /bin/sleep "$S/bin/hallpass"; touch "$S/hallpass.toml"
-"$S/bin/hallpass" 300 & echo $! > "$S/broker.pid"
-broker=$(cat "$S/broker.pid")
+mkdir -p "$S/bin" "$S/evidence"; cp /bin/sleep "$S/bin/hallpass"; touch "$S/hallpass.toml"
+"$S/bin/hallpass" 300 & broker=$!
+echo "$broker" > "$S/broker.pid"
+S2=$(mktemp -d /tmp/hallpass-verify-lane91.XXXXXX)
 rm -rf "$B"
-echo /nonexistent > "$P/tmp/worktrees/95"
 (cd "$A" && bin/worktree teardown --stale) > "$T/sweep.log" 2>&1
+wait "$broker" 2>/dev/null
 check "the sweep stops the gone lane's scratch broker" bash -c "! kill -0 $broker 2>/dev/null"
-check "the sweep deletes the gone lane's scratch dir" [ ! -e "$S" ]
+check "the sweep deletes every scratch dir of the gone lane" [ ! -e "$S" -a ! -e "$S2" ]
 check "the sweep deletes the gone lane's entry" [ ! -e "$P/tmp/worktrees/91" ]
-check "the sweep leaves live lanes" [ -f "$P/tmp/worktrees/90" -a -f "$P/tmp/worktrees/92" -a -f "$A/worktree.env" ]
-check "the sweep leaves lanes outside the range" [ -f "$P/tmp/worktrees/95" ]
-rm -f "$P/tmp/worktrees/95"
-W=$(mktemp -d /tmp/hallpass-verify-lane91.XXXXXX)
-D=$(wt d)
-# 90 and 92 are live, and 91 has a scratch dir but no entry: nothing is free.
-check "allocation skips an index whose scratch dir exists without an entry" \
-  bash -c "(cd '$D' && bin/worktree setup 2>&1) | grep -q 'every lane in 90-92 is taken'"
-check "a setup that found no lane writes no worktree.env or entry" \
-  bash -c "[ ! -f '$D/worktree.env' ] && ! grep -qx '$D' '$P'/tmp/worktrees/[0-9]*"
+check "the sweep leaves the live lane" [ -f "$P/tmp/worktrees/90" -a -f "$A/worktree.env" ]
+# The entry back with its scratch dirs already gone: the drop still succeeds.
+echo "$T/gone" > "$P/tmp/worktrees/91"
 (cd "$P" && bin/worktree teardown --stale) >/dev/null 2>&1
-check "the sweep leaves a scratch dir with no entry" [ -d "$W" ]
-rm -rf "$W"
-git -C "$P" worktree remove --force "$D"
+check "the sweep drops a lane whose scratch dirs are already gone" [ ! -e "$P/tmp/worktrees/91" ]
+W=$(mktemp -d /tmp/hallpass-verify-lane91.XXXXXX)
+W2=$(mktemp -d /tmp/hallpass-verify-lane92.XXXXXX)
+D=$(wt d)
+# 90 is live, and 91 and 92 have scratch dirs but no entry: nothing is free.
+check "allocation skips an index whose scratch dir exists without an entry" \
+  bash -c "(cd '$D' && bin/worktree setup 2>&1) | grep -q 'no free lane in 90-92'"
+(cd "$P" && bin/worktree teardown --stale) >/dev/null 2>&1
+check "the sweep leaves a scratch dir with no entry" [ -d "$W" -a -d "$W2" ]
+rm -rf "$W" "$W2"
+check "a freed index is allocated again" \
+  bash -c "cd '$D' && bin/worktree setup >/dev/null 2>&1 && [ \"\$(sed -n 's/^WORKTREE_LANE=//p' '$D/worktree.env')\" = 91 ]"
 
-# --- land ---------------------------------------------------------------------
+# --- land: the verify-hallpass stamp ------------------------------------------
 cd "$A"
-# stamp records a passing drive.sh run for HEAD's tree, as drive.sh does,
-# in the lane's verify scratch dir.
-vprefix=$(sed -n 's/^HALLPASS_VERIFY_PREFIX=//p' "$A/worktree.env")
+vprefix=/tmp/hallpass-verify-lane90
+# stamp records a passing all.sh run for HEAD's tree, as drive.sh does.
 stamp() { mkdir -p "$vprefix.test/evidence"; git -C "$A" rev-parse 'HEAD^{tree}' > "$vprefix.test/evidence/verified"; }
-
-# The verify gate, on a branch of its own.
-git checkout -q -b gate
-echo code > gate.go; git add gate.go; git commit -q -m "gate"
-check "land refuses a tree no verify run passed" bash -c "bin/worktree land 2>&1 | grep -q 'no verify-hallpass run passed'"
-echo stale > "$vprefix.test.stale"; mkdir -p "$vprefix.old/evidence"; echo 0000 > "$vprefix.old/evidence/verified"
-check "land ignores a stamp for another tree" bash -c "bin/worktree land 2>&1 | grep -q 'no verify-hallpass run passed'"
-check "land --no-verify needs a reason" bash -c "bin/worktree land --no-verify 2>&1 | grep -q 'needs a reason'"
-check "land --no-verify lands and says why in the PR" \
-  bash -c "bin/worktree land --no-verify 'only a comment changed' >/dev/null && grep -q 'Not verified with verify-hallpass.s drive.sh: only a comment changed' '$T/gh/calls'"
-git checkout -q a; git branch -q -D gate; git push -q origin :gate
-rm -rf "$vprefix.old" "$vprefix.test.stale"
-git checkout -q -b docs
-echo words > notes.md; git add notes.md; git commit -q -m "notes"
-check "land passes a Markdown-only branch without a run" bash -c "bin/worktree land 2>&1 | grep -q 'only Markdown changed'"
-git checkout -q a; git branch -q -D docs; git push -q origin :docs
-
-echo one > one; git add one; git commit -q -m "one"
-echo two > two; git add two; git commit -q -m "two"
-# From here, land passes the gate: this tree has a passing run. The squash
-# below keeps the tree, so the stamp still matches.
+echo code > gate.go
+check "the all run refuses uncommitted changes" \
+  bash -c "out=\$(.claude/skills/verify-hallpass/scripts/all.sh 2>&1); [ \$? = 1 ] && printf '%s' \"\$out\" | grep -q 'commit or drop these changes first' && ! ls -d $vprefix.* >/dev/null 2>&1"
+git add gate.go; git commit -q -m "gate"
+check "land refuses a tree no all.sh run stamped" bash -c "bin/worktree land 2>&1 | grep -q 'no passing .*all.sh run stamped'"
+mkdir -p "$vprefix.old/evidence"; echo 0000 > "$vprefix.old/evidence/verified"
+check "land ignores a stamp for another tree" bash -c "bin/worktree land 2>&1 | grep -q 'no passing'"
+mkdir -p /tmp/hallpass-verify-lane91.other/evidence
+git rev-parse 'HEAD^{tree}' > /tmp/hallpass-verify-lane91.other/evidence/verified
+check "land ignores another lane's stamp" bash -c "bin/worktree land 2>&1 | grep -q 'no passing'"
+rm -rf /tmp/hallpass-verify-lane91.other
+check "land --no-verify says why in the PR" \
+  bash -c "bin/worktree land --no-verify 'only a comment changed' >/dev/null && grep -q 'Not verified with .*all.sh.: only a comment changed' '$T/gh/calls'"
+echo more > gate.go; git commit -q -am "gate 2"
+printf 'Gate\n\nBody.\n' > "$T/msg"
 stamp
-check "land refuses several commits" bash -c "bin/worktree land 2>&1 | grep -q 'has 2 commits'"
-echo dirty >> one
-check "land refuses tracked changes" bash -c "! bin/worktree land >/dev/null 2>&1"
-git checkout -q one
-printf 'Add one and two\n\nThe body.\n' > "$T/msg"
-check "land --message squashes and opens a PR" bash -c "bin/worktree land --message '$T/msg' | grep -q example.com/pull/7"
-check "the branch lands as one commit" [ "$(git rev-list --count origin/main..HEAD)" = 1 ]
-check "land pushed the branch" [ "$(git -C "$T/origin.git" rev-parse a)" = "$(git rev-parse HEAD)" ]
-check "land created the PR with the commit's title" grep -q 'pr create --base main --head a --title Add one and two --body The body.' "$T/gh/calls"
-printf 'Add one and two, reworded\n\nNew body.\n' > "$T/msg"
-check "land on an open PR rewrites it" bash -c "bin/worktree land --message '$T/msg' >/dev/null && grep -q 'api -X PATCH repos/{owner}/{repo}/pulls/7 -f title=Add one and two, reworded -f body=New body.' '$T/gh/calls'"
-printf '## Summary\n\nWritten for reviewers.\n' > "$T/body"
-check "land --body sets the PR description from its own file" \
-  bash -c "bin/worktree land --message '$T/msg' --body '$T/body' >/dev/null && grep -q 'api -X PATCH repos/{owner}/{repo}/pulls/7 -f title=Add one and two, reworded -f body=## Summary' '$T/gh/calls'"
-check "land refuses an unknown option" bash -c "bin/worktree land --bogus 2>&1 | grep -q usage"
-check "the force-pushed branch matches" [ "$(git -C "$T/origin.git" rev-parse a)" = "$(git rev-parse HEAD)" ]
-git checkout -q --detach
-check "land refuses a detached HEAD" bash -c "bin/worktree land 2>&1 | grep -q detached"
-git checkout -q a
-# Someone else's commit lands on main first.
-other=$(mktemp -d "$T/other.XXXX"); git clone -q "$T/origin.git" "$other/c"
-(cd "$other/c" && echo x > x && git add x && git commit -q -m other && git push -q origin main)
-check "land refuses a branch behind origin/main" bash -c "bin/worktree land 2>&1 | grep -q 'lacks commits from origin/main'"
-git rebase -q origin/main
-check "land refuses a rebased tree until it's verified again" bash -c "bin/worktree land 2>&1 | grep -q 'no verify-hallpass run passed'"
-stamp
-bin/worktree land >/dev/null || bad "land after rebase"
-landed=$(git rev-parse HEAD)
-
-# --- sync ---------------------------------------------------------------------
-# The squash merge: GitHub writes a new commit on main.
-(cd "$other/c" && git pull -q && git merge -q --squash origin/a && git commit -q -m "Add one and two (#7)" && git push -q origin main)
-echo "$landed" > "$T/gh/merged-a"
-rm -f "$T/gh/open-a"
-check "sync refuses in a lane" bash -c "! bin/worktree sync >/dev/null 2>&1"
-cd "$P"
-check "sync fast-forwards main" bash -c "WORKTREE_LANE=90 HALLPASS_VERIFY_PREFIX=/tmp/x bin/worktree sync | grep -q 'fast-forwarded'"
-check "sync matches origin/main" [ "$(git rev-parse main)" = "$(git rev-parse origin/main)" ]
-check "sync installs after main moves" [ -f "$T/installed" ]
-check "install runs without the lane's variables" bash -c "! grep -q '^WORKTREE_LANE=\|^HALLPASS_VERIFY_PREFIX=' '$T/installed'"
-rm -f "$T/installed"
-check "sync with nothing new skips install" bash -c "bin/worktree sync | grep -q 'up to date' && [ ! -f '$T/installed' ]"
-# An install that didn't happen leaves main where it was, and the next sync
-# tries again.
-rm -f "$(git rev-parse --absolute-git-dir)/hallpass-installed"
-check "sync retries an install that didn't happen" bash -c "bin/worktree sync | grep -q 'may not run yet' && [ -f '$T/installed' ]"
-rm -f "$T/installed"
-check "sync after a retried install skips it" bash -c "bin/worktree sync | grep -q 'up to date' && [ ! -f '$T/installed' ]"
-echo local > local; git add local; git commit -q -m local
-check "sync refuses local commits" bash -c "bin/worktree sync 2>&1 | grep -q 'need a PR'"
-git reset -q --hard origin/main
+check "land accepts the stamp in the lane's scratch dir" \
+  bash -c "bin/worktree land --message '$T/msg' 2>&1 | grep -q 'verified: $vprefix.test/evidence/verified'"
 
 # --- teardown NAME ------------------------------------------------------------
-echo late > "$A/late"
-check "teardown refuses untracked files" bash -c "bin/worktree teardown a 2>&1 | grep -q 'uncommitted changes'"
-(cd "$A" && git add late && git commit -q -m late)
-check "teardown refuses commits made after the merge" bash -c "bin/worktree teardown a 2>&1 | grep -q 'merged PR'"
-(cd "$A" && git reset -q --hard "$landed")
-check "teardown refuses inside a lane" bash -c "cd '$A' && ! bin/worktree teardown a >/dev/null 2>&1"
-check "teardown accepts the head of a merged PR" bash -c "bin/worktree teardown a >/dev/null 2>&1"
-check "teardown removed the worktree" [ ! -e "$A" ]
-check "teardown deleted the squash-merged branch" bash -c "! git show-ref -q refs/heads/a"
-check "teardown dropped lane 90" [ ! -e "$P/tmp/worktrees/90" ]
-check "teardown left lane 92" [ -f "$P/tmp/worktrees/92" ]
-(cd "$C" && echo wip > wip && git add wip && git commit -q -m wip)
-check "teardown refuses unlanded work" bash -c "bin/worktree teardown c 2>&1 | grep -q \"isn't on main\""
-check "teardown --discard removes it anyway" bash -c "bin/worktree teardown c --discard >/dev/null 2>&1 && [ ! -e '$C' ] && [ ! -e '$P/tmp/worktrees/92' ]"
-E=$(mktemp -d "$T/outside.XXXX")/e
-git worktree add -q -b e "$E" main
-(cd "$E" && bin/worktree setup >/dev/null 2>&1)
-check "teardown takes a path outside .claude/worktrees" bash -c "bin/worktree teardown '$E' >/dev/null 2>&1 && [ ! -e '$E' ]"
+cd "$P"
+check "teardown refuses unlanded work" bash -c "bin/worktree teardown a 2>&1 | grep -q \"isn't on main\""
+check "teardown --discard drops lane 90 and its scratch dirs" \
+  bash -c "bin/worktree teardown a --discard >/dev/null 2>&1 && [ ! -e '$A' ] && [ ! -e '$P/tmp/worktrees/90' ] && ! ls -d $vprefix.* >/dev/null 2>&1"
+git worktree remove --force "$D"
+(cd "$P" && bin/worktree teardown --stale) >/dev/null 2>&1
 check "no lanes remain" bash -c "! ls '$P'/tmp/worktrees/[0-9]* >/dev/null 2>&1"
 
 cd /

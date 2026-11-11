@@ -80,13 +80,16 @@ schema:
 
 # Builds, then copies the binary into /opt/hallpass/bin and starts the broker.
 # Refuses in a lane: the live broker runs main, installed from the primary
-# checkout by bin/worktree sync after a PR merges.
+# checkout by bin/worktree sync after a PR merges. sync passes SUDO='sudo -n ',
+# so a missing sudo credential fails at once instead of prompting.
+SUDO ?= sudo
 install:
 	@$(WORKTREE) guard --deny "make install"
 	$(GOBUILD) -o bin/hallpass ./cmd/hallpass
-	sudo ./bin/hallpass install
-	@# bin/worktree sync reads this to tell whether the live broker runs main.
-	git rev-parse HEAD > "$$(git rev-parse --absolute-git-dir)/hallpass-installed"
+	$(SUDO) ./bin/hallpass install
+	@# bin/worktree sync reads this to tell whether the live broker runs main,
+	@# so an install run by hand counts too.
+	git rev-parse HEAD > "$$(git rev-parse --path-format=absolute --git-common-dir)/worktree-installed"
 
 dist:
 	rm -rf dist && mkdir -p dist

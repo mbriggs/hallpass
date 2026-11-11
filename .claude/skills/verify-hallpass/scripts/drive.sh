@@ -10,6 +10,8 @@
 # fake's request log and broker.log where the feature file says to. Output
 # also goes to $S/evidence/transcript.txt. Exits 1 if any check failed.
 #
+# all.sh, not this, stamps a tree for bin/worktree land.
+#
 # The expectations are in features/*.md, keyed by the case names printed
 # here. When a refusal's wording changed but the request is still refused
 # and absent from the fake's log, update the case and the feature file.
@@ -32,8 +34,7 @@ for f in gh-rest gh-graphql git-ssh push-default signing status; do . "$here/cas
 
 FAILS=0
 rm -f "$S/.drive-fails"
-whole=
-[ "$1" = all ] && { whole=1; set -- rest graphql ssh push-default signing status; }
+[ "$1" = all ] && set -- rest graphql ssh push-default signing status
 {
   for feature in "$@"; do
     fn="feature_${feature//-/_}"
@@ -55,10 +56,3 @@ whole=
   echo "#### $FAILS failed"
 } 2>&1 | tee -a "$S/evidence/transcript.txt"
 [ "$(tail -1 "$S/evidence/transcript.txt")" = "#### 0 failed" ] || exit 1
-# A whole passing run stamps the tree the broker was built from, which
-# bin/worktree land looks for. down.sh keeps evidence/, so the stamp
-# outlives the broker.
-if [ -n "$whole" ] && [ -s "$S/built-from" ] && [ "$(cat "$S/built-from")" != dirty ]; then
-  cp "$S/built-from" "$S/evidence/verified"
-  echo "stamped $(cat "$S/evidence/verified") as verified"
-fi

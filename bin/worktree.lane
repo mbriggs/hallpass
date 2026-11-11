@@ -1,0 +1,75 @@
+# bin/worktree.lane: what a hallpass lane isolates. bin/worktree (the shared
+# script from the create-worktree-lanes skill) sources this file. POSIX sh.
+#
+# A lane gets its own build of bin/hallpass, from its own source, and its own
+# prefix for verify-hallpass scratch dirs: /tmp/hallpass-verify-lane<n>.XXXXXX.
+# up.sh makes one per scratch broker it starts in the lane. They live under
+# /tmp, not the checkout, because macOS caps socket paths at 104 bytes. The
+# Go caches, the TLA+ jar in ~/.cache/hallpass, and the live broker stay
+# shared with the primary.
+
+LANDING=pr
+# The user lets agents squash-merge a green PR. The broker allows the merge
+# only because the user ran policy allow pr.merge --repo mbriggs/hallpass.
+MERGE=yes
+# The live broker runs the primary's build. make install runs sudo, so sync
+# runs it with sudo -n: without a cached credential it fails at once, rather
+# than waiting on a prompt nobody sees, and prints NOT INSTALLED. bin/worktree
+# turns "sudo -n " into "sudo " in the command it tells the user to run.
+INSTALL="make install SUDO='sudo -n '"
+# Every lane passes the verify-hallpass all run before it lands. all.sh
+# refuses an uncommitted tree, and stamps the tree only when every check
+# passes, in the evidence dir of its scratch dir, which keeps the lane's
+# prefix. This is the end-to-end check, not the TLA+ model check.
+VERIFY='.claude/skills/verify-hallpass/scripts/all.sh'
+STAMPS='$HALLPASS_VERIFY_PREFIX.*/evidence/verified'
+TOOLING='bin/worktree bin/worktree.lane bin/worktree-env.sh .claude/hooks .claude/settings.json .claude/skills/worktree'
+
+hallpass_verify_prefix() { echo "/tmp/hallpass-verify-lane$1"; }
+
+# A scratch dir with no registry entry means a wiped registry, not a free lane.
+lane_in_use() {
+  ls -d "$(hallpass_verify_prefix "$1")".* >/dev/null 2>&1
+}
+
+lane_provision() {
+  # The hooks run with the PATH Claude Code started with, which may lack
+  # mise's shims.
+  gobin=$(command -v go || mise which go 2>/dev/null) || die "go not found on PATH or through mise"
+  PATH=$(dirname "$gobin"):$PATH
+  export PATH
+  # Build from the lane's own source; a copy of the primary's binary would be
+  # the primary's branch.
+  go mod download
+  make -s build
+  lane_set HALLPASS_VERIFY_PREFIX "$(hallpass_verify_prefix "$1")"
+}
+
+# Stop each scratch broker and fake GitHub that up.sh started in the lane,
+# then delete its dir. down.sh stops only processes whose command line names
+# the dir, and its exit status says nothing about whether they stopped, so it
+# never fails the drop.
+lane_drop() {
+  down=$top/.claude/skills/verify-hallpass/scripts/down.sh
+  [ -x "$down" ] || down=$primary/.claude/skills/verify-hallpass/scripts/down.sh
+  for d in "$(hallpass_verify_prefix "$1")".*; do
+    [ -d "$d" ] || continue
+    if [ -x "$down" ]; then "$down" "$d" >/dev/null 2>&1 || true; fi
+    rm -rf "$d"
+    echo "lane $1: removed $d"
+  done
+}
+
+lane_info() {
+  if [ -n "$1" ]; then
+    echo "verify    $(hallpass_verify_prefix "$1").XXXXXX scratch dirs (up.sh picks this; teardown stops and deletes them)"
+    echo "binary    $top/bin/hallpass (make build). make install refuses here; bin/worktree sync runs it in the primary after the PR merges."
+    echo "broker    the live broker is shared with the primary. Real git and gh go through it as usual."
+  else
+    echo "verify    /tmp/hallpass-verify.XXXXXX scratch dirs; lanes get /tmp/hallpass-verify-lane<n>.XXXXXX"
+    echo "binary    $top/bin/hallpass (make build); make install installs it live"
+    for f in "$primary"/tmp/worktrees/[0-9]*; do
+      if [ -f "$f" ]; then echo "lane $(basename "$f")    $(cat "$f")"; fi
+    done
+  fi
+}
