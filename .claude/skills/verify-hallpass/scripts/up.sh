@@ -28,8 +28,9 @@ chmod 700 "$S/keys" "$S/state"
 # The binary under test: the checkout, built the way the Makefile builds it.
 make -C "$repo" -s build
 cp "$repo/bin/hallpass" "$S/bin/hallpass"
-# Which tree the broker came from, for bin/worktree land: a commit's tree
-# when nothing is uncommitted, and "dirty" otherwise, which nothing lands on.
+# Which tree the broker came from: a commit's tree when nothing is
+# uncommitted, and "dirty" otherwise. all.sh stamps only a run whose broker
+# came from the tree it started on.
 if [ -z "$(git -C "$repo" status --porcelain)" ]; then
   git -C "$repo" rev-parse 'HEAD^{tree}' > "$S/built-from"
 else

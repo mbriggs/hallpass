@@ -1,5 +1,6 @@
 /bin/*
 !/bin/worktree
+!/bin/worktree.lane
 !/bin/worktree-env.sh
 dist/
 tmp/

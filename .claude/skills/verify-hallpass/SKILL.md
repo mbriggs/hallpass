@@ -43,6 +43,34 @@ broker.** `$S/env` removes the alias. If `type gh` doesn't print a real
 binary path after you source it, stop: your gh calls are reaching the live
 broker and real GitHub.
 
+## The all run: the landing check
+
+Every lane passes this before `bin/worktree land`:
+
+```sh
+.claude/skills/verify-hallpass/scripts/all.sh
+```
+
+It refuses to start with anything uncommitted, because its stamp names
+the committed tree. Then it runs `up.sh`, `doctor.sh`, `drive.sh S all`,
+and `down.sh` in a new scratch dir, and prints the failed checks under
+their case names if any fail. When every check passes, and the broker was
+built from the tree the run started on, it writes `$S/evidence/verified`
+holding `HEAD^{tree}` and prints that path. `land` refuses a tree with no
+stamp, unless the change is Markdown only. Commit, rebase if `land` asks,
+then run it, since either changes the tree.
+
+It runs under `env -i`: `HOME`, `USER`, `TMPDIR`, and a `PATH` of the
+system dirs plus the directories of `go` and `gh`, found through
+`mise which` or the caller's `PATH`. So a login shell's PATH, the gh
+alias, `GH_*` and `GIT_*` variables, and Go's env file can't change the
+result. In a lane, `up.sh` reads the scratch-dir prefix from
+`worktree.env`. The evidence stays in `$S/evidence/` either way.
+
+This is the end-to-end check. The TLA+ model in `verify/` is separate,
+and `land` doesn't ask for it. To check one feature while you work, use
+the steps below by hand.
+
 ## Launch
 
 Run `up.sh`, `doctor.sh`, `drive.sh`, and `down.sh` from the repo root:
