@@ -221,19 +221,21 @@ func TestRESTTargetCharacters(t *testing.T) {
 	}
 }
 
-// In an empty repo, the first branch pushed becomes the default, so it
-// needs push.default like any default-branch push.
+// In an empty repo, the first branch pushed becomes the default, and it
+// passes without push.default, even when a protected pattern names it.
 func TestCheckPushEmptyRepo(t *testing.T) {
 	create := RefUpdate{zeroOID, a, "refs/heads/feature"}
-	br := Branches{Ops: op.Defaults(), Repo: github.Repo{Owner: "acme", Name: "new"}}
-	why := CheckPush(Push{Updates: []RefUpdate{create}}, br)[create.Ref]
-	if !strings.Contains(why, "acme/new is empty") || !strings.Contains(why, "policy allow push.default") {
-		t.Errorf("first push to an empty repo: %q", why)
-	}
-	br.Ops = op.Set{op.PushDefault: true}
+	br := Branches{Ops: op.Defaults(), Protected: []string{"feature"}, Repo: github.Repo{Owner: "acme", Name: "new"}}
 	if got := CheckPush(Push{Updates: []RefUpdate{create}}, br); len(got) != 0 {
-		t.Errorf("with push.default: %v", got)
+		t.Errorf("first push to an empty repo: %v", got)
 	}
+	// Once the repo has a default branch, pushing it needs push.default.
+	br.Default = "feature"
+	update := RefUpdate{a, b, "refs/heads/feature"}
+	if why := CheckPush(Push{Updates: []RefUpdate{update}}, br)[update.Ref]; !strings.Contains(why, "policy allow push.default") {
+		t.Errorf("second push to the default branch: %q", why)
+	}
+	br.Default = ""
 	// Only one branch can become the default, so a first push of two
 	// can't carry a protected branch past protected_branches.
 	br.Protected = []string{"production"}
@@ -243,6 +245,7 @@ func TestCheckPushEmptyRepo(t *testing.T) {
 	}
 	// An empty default branch never lets an update or delete skip the
 	// ledger, even with push.default.
+	br.Ops = op.Set{op.PushDefault: true}
 	for _, u := range []RefUpdate{{a, b, "refs/heads/colleague"}, {a, zeroOID, "refs/heads/colleague"}} {
 		if got := CheckPush(Push{Updates: []RefUpdate{u}}, br); len(got) == 0 {
 			t.Errorf("%s from %s with no default branch went through", u.Ref, u.Old[:4])

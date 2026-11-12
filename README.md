@@ -74,7 +74,8 @@ It prevents these:
 - **Merging, approving, and pushing the default branch, unless you allow
   it.** By default, agents can't merge or approve PRs, push the default
   branch, add labels, or rerun or dispatch workflows. You can allow each of
-  these everywhere or in one repo. See [Policy](#policy).
+  these everywhere or in one repo. See [Policy](#policy). The first push to
+  an empty repo is always allowed, though it creates the default branch.
 - **Pushing tags, protected branches, and your branches.** No policy allows
   these. Agents can't push a tag or a branch that `protected_branches`
   names. The default branch is the one exception: `push.default` alone
@@ -290,9 +291,10 @@ remove it.
 - `push.default` passes even when `protected_branches` names the default
   branch. Agents still can't delete it, but they can force-push it, because
   the broker can't tell a force push from a fast-forward. Turn on GitHub's
-  branch protection if its history matters. In an empty repo, the first
-  branch pushed becomes the default, so that push may carry only one
-  branch.
+  branch protection if its history matters. An empty repo's first push
+  doesn't need it. The branch that push creates becomes the default, even
+  when `protected_branches` names it, so the push may carry only one
+  branch. Every later push to that branch needs `push.default`.
 
 A refusal names the operation and the command that would allow it:
 
