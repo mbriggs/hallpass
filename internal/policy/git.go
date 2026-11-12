@@ -195,8 +195,9 @@ type Branches struct {
 	// Default is the default branch, or "" for an empty repo.
 	Default string
 	// Ops is what the repo's config lets agents do. With op.PushDefault
-	// they may create or update the default branch, though not delete it,
-	// even when a protected pattern names it.
+	// they may update the default branch, though not delete it, even when
+	// a protected pattern names it. The first push to an empty repo, which
+	// creates the default branch, passes without it.
 	Ops       op.Set
 	Protected []string // patterns: exact names or a trailing "/*"
 	// Tip returns the commit this machine's agents last pushed to a branch
@@ -249,11 +250,10 @@ func checkUpdate(u RefUpdate, b Branches) string {
 		return "malformed push command"
 	case b.Default == "" && u.Create():
 		// An empty repo has no default branch yet, and GitHub makes the
-		// first branch pushed to it the default. It has no refs to update
-		// or delete, so anything but a create goes on to the checks below.
-		if err := CheckOps([]op.Op{op.PushDefault}, b.Ops, b.Repo); err != nil {
-			return b.Repo.String() + " is empty, so " + branch + " would become its default branch. " + err.Error()
-		}
+		// first branch pushed to it the default. That push needs no
+		// op.PushDefault: the repo holds nothing for it to replace. It has
+		// no refs to update or delete, so anything but a create goes on to
+		// the checks below.
 		return ""
 	case strings.EqualFold(branch, b.Default):
 		if err := CheckOps([]op.Op{op.PushDefault}, b.Ops, b.Repo); err != nil {

@@ -125,7 +125,8 @@ Agents reach only allowed repos. Ask which. Before the first `allow`, warn
 the user: with a token or SSH key, every github.com remote goes through the
 broker. Repos not allowed are refused, except that a public one can be
 fetched without a credential, as anyone could. Pushing to the default branch is
-refused too, so the user pushes their own commits with `git personal push`.
+refused too, except for the first push to an empty repo, so the user pushes
+their own commits with `git personal push`.
 Then have the user run, for each:
 
 ```sh

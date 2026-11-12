@@ -162,8 +162,13 @@ func TestGitOverSSHThroughBroker(t *testing.T) {
 	if out, err := gitIn(tmp, plain, "clone", "-q", "--bare", bare, site); err != nil {
 		t.Fatal(out)
 	}
+	// acme/empty has no refs yet, and allows nothing extra.
+	empty := filepath.Join(root, "acme", "empty.git")
+	if out, err := gitIn(tmp, plain, "init", "-q", "--bare", "-b", "main", empty); err != nil {
+		t.Fatal(out)
+	}
 	// What GitHub allows: blobless fetches of any commit.
-	for _, repo := range []string{bare, site} {
+	for _, repo := range []string{bare, site, empty} {
 		for _, kv := range [][]string{{"uploadpack.allowFilter", "true"}, {"uploadpack.allowAnySHA1InWant", "true"}} {
 			gitIn(repo, plain, "config", kv[0], kv[1])
 		}
@@ -209,7 +214,7 @@ func TestGitOverSSHThroughBroker(t *testing.T) {
 		SSH: &config.Key{},
 		Repos: []config.Repo{{Match: "acme/widgets"}, {Match: "acme/site", Allow: []config.Grant{config.Grant(op.PushDefault)}},
 			// acme/missing is allowed but has no repo, so GitHub sends no ref list.
-			{Match: "acme/missing"}},
+			{Match: "acme/missing"}, {Match: "acme/empty"}},
 		ProtectedBranches: []string{"main", "release/*"},
 	}
 	// brokerLog is the gate's log, as the broker writes it.
@@ -413,6 +418,26 @@ func TestGitOverSSHThroughBroker(t *testing.T) {
 	gitIn(bare, plain, "symbolic-ref", "HEAD", "refs/heads/main")
 	if l := logAfter(mark, "msg=failed"); !strings.Contains(l, `repo=acme/widgets op=receive-pack reason="couldn't check the default branch: `) {
 		t.Errorf("a push with no default branch logged:\n%s", l)
+	}
+
+	// The first push to an empty repo makes its default branch, so it needs
+	// no push.default, and protected_branches doesn't stop it. It still
+	// can't carry workflows. After it, main is the default like any other.
+	emptyURL := "https://github.com/acme/empty"
+	refused("agents can't change .github/workflows", "push", emptyURL, "HEAD:main")
+	fresh := filepath.Join(tmp, "fresh")
+	for _, a := range [][]string{{"init", "-q", "-b", "main", fresh}, {"-C", fresh, "commit", "-q", "--allow-empty", "-m", "first"},
+		{"-C", fresh, "push", "-q", emptyURL, "HEAD:main"}} {
+		if out, err := gitIn(tmp, env, a...); err != nil {
+			t.Errorf("git %v: %s", a, out)
+		}
+	}
+	if out, _ := gitIn(empty, plain, "log", "-1", "--format=%s", "main"); strings.TrimSpace(out) != "first" {
+		t.Errorf("the empty repo's main after its first push: %q", out)
+	}
+	gitIn(fresh, env, "commit", "-q", "--allow-empty", "-m", "second")
+	if out, err := gitIn(fresh, env, "push", emptyURL, "HEAD:main"); err == nil || !strings.Contains(out, "main is the default branch") {
+		t.Errorf("second push to the once-empty repo: err=%v:\n%s", err, out)
 	}
 
 	// The ledger holds the commit agents last pushed, not just the name. A
