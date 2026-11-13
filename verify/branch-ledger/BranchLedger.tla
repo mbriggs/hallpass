@@ -64,13 +64,15 @@ IsDelete(c) == c.new = Zero   \* RefUpdate.Delete
                apply the push, but no broker is left to read the answer *)
 PCs == {"idle", "received", "forwarded", "answered", "orphaned"}
 
-IdlePush == [pc |-> "idle", cmds |-> {}, atomic |-> FALSE, ok |-> {}]
+IdlePush == [pc |-> "idle", cmds |-> {}, atomic |-> FALSE, fresh |-> FALSE,
+             ok |-> {}]
 
 TypeOK ==
     /\ gh \in [Names -> Commits]
     /\ ledger \in [Names -> Commits]
     /\ ledgerFile \in [Names -> Commits]
     /\ push \in [Pushes -> [pc : PCs, cmds : SUBSET Cmds, atomic : BOOLEAN,
+                            fresh : BOOLEAN,
                             ok : SUBSET Names]]
     /\ nextCommit \in 1..(MaxCommit + 1)
     /\ placed \subseteq Names \X Commits
@@ -104,8 +106,12 @@ Init ==
    own, are left out to keep the state space small; the user can already
    put any public commit on any branch. Old and new both Zero is refused as malformed in
    checkUpdate, so the model never sends it. atomic is git's --atomic.
-   Code: policy.ReadPush in internal/policy/git.go, called from
-   relayPush in internal/sshgate/gate.go. *)
+   relayPush reads GitHub's ref list before it reads the commands, and
+   fresh says whether every command's old commit is where that list has
+   its ref. The model reads the list in this step, the latest it can be
+   read; the user may change a branch after it.
+   Code: readAdvertisement and policy.ReadPush, called from relayPush in
+   internal/sshgate/gate.go. *)
 AgentSendsPush(p) ==
     /\ push[p].pc = "idle"
     /\ \E S \in SUBSET Names, atomic \in BOOLEAN :
@@ -119,23 +125,28 @@ AgentSendsPush(p) ==
             /\ \A n \in S : ~(old[n] = Zero /\ new[n] = Zero)
             /\ push' = [push EXCEPT ![p] =
                     [pc |-> "received", atomic |-> atomic, ok |-> {},
+                     fresh |-> \A n \in S : old[n] = gh[n],
                      cmds |-> {[name |-> n, old |-> old[n], new |-> new[n]] : n \in S}]]
             /\ nextCommit' = IF \E n \in S : new[n] = fresh
                              THEN nextCommit + 1 ELSE nextCommit
     /\ UNCHANGED <<gh, ledger, ledgerFile, placed, handed, harmed, public>>
 
 (* The broker checks every command. A create passes. An update or delete
-   passes only if its old commit is Ledger.Tip for the branch. If any
+   passes only if its old commit is Ledger.Tip for the branch. Every
+   command must also start from where the ref list had its ref (fresh):
+   the broker compares them itself, and doesn't count on GitHub alone to
+   apply a command only while the ref still points at old. If any
    command fails, RefusePush refuses the whole push. The default-branch
    and protected-pattern rules don't depend on the ledger and are out of
    scope; Names holds no default or protected branch.
    Code: policy.CheckPush and checkUpdate in internal/policy/git.go, with
-   Tip wired to s.Ledger.Tip in relayPush. *)
+   Tip wired to s.Ledger.Tip in relayPush, and stale in
+   internal/sshgate/gate.go. *)
 Allowed(c) == IsCreate(c) \/ (c.old # Zero /\ c.old = ledger[c.name])
 
 BrokerChecksPush(p) ==
     /\ push[p].pc = "received"
-    /\ IF \A c \in push[p].cmds : Allowed(c)
+    /\ IF push[p].fresh /\ \A c \in push[p].cmds : Allowed(c)
        THEN push' = [push EXCEPT ![p].pc = "forwarded"]
        ELSE push' = [push EXCEPT ![p] = IdlePush]
     /\ UNCHANGED <<gh, ledger, ledgerFile, nextCommit, placed, handed, harmed, public>>
