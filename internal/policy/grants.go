@@ -191,7 +191,7 @@ func CheckField(key string) error {
 	if !ok {
 		return errorf("field:%s: want Type.field, like Repository.hasProjectsEnabled", key)
 	}
-	if deniedFields[key] {
+	if deniedFields[key] || settingsTypes[typ] || typ == "BranchProtectionRule" {
 		return errorf("field:%s is never readable through hallpass", key)
 	}
 	s, err := Schema()

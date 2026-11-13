@@ -421,7 +421,10 @@ permissions and runners, environment secrets and variables, branch
 protection, Dependabot, Codespaces, hooks, deploy keys, invitations,
 security findings, or `Repository.tempCloneToken`. Rulesets
 (`read:rulesets`) and Actions variables (`read:actions/variables`) are
-off by default, and a policy can open them.
+off by default, and a policy can open them. Those names open REST routes.
+Over GraphQL, agents can't read rulesets, the rules that apply to a ref,
+branch protection past the one field `gh pr status` reads, deploy keys, or
+Dependabot alerts, and no `field:` name opens them.
 
 The broker checks each client's uid against `uids` in the config, from the
 kernel's peer credentials. The git config applies to everyone on the machine,

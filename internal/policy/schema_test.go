@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/vektah/gqlparser/v2/ast"
 )
 
 // The policy tables name GitHub's types and fields. A schema refresh that
@@ -29,6 +31,11 @@ func TestTablesMatchSchema(t *testing.T) {
 		typ, field, _ := strings.Cut(e, ".")
 		if !hasField(typ, field) {
 			t.Errorf("deniedFields names %s, which the schema lacks", e)
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(settingsTypes)) {
+		if d := s.Types[name]; d == nil || d.Kind != ast.Object {
+			t.Errorf("settingsTypes names %s, which isn't an object type in the schema", name)
 		}
 	}
 	for name, m := range mutations {

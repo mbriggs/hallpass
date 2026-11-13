@@ -77,7 +77,11 @@ func TestCheckField(t *testing.T) {
 	}
 	for _, bad := range []string{
 		"Repository.tempCloneToken", // never readable
-		"Repository.issues",         // a hop to other objects
+		// Settings and security findings, which no policy opens.
+		"BranchProtectionRule.pattern", "BranchProtectionRule.requiredApprovingReviewCount",
+		"RepositoryVulnerabilityAlert.vulnerableManifestPath", "RepositoryVulnerabilityAlert.dismissReason",
+		"RepositoryRuleset.name", "RefUpdateRule.pattern", "DeployKey.title",
+		"Repository.issues", // a hop to other objects
 		"Repository.defaultBranchRef",
 		"Repository.nope", "Nope.id", "Repository", "",
 	} {
