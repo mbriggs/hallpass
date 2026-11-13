@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mbriggs/hallpass/internal/audit"
 	"github.com/mbriggs/hallpass/internal/broker"
 	"github.com/mbriggs/hallpass/internal/client"
 	"github.com/mbriggs/hallpass/internal/config"
@@ -161,7 +162,7 @@ func serve(args []string) error {
 	stateDir := fs.String("state-dir", config.StateDir(), "directory for the branch ledger and the push spool")
 	fs.Parse(args)
 
-	log := slog.New(slog.NewTextHandler(system.LogOutput(), nil))
+	log := slog.New(slog.NewTextHandler(system.LogOutput(), &slog.HandlerOptions{ReplaceAttr: audit.BoundAttr}))
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		return err
