@@ -184,7 +184,7 @@ func ClassifyREST(method, target string, body []byte, g *Grants) (*REST, error) 
 		if err != nil {
 			return r.anonymous(err.Error()), nil
 		}
-		r.Repo, r.Route = &repo, "GET /search/issues"
+		r.Repo, r.Route, r.Answer = &repo, "GET /search/issues", issueAnswer(repo)
 		return r, nil
 	case method == "GET" && rawPath == "/search/code":
 		// GitHub answers code search only with a token, so a query the
