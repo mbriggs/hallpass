@@ -6,6 +6,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -312,16 +313,47 @@ func (c *Config) API() string {
 // and refuses everything until root adds credentials.
 func Load(path string) (*Config, error) {
 	var c Config
-	if _, err := toml.DecodeFile(path, &c); err != nil {
+	md, err := toml.DecodeFile(path, &c)
+	if err != nil {
 		if os.IsNotExist(err) {
 			return &c, nil
 		}
 		return nil, err
 	}
+	if err := checkKeys(md.Undecoded()); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	if err := c.Validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return &c, nil
+}
+
+// checkKeys refuses keys the config has no setting for. Ignoring one fails
+// open: a misspelled access leaves a repo writable, and a misspelled
+// protected_paths protects nothing. repo.via is the exception: configs
+// written before git went SSH-only carry it, and it did nothing since.
+func checkKeys(undecoded []toml.Key) error {
+	unknown := map[string]bool{}
+	var names []string
+	inRepo := false
+	for _, k := range undecoded {
+		name := k.String()
+		unknown[name] = true
+		if name == "repo.via" || len(k) > 1 && unknown[k[:len(k)-1].String()] {
+			continue // a key inside an unknown table is named by the table
+		}
+		names = append(names, name)
+		inRepo = inRepo || k[0] == "repo"
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	msg := fmt.Sprintf("hallpass has no setting named %s; fix the spelling or remove it", strings.Join(names, ", "))
+	if inRepo {
+		msg += ". Every key below a [[repo]] line belongs to that repo, so top-level keys like protected_branches go above the first [[repo]]"
+	}
+	return errors.New(msg)
 }
 
 func (c *Config) Validate() error {
@@ -345,6 +377,9 @@ func (c *Config) Validate() error {
 		}
 	}
 	if err := checkGrants("global", c.Allow, c.Deny, true); err != nil {
+		return err
+	}
+	if err := checkBranches(c.ProtectedBranches); err != nil {
 		return err
 	}
 	if err := checkPaths("protected_paths", c.ProtectedPaths); err != nil {
@@ -377,6 +412,30 @@ func (c *Config) Validate() error {
 		}
 		if err := checkPaths("repo "+r.Match+": protected_paths", r.ProtectedPaths); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// checkBranches refuses protected branches the push check can't match,
+// which would protect nothing. It matches a branch name, or a prefix
+// followed by /*.
+func checkBranches(patterns []string) error {
+	for _, p := range patterns {
+		name, _ := strings.CutSuffix(p, "/*")
+		why := ""
+		switch {
+		case p == "":
+			why = "is empty"
+		case strings.HasPrefix(strings.ToLower(p), "refs/"):
+			why = "starts with refs/"
+		case strings.Contains(name, "*"):
+			why = "has a * that isn't a trailing /*"
+		case !policy.ValidBranch(name):
+			why = "isn't a valid branch name"
+		}
+		if why != "" {
+			return fmt.Errorf("protected_branches: %q %s; write a branch name, like main, or a prefix and /*, like release/*", p, why)
 		}
 	}
 	return nil

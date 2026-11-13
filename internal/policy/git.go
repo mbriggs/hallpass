@@ -244,7 +244,7 @@ func checkUpdate(u RefUpdate, b Branches) string {
 		return "agents can't push tags"
 	case branch == "":
 		return "agents can only push branches under refs/heads/"
-	case !validBranch(branch):
+	case !ValidBranch(branch):
 		return "not a valid branch name"
 	case u.Create() && u.Delete():
 		return "malformed push command"
@@ -299,8 +299,8 @@ func protected(branch string, patterns []string) bool {
 	return false
 }
 
-// validBranch applies git check-ref-format's rules to a branch name.
-func validBranch(b string) bool {
+// ValidBranch applies git check-ref-format's rules to a branch name.
+func ValidBranch(b string) bool {
 	if b == "" || b == "@" || strings.HasPrefix(b, "/") || strings.HasSuffix(b, "/") ||
 		strings.HasSuffix(b, ".") || strings.Contains(b, "..") || strings.Contains(b, "//") ||
 		strings.Contains(b, "@{") || strings.HasPrefix(b, "-") {
