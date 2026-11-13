@@ -418,6 +418,11 @@ func (s *Server) relayPush(client *ssh.Client, repo github.Repo, rule config.Rul
 		})
 	}
 	refused := check(def.name)
+	for ref, why := range stale(push, adv) {
+		if _, ok := refused[ref]; !ok {
+			refused[ref] = why
+		}
+	}
 	refuse := func(refused map[string]string) bool {
 		log.Warn("refused", "reason", "push", "refs", refused)
 		// git reads the answer after it sends the pack, so take the pack
@@ -537,6 +542,31 @@ func all(p policy.Push, reason string) map[string]string {
 		m[u.Ref] = reason
 	}
 	return m
+}
+
+// stale refuses each command that doesn't start from where GitHub's ref
+// list has its ref: an update or delete whose old commit isn't the ref's,
+// and a create of a ref that exists. git takes the old commit from that
+// list, so its pushes always match. The ledger check passes a command
+// whose old commit is the one agents last pushed, and counts on GitHub to
+// apply it only while the branch still points there. receive-pack doesn't
+// compare a delete's old commit once that commit is gone from the repo, so
+// a delete could remove a branch the user has since made their own. The
+// broker compares it here and doesn't count on GitHub to.
+func stale(p policy.Push, adv []byte) map[string]string {
+	refused := map[string]string{}
+	for _, u := range p.Updates {
+		at := refOID(adv, u.Ref)
+		switch {
+		case u.Create() && at != "":
+			refused[u.Ref] = "GitHub already has this branch; fetch and push again"
+		case !u.Create() && at == "":
+			refused[u.Ref] = "GitHub doesn't have this branch; fetch and push again"
+		case !u.Create() && at != u.Old:
+			refused[u.Ref] = "this push starts from " + u.Old[:7] + ", and GitHub has the branch at " + at[:7] + "; fetch and push again"
+		}
+	}
+	return refused
 }
 
 // refOID finds ref's commit in a ref list, or "" when the list doesn't have

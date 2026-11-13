@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/mbriggs/hallpass/internal/policy"
 )
 
 func adv(lines ...string) []byte {
@@ -68,6 +70,40 @@ func TestRefOID(t *testing.T) {
 		if got := refOID(list, ref); got != want {
 			t.Errorf("refOID(%s) = %q, want %q", ref, got, want)
 		}
+	}
+}
+
+func TestStale(t *testing.T) {
+	a, b, c := strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("c", 40)
+	zero := strings.Repeat("0", 40)
+	list := adv(a+" refs/heads/main\x00report-status", b+" refs/heads/dev")
+	push := policy.Push{Updates: []policy.RefUpdate{
+		{Old: b, New: c, Ref: "refs/heads/dev"},
+		{Old: zero, New: c, Ref: "refs/heads/new"},
+		{Old: a, New: zero, Ref: "refs/heads/main"},
+	}}
+	if got := stale(push, list); len(got) != 0 {
+		t.Errorf("commands that start from GitHub's commits were refused: %v", got)
+	}
+	push = policy.Push{Updates: []policy.RefUpdate{
+		{Old: c, New: a, Ref: "refs/heads/dev"},
+		{Old: c, New: zero, Ref: "refs/heads/main"},
+		{Old: zero, New: c, Ref: "refs/heads/dev2"},
+		{Old: zero, New: c, Ref: "refs/heads/main"},
+		{Old: c, New: zero, Ref: "refs/heads/gone"},
+	}}
+	got := stale(push, list)
+	for ref, want := range map[string]string{
+		"refs/heads/dev":  "starts from ccccccc, and GitHub has the branch at bbbbbbb",
+		"refs/heads/main": "already has this branch",
+		"refs/heads/gone": "doesn't have this branch",
+	} {
+		if !strings.Contains(got[ref], want) {
+			t.Errorf("%s: %q, want %q", ref, got[ref], want)
+		}
+	}
+	if len(got) != 3 {
+		t.Errorf("refused %v, want dev, main, and gone only", got)
 	}
 }
 
