@@ -62,6 +62,10 @@ func Restart() error {
 	return nil
 }
 
+// LogOutput is where the broker writes its log: stderr, which systemd sends
+// to the journal.
+func LogOutput() io.Writer { return os.Stderr }
+
 // OpenLog reads the broker's log from the journal, oldest first. A nonzero
 // since asks the journal for only what came after it.
 func OpenLog(since time.Time) (io.ReadCloser, error) {

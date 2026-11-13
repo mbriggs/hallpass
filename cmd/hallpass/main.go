@@ -161,7 +161,7 @@ func serve(args []string) error {
 	stateDir := fs.String("state-dir", config.StateDir(), "directory for the branch ledger and the push spool")
 	fs.Parse(args)
 
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	log := slog.New(slog.NewTextHandler(system.LogOutput(), nil))
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		return err
