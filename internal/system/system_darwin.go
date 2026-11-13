@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/mbriggs/hallpass/internal/config"
@@ -112,6 +113,40 @@ func Restart() error { return run("launchctl", "kickstart", "-k", label) }
 // oldest first. The file has no index by time, so since is left to the
 // caller's filter.
 func OpenLog(time.Time) (io.ReadCloser, error) { return openLogFiles(logPath) }
+
+// LogOutput is where the broker writes its log. launchd points the broker's
+// stdout and stderr at logPath, and newsyslog rotates that file without
+// telling the broker, which would leave the broker writing to the renamed
+// copy, and then to nothing once newsyslog compresses and deletes it. So when
+// stderr is logPath, the log follows the path to each new file, and the new
+// file goes onto fd 1 and 2 as well, so a panic trace lands in it too. A pid
+// file would let newsyslog signal the broker instead, but root would then
+// signal whatever pid the broker's user wrote in it. A broker started any
+// other way, such as a scratch one, logs to stderr as it is.
+func LogOutput() io.Writer {
+	cur, err := os.Stderr.Stat()
+	if err != nil {
+		return os.Stderr
+	}
+	if at, err := os.Stat(logPath); err != nil || !os.SameFile(cur, at) {
+		return os.Stderr
+	}
+	w := newFollowWriter(logPath, os.Stderr)
+	w.replace = onStdio
+	return w
+}
+
+// onStdio puts newf on stdout and stderr and closes it, so the log goes on
+// through os.Stderr, and fd 2 is always the file the log is in.
+func onStdio(f, newf *os.File) (*os.File, error) {
+	defer newf.Close()
+	for _, fd := range []int{1, 2} {
+		if err := syscall.Dup2(int(newf.Fd()), fd); err != nil {
+			return nil, err
+		}
+	}
+	return f, nil
+}
 
 func Uninstall(purge bool) error {
 	_ = exec.Command("launchctl", "bootout", label).Run()
