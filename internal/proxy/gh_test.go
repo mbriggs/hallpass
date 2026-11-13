@@ -136,7 +136,7 @@ func TestGHThroughBroker(t *testing.T) {
 		{[]string{"pr", "comment", "1", "-R", "acme/widgets", "-b", "/merge"}, "bots act on lines like it"},
 		{[]string{"api", "repos/acme/secret"}, "isn't in hallpass's allowlist"},
 		{[]string{"api", "-X", "PUT", "repos/acme/widgets/pulls/1/merge"}, "hallpass: agents may not merge PRs"},
-		{[]string{"api", "-X", "DELETE", "repos/acme/widgets/git/refs/heads/main"}, "hallpass doesn't allow DELETE"},
+		{[]string{"api", "-X", "DELETE", "repos/acme/widgets/git/refs/heads/main"}, "hallpass doesn't let agents change refs through GitHub's API"},
 	} {
 		wg.Go(func() {
 			out, err := run(c.args...)

@@ -149,6 +149,12 @@ var (
 // adds and removes read routes; nil means the built-in ones.
 func ClassifyREST(method, target string, body []byte, g *Grants) (*REST, error) {
 	if err := cleanTarget(target); err != nil {
+		// gh writes a branch's ref with its slash encoded (heads%2Fname),
+		// which cleanTarget refuses whatever the write is. Say why a ref
+		// write can't go this way at all, not that the encoding is wrong.
+		if refWrite(method, target) {
+			return nil, errRefWrite
+		}
 		return nil, err
 	}
 	rawPath, rawQuery, _ := strings.Cut(target, "?")
@@ -305,8 +311,26 @@ func ClassifyREST(method, target string, body []byte, g *Grants) (*REST, error) 
 		}
 		return r, nil
 	}
+	if refWrite(method, target) {
+		return nil, errRefWrite
+	}
 	return nil, errorf("hallpass doesn't allow %s %s", method, pattern(rest))
 }
+
+// refWriteTarget is a request target under a repo's git/refs.
+var refWriteTarget = regexp.MustCompile(`^/repos/[^/?]+/[^/?]+/git/refs(/|\?|$)`)
+
+// refWrite reports whether a request would create, move, or delete a ref
+// through the REST API, which hallpass never allows: branch changes go through
+// git push, where it checks each one against the default branch, protected
+// branches, and the branches agents pushed (see CheckPush).
+func refWrite(method, target string) bool {
+	return method != "GET" && refWriteTarget.MatchString(target)
+}
+
+var errRefWrite = errorf("hallpass doesn't let agents change refs through GitHub's API; branch changes go through git push, where hallpass checks them. " +
+	"To delete a branch an agent pushed: git push origin --delete BRANCH. " +
+	"To have GitHub delete a PR's branch when it merges, turn on automatically deleting head branches in the repo's settings")
 
 // reviewEvent names the operation a review's event needs beyond a comment.
 // Without an event, GitHub leaves the review pending.
