@@ -8,6 +8,27 @@ import (
 	"github.com/mbriggs/hallpass/internal/op"
 )
 
+// An entry is offered for removal only when OWNER/* gives all it does.
+// Protected paths are the entry's own, so one that holds them stays.
+func TestRemovable(t *testing.T) {
+	cfg := &config.Config{Repos: []config.Repo{
+		{Match: "acme/*"},
+		{Match: "acme/bare"},
+		{Match: "acme/paths", ProtectedPaths: []string{".github/actions", "CODEOWNERS"}},
+		{Match: "acme/policy", Allow: []config.Grant{config.Grant(op.PRMerge)}},
+		{Match: "acme/read", Access: "read"},
+		{Match: "solo/repo"},
+	}}
+	for match, want := range map[string]bool{
+		"acme/bare": true, "acme/paths": false, "acme/policy": false, "acme/read": false,
+		"acme/*": false, "solo/repo": false, "acme/absent": false,
+	} {
+		if got := removable(cfg, match); got != want {
+			t.Errorf("removable(%s) = %v, want %v", match, got, want)
+		}
+	}
+}
+
 func TestEditPolicy(t *testing.T) {
 	cfg := &config.Config{Repos: []config.Repo{
 		{Match: "acme/*"},

@@ -283,7 +283,20 @@ func checkUpdate(u RefUpdate, b Branches) string {
 	if tip != "" {
 		why = branch + " has changed since an agent last pushed it (agents pushed " + tip[:7] + ", this push starts from " + u.Old[:7] + ")"
 	}
-	return why + ". To let agents " + verb + " it as it is: sudo /opt/hallpass/bin/hallpass ledger add " + b.Repo.String() + " " + branch + " " + u.Old
+	return why + ". To let agents " + verb + " it as it is: sudo /opt/hallpass/bin/hallpass ledger add " + b.Repo.String() + " " + shellQuote(branch) + " " + u.Old
+}
+
+var shellSafe = regexp.MustCompile(`^[A-Za-z0-9._/@%+=,-]+$`)
+
+// shellQuote writes s as one word of a shell command. A branch name may
+// hold ; | & $ ( ) and backticks, and the client picks it, so a refusal
+// that prints it bare inside a sudo command would hand the user a command
+// the client wrote.
+func shellQuote(s string) string {
+	if shellSafe.MatchString(s) {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func protected(branch string, patterns []string) bool {
