@@ -351,7 +351,10 @@ A path is a file or a directory from the repo's root, and a directory
 covers everything under it. Writing one where none was is a change too, so
 agents can't add `.github/actions/new` under a protected `.github/actions`.
 So is putting a symlink, a submodule, or a file where a protected
-directory was. Names match without regard to case, since a checkout on
+directory was. A hand-built tree can name an entry `scripts/deploy.sh`,
+slash included, which git checks out as that file, so the broker refuses
+a push whose trees along a protected path hold such a name. Names match
+without regard to case, since a checkout on
 macOS or Windows reads `Scripts/deploy.sh` as `scripts/deploy.sh`.
 Patterns like `*.sh` aren't supported, and the config refuses them, along
 with absolute paths and `..`.

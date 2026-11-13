@@ -25,6 +25,7 @@ package policy
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
 	"slices"
 	"strings"
 )
@@ -110,35 +111,39 @@ func WorkflowChanges(p *Pack, updates []RefUpdate, defaultHead string, protected
 	}
 
 	paths := append(slices.Clone(Guarded), protected...)
-	// states returns what each path holds at commit, or false when an
-	// object it needs is in neither the pack nor GitHub's answer.
-	states := func(commit string) ([]string, bool) {
+	// states returns what each path holds at commit, or why it can't
+	// say: an object it needs is in neither the pack nor GitHub's answer,
+	// or a tree on the way is one the walk refuses.
+	states := func(commit string) ([]string, string) {
 		out := make([]string, len(paths))
 		if commit == "" || commit == zeroOID {
-			return out, true
+			return out, ""
 		}
 		c, ok, err := commitOf(commit)
 		if err != nil || !ok {
-			return nil, false
+			return nil, unknown
 		}
 		for i, path := range paths {
-			if out[i], ok = pathState(get, c.Tree, path); !ok {
-				return nil, false
+			var why string
+			if out[i], why = pathState(get, c.Tree, path); why != "" {
+				return nil, why
 			}
 		}
-		return out, true
+		return out, ""
 	}
 
-	const unknown = "hallpass couldn't check this push for workflow changes"
 	refused := map[string]string{}
-	base, baseOK := states(defaultHead)
+	base, baseWhy := states(defaultHead)
 	for _, u := range updates {
 		if u.Delete() {
 			continue
 		}
-		tip, ok := states(u.New)
-		if !ok || !baseOK {
-			refused[u.Ref] = unknown
+		tip, why := states(u.New)
+		if why == "" {
+			why = baseWhy
+		}
+		if why != "" {
+			refused[u.Ref] = why
 			continue
 		}
 		// The tip must match one baseline at every path at once, as a
@@ -146,8 +151,8 @@ func WorkflowChanges(p *Pack, updates []RefUpdate, defaultHead string, protected
 		trusted := slices.Equal(tip, base)
 		var old []string
 		if !u.Create() {
-			if old, ok = states(u.Old); !ok {
-				refused[u.Ref] = unknown
+			if old, why = states(u.Old); why != "" {
+				refused[u.Ref] = why
 				continue
 			}
 			trusted = trusted || slices.Equal(tip, old)
@@ -189,10 +194,12 @@ func changedPaths(paths, tip, base, old []string) string {
 // checkout on macOS or Windows reads Scripts/ as scripts/. An entry that
 // should be a directory and isn't, like a symlink or a submodule, ends the
 // walk and goes in the state, so replacing a directory with one is a
-// change. An absent path is "". It's false when a tree it needs is missing,
-// or when more than maxMatches entries match, since a crafted tree that
-// repeats a name would otherwise multiply the walk at every level.
-func pathState(get func(string) (Object, bool), root, path string) (string, bool) {
+// change. An absent path is "". The second result says why the walk
+// failed, or is "": a tree it needs is missing, more than maxMatches
+// entries match, since a crafted tree that repeats a name would otherwise
+// multiply the walk at every level, or a tree holds a name foldEntries
+// refuses.
+func pathState(get func(string) (Object, bool), root, path string) (string, string) {
 	type at struct{ id, path string }
 	cur := []at{{root, ""}}
 	segs := strings.Split(path, "/")
@@ -203,11 +210,14 @@ func pathState(get func(string) (Object, bool), root, path string) (string, bool
 		for _, d := range cur {
 			t, ok := get(d.id)
 			if !ok || t.Type != "tree" {
-				return "", false
+				return "", unknown
 			}
 			entries, err := foldEntries(t.Data, seg, left)
+			if errors.Is(err, errSlashName) {
+				return "", err.Error()
+			}
 			if err != nil {
-				return "", false
+				return "", unknown
 			}
 			left -= len(entries)
 			for _, e := range entries {
@@ -221,8 +231,18 @@ func pathState(get func(string) (Object, bool), root, path string) (string, bool
 		}
 		cur = next
 	}
-	return state.String(), true
+	return state.String(), ""
 }
+
+const unknown = "hallpass couldn't check this push for workflow changes"
+
+// errSlashName refuses a tree with a slash in an entry's name. The walk
+// matches one path segment to one entry, so a root entry named
+// scripts/deploy.sh matches nothing, yet git checks it out as the file
+// deploy.sh in scripts. git never writes such a tree and its fsck rejects
+// one, but the broker's check is the only guard the README promises, so it
+// doesn't count on GitHub running fsck.
+var errSlashName = errorf("a tree in this push has an entry with a / in its name, which git doesn't write")
 
 type treeEntry struct{ mode, name, id string }
 
@@ -241,7 +261,11 @@ func foldEntries(data []byte, name string, limit int) ([]treeEntry, error) {
 		if sp < 0 || nul < sp || nul+21 > len(data) {
 			return nil, errorf("malformed tree")
 		}
-		if n := data[sp+1 : nul]; bytes.EqualFold(n, want) {
+		n := data[sp+1 : nul]
+		if bytes.IndexByte(n, '/') >= 0 {
+			return nil, errSlashName
+		}
+		if bytes.EqualFold(n, want) {
 			if len(out) == limit {
 				return nil, errorf("a tree in this push repeats a name")
 			}
