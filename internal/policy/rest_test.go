@@ -188,3 +188,22 @@ func TestClassifyREST(t *testing.T) {
 		t.Errorf("GET Deployments: %q", refusal(r, err))
 	}
 }
+
+// A ref write through the API is refused with how to do it instead, however
+// gh spells the ref, and a read with an encoding is refused as before.
+func TestRefWritesSayToPush(t *testing.T) {
+	for _, c := range []struct{ method, target string }{
+		{"DELETE", "/repos/acme/widgets/git/refs/heads%2Ffix"},
+		{"DELETE", "/repos/acme/widgets/git/refs/heads/fix"},
+		{"PATCH", "/repos/acme/widgets/git/refs/heads/fix"},
+		{"POST", "/repos/acme/widgets/git/refs"},
+	} {
+		_, err := ClassifyREST(c.method, c.target, []byte(`{}`), nil)
+		if err == nil || !IsRefusal(err) || !strings.Contains(err.Error(), "git push origin --delete") {
+			t.Errorf("%s %s: got %v, want the refusal that says to push", c.method, c.target, err)
+		}
+	}
+	if _, err := ClassifyREST("GET", "/repos/acme/widgets/git/refs/heads%2Ffix", nil, nil); err == nil || !strings.Contains(err.Error(), "encoding") {
+		t.Errorf("GET with an encoded slash: got %v, want the encoding refusal", err)
+	}
+}
