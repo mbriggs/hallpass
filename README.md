@@ -391,6 +391,12 @@ refuses a search without exactly one `repo:`, or with `user:`, `org:`, or
 hallpass: hallpass searches code only within one repo; add repo:OWNER/NAME (gh search code --repo OWNER/NAME)
 ```
 
+In an issue or PR search, `repo:` must be lowercase and stand at the
+start or after a plain space, and the query can't hold a tab, a line
+break, or any other kind of space: GitHub reads `repo:` after one of
+those as part of the term before it and searches everywhere. The broker
+also checks the answer to a REST search, as it does for code.
+
 A code search may quote a phrase, but `repo:` must stand outside quotes,
 and `repo:`, `user:`, `org:`, and `owner:` can't appear anywhere else in
 the query, even quoted. The broker also checks GitHub's answer, and if

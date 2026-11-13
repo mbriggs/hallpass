@@ -125,6 +125,27 @@ func codeAnswer(repo github.Repo) func(any) error {
 	}
 }
 
+// issueAnswer checks GitHub's answer to an issue or PR search confined to
+// repo, as codeAnswer does for code: every result must be in repo, however
+// GitHub read the query.
+func issueAnswer(repo github.Repo) func(any) error {
+	return func(v any) error {
+		m, _ := v.(map[string]any)
+		items, ok := m["items"].([]any)
+		if !ok {
+			return errorf("GitHub's answer to a search had no list of results")
+		}
+		for _, it := range items {
+			item, _ := it.(map[string]any)
+			url, _ := item["repository_url"].(string)
+			if _, name, ok := strings.CutLast(url, "/repos/"); !ok || !strings.EqualFold(name, repo.String()) {
+				return errorf("GitHub answered a search in %s with a result from another repo, so hallpass refused the whole answer. If %s was renamed, search under its new name", repo, repo)
+			}
+		}
+		return nil
+	}
+}
+
 // deniesContents names the config layer that denies a contents read in
 // repo, or "". Code search would reach those files, and whether a search
 // is refused or comes back empty would tell what they hold, so a repo with

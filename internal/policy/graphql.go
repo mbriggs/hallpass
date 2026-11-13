@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/vektah/gqlparser/v2"
 	"github.com/vektah/gqlparser/v2/ast"
@@ -621,9 +623,16 @@ func init() {
 	}
 }
 
-// SearchRepo reads the one repo a search query is confined to. It refuses
-// queries that could reach further: boolean operators, more than one repo,
-// or owner-wide qualifiers.
+// SearchRepo reads the one repo an issue or PR search is confined to. The
+// broker must read the query exactly as GitHub does, since for a GraphQL
+// search nothing checks the answer. GitHub splits terms only at plain
+// spaces and reads repo: only in lowercase: after a tab, a line break, a
+// no-break space, or a parenthesis, or written REPO:, it takes repo: for
+// part of the term before it or for text, and searches every repo the
+// token can see. So the query must hold exactly one repo:OWNER/NAME, in
+// lowercase, at its start or after a plain space, and no other repo:,
+// org:, user:, or owner: anywhere. Boolean operators, quotes, and any
+// space or invisible character but a plain space are refused.
 func SearchRepo(q string) (github.Repo, error) {
 	// GitHub reads a quoted phrase as one term, so a repo: qualifier inside
 	// quotes isn't one. Refusing quotes keeps the broker and GitHub reading
@@ -631,26 +640,42 @@ func SearchRepo(q string) (github.Repo, error) {
 	if strings.ContainsAny(q, "\"'\\") {
 		return github.Repo{}, errorf("hallpass doesn't allow quotes in searches")
 	}
-	var repo string
-	for tok := range strings.FieldsSeq(strings.NewReplacer("(", " ", ")", " ").Replace(q)) {
-		low := strings.ToLower(tok)
-		switch {
-		case low == "or" || low == "and" || low == "not":
-			return github.Repo{}, errorf("hallpass doesn't allow boolean operators in searches")
-		case strings.HasPrefix(low, "repo:"):
-			if repo != "" {
-				return github.Repo{}, errorf("hallpass allows one repo: qualifier per search")
-			}
-			repo = tok[len("repo:"):]
-		case strings.HasPrefix(low, "org:"), strings.HasPrefix(low, "user:"),
-			strings.HasPrefix(low, "owner:"), strings.HasPrefix(low, "-repo:"):
-			return github.Repo{}, errorf("hallpass searches only within one repo, so it doesn't allow %s", tok)
+	if !utf8.ValidString(q) {
+		return github.Repo{}, errorf("hallpass doesn't allow a search that isn't valid UTF-8")
+	}
+	for _, c := range q {
+		if c != ' ' && (unicode.IsSpace(c) || unicode.IsControl(c) || unicode.In(c, unicode.Cf, unicode.Zl, unicode.Zp, unicode.Zs)) {
+			return github.Repo{}, errorf("hallpass allows only plain spaces between the terms of a search, not %q", c)
 		}
 	}
-	if repo == "" {
+	for tok := range strings.FieldsSeq(strings.NewReplacer("(", " ", ")", " ").Replace(q)) {
+		if low := strings.ToLower(tok); low == "or" || low == "and" || low == "not" {
+			return github.Repo{}, errorf("hallpass doesn't allow boolean operators in searches")
+		}
+	}
+	name, found := "", false
+	for _, m := range scopes.FindAllStringSubmatchIndex(q, -1) {
+		switch scope := q[m[0]:m[1]]; {
+		case !strings.EqualFold(q[m[2]:m[3]], "repo"):
+			return github.Repo{}, errorf("hallpass searches only within one repo, so it doesn't allow %s", strings.TrimSpace(scope))
+		case found:
+			return github.Repo{}, errorf("hallpass allows one repo: qualifier per search")
+		case scope != "repo:" && scope != " repo:":
+			return github.Repo{}, errorf("hallpass needs repo: in lowercase, at the start of a search or after a space, not %s", strings.TrimSpace(scope))
+		}
+		found = true
+		name, _, _ = strings.Cut(q[m[1]:], " ")
+	}
+	if !found {
 		return github.Repo{}, errorf("hallpass searches only within one repo; add repo:OWNER/NAME")
 	}
-	return github.ParseRepo(repo)
+	// GitHub gets the text as written, so it must be the repo exactly,
+	// without the slashes or suffix ParseRepo would trim.
+	repo, err := github.ParseRepo(name)
+	if err == nil && repo.String() != name {
+		err = errorf("hallpass needs repo:OWNER/NAME exactly, not repo:%s", name)
+	}
+	return repo, err
 }
 
 type bind struct {
