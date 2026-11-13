@@ -39,6 +39,46 @@ func TestPathStateRefusesRepeatedNames(t *testing.T) {
 	}
 }
 
+// The walk matches one path segment to one tree entry, so an entry named
+// scripts/deploy.sh matches no segment, yet git checks it out as deploy.sh
+// in scripts. A push with such a name in a tree the walk reads is refused,
+// in the root or below it, whatever the name's case.
+func TestPathStateRefusesSlashNames(t *testing.T) {
+	blob := strings.Repeat("b", 40)
+	for name, build := range map[string]func(put func(string, []byte) string) string{
+		"a protected file": func(put func(string, []byte) string) string {
+			scripts := put("tree", treeData([3]string{"100644", "deploy.sh", blob}))
+			return put("tree", treeData([3]string{"40000", "scripts", scripts}, [3]string{"100644", "scripts/deploy.sh", blob}))
+		},
+		"a workflow": func(put func(string, []byte) string) string {
+			return put("tree", treeData([3]string{"100644", ".github/workflows/evil.yml", blob}))
+		},
+		"another case": func(put func(string, []byte) string) string {
+			return put("tree", treeData([3]string{"100644", "Scripts/Deploy.sh", blob}))
+		},
+		"below the root": func(put func(string, []byte) string) string {
+			gh := put("tree", treeData([3]string{"100644", "workflows/evil.yml", blob}))
+			return put("tree", treeData([3]string{"40000", ".github", gh}))
+		},
+	} {
+		objs := map[string]Object{}
+		put := func(typ string, data []byte) string {
+			id := objectID(typ, data)
+			objs[id] = Object{Type: typ, Data: data}
+			return id
+		}
+		// main holds scripts/deploy.sh as the tip's scripts tree does, so
+		// only the slash name differs.
+		scripts := put("tree", treeData([3]string{"100644", "deploy.sh", blob}))
+		def := put("commit", []byte("tree "+put("tree", treeData([3]string{"40000", "scripts", scripts}))+"\n\nmain\n"))
+		tip := put("commit", []byte("tree "+build(put)+"\n\nmsg\n"))
+		got, err := WorkflowChanges(&Pack{Objects: objs}, []RefUpdate{{Old: zeroOID, New: tip, Ref: "refs/heads/x"}}, def, []string{"scripts/deploy.sh"}, func([]string) (map[string]Object, error) { return nil, nil })
+		if err != nil || !strings.Contains(got["refs/heads/x"], "entry with a / in its name") {
+			t.Errorf("%s: refused %v, %v", name, got, err)
+		}
+	}
+}
+
 // Protected paths from the config get the workflow check's rule: the tip
 // must match the ref's old commit or the default branch at each of them.
 func TestProtectedPaths(t *testing.T) {
