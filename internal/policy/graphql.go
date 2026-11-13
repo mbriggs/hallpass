@@ -359,6 +359,11 @@ func (w *walker) selections(f *ast.Field, v view, depth int) error {
 		if deniedFields[owner+"."+c.Name] {
 			return errorf("hallpass doesn't let agents read %s.%s", owner, c.Name)
 		}
+		// The owner is checked as well as the field's type, since a
+		// fragment on a node names a type without a field leading to it.
+		if t := unwrap(w.schema, child).Name; settingsTypes[owner] || settingsTypes[t] {
+			return errorf("hallpass doesn't let agents read %s.%s: it shows the repo's settings or security findings", owner, c.Name)
+		}
 		if owner == "Repository" && c.Name == "object" {
 			args := c.ArgumentMap(w.vars)
 			if expr, ok := args["expression"].(string); ok {
@@ -551,6 +556,27 @@ var identityFields = map[string]bool{
 	"Repository.description":      true,
 	// gh pr status reads it through PullRequest.baseRef.
 	"BranchProtectionRule.requiresStrictStatusChecks": true,
+}
+
+// settingsTypes are objects that hold a repo's settings or its security
+// findings: rulesets and the rules they apply to a ref, branch protection's
+// allowances, deploy keys, and Dependabot alerts. No read may reach one,
+// by any field that leads to it or by a fragment that names it, and no
+// field: grant opens one. deniedFields closes the fields of Repository
+// that lead here, but other objects do too, like Ref.rules and
+// Ref.refUpdateRule, and a type with no repository field would otherwise
+// get the full view.
+//
+// BranchProtectionRule isn't here, because gh pr status reads one field of
+// it (see identityFields). It has a repository field, so reads see only
+// that field, and CheckField keeps a grant from opening the rest.
+var settingsTypes = map[string]bool{
+	"RepositoryRule": true, "RepositoryRuleset": true, "RepositoryRulesetBypassActor": true,
+	"RepositoryRuleConditions": true, "RefUpdateRule": true,
+	"BranchProtectionRuleConflict": true, "PushAllowance": true, "ReviewDismissalAllowance": true,
+	"BypassPullRequestAllowance": true, "BypassForcePushAllowance": true,
+	"DeploymentProtectionRule": true, "DeployKey": true,
+	"RepositoryVulnerabilityAlert": true,
 }
 
 // deniedFields are fields agents can't read even in an allowed repo.
