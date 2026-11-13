@@ -30,6 +30,8 @@ func TestFollowsLogRedirects(t *testing.T) {
 		// Hosts that start with the API's, but aren't it.
 		"6": api + ".evil.example/log",
 		"7": api + "@evil.example/log",
+		// A host that ends in a storage host's name isn't one.
+		"8": "https://xcodeload.github.com/archive.tar.gz",
 	}
 	up := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		run := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/repos/acme/widgets/actions/runs/"), "/logs")
@@ -69,6 +71,7 @@ func TestFollowsLogRedirects(t *testing.T) {
 		{"5", `Get \"https://127.0.0.1/log\"`, 502},
 		{"6", "GitHub redirected to 127.0.0.1.evil.example, which hallpass doesn't follow", 502},
 		{"7", "GitHub redirected to evil.example, which hallpass doesn't follow", 502},
+		{"8", "GitHub redirected to xcodeload.github.com, which hallpass doesn't follow", 502},
 	} {
 		resp, err := client.Get("http://api.github.com/repos/acme/widgets/actions/runs/" + c.run + "/logs")
 		if err != nil {
@@ -79,6 +82,27 @@ func TestFollowsLogRedirects(t *testing.T) {
 		resp.Body.Close()
 		if resp.StatusCode != c.status || !strings.Contains(string(body), c.want) {
 			t.Errorf("run %s: %d %s", c.run, resp.StatusCode, body)
+		}
+	}
+}
+
+// A storage host with a leading dot covers the hosts under it, and one
+// without covers only itself.
+func TestStorageHost(t *testing.T) {
+	t.Parallel()
+	for host, want := range map[string]bool{
+		"release-assets.githubusercontent.com":       true,
+		"objects.githubusercontent.com":              true,
+		"codeload.github.com":                        true,
+		"pipelines.actions.githubusercontent.com":    true,
+		"productionresultssa0.blob.core.windows.net": true,
+		"xcodeload.github.com":                       false,
+		"evil-objects.githubusercontent.com":         false,
+		"release-assets.githubusercontent.com.evil":  false,
+		"githubusercontent.com":                      false,
+	} {
+		if got := storageHost(host); got != want {
+			t.Errorf("storageHost(%q) = %v, want %v", host, got, want)
 		}
 	}
 }

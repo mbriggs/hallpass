@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -98,6 +99,7 @@ func (s *Server) serveGH(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var path string
+	var repo *github.Repo
 	var upBody []byte
 	var follow bool
 	var strip []string
@@ -181,7 +183,7 @@ func (s *Server) serveGH(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		path, upBody, follow, strip, answer = rest.Path, rest.Body, rest.Follow, rest.Strip, rest.Answer
+		path, repo, upBody, follow, strip, answer = rest.Path, rest.Repo, rest.Body, rest.Follow, rest.Strip, rest.Answer
 	}
 
 	var rd io.Reader = http.NoBody
@@ -254,6 +256,7 @@ func (s *Server) serveGH(w http.ResponseWriter, r *http.Request) {
 	copyHeaders(w.Header(), resp.Header, "Content-Type", "Content-Encoding", "ETag", "Last-Modified", "Link",
 		"X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "X-RateLimit-Used", "X-RateLimit-Resource",
 		"X-GitHub-Request-Id", "Location", "Retry-After")
+	s.repoLinks(w.Header(), repo)
 	w.WriteHeader(resp.StatusCode)
 	switch {
 	case !decode:
@@ -311,9 +314,41 @@ func (s *Server) serveAnonymous(w http.ResponseWriter, r *http.Request, rest *po
 	copyHeaders(w.Header(), resp.Header, "Content-Type", "Content-Encoding", "ETag", "Last-Modified", "Link",
 		"X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "X-RateLimit-Used", "X-RateLimit-Resource",
 		"X-GitHub-Request-Id", "Retry-After")
+	s.repoLinks(w.Header(), rest.Repo)
 	w.WriteHeader(resp.StatusCode)
 	flushCopy(w, w, resp.Body)
 	log.Info("allowed", "status", resp.StatusCode)
+}
+
+// linkURL is a URL in a Link header, as gh reads them: <URL>; rel="next".
+var linkURL = regexp.MustCompile(`<([^>]*)>`)
+
+// repoLinks rewrites the pagination links GitHub sends with a repo's
+// answer. GitHub points them at the repo by ID, as
+// /repositories/ID/pulls?page=2, which the classifier treats as outside any
+// repo and sends without the token. Under /repos/OWNER/NAME instead, the
+// next page is classified and checked like the first. Other links, and the
+// rest of the header, stay as GitHub sent them.
+func (s *Server) repoLinks(h http.Header, repo *github.Repo) {
+	links := h.Values("Link")
+	if repo == nil || len(links) == 0 {
+		return
+	}
+	api := s.Config.API()
+	h.Del("Link")
+	for _, l := range links {
+		h.Add("Link", linkURL.ReplaceAllStringFunc(l, func(m string) string {
+			rest, ok := strings.CutPrefix(m[1:len(m)-1], api+"/repositories/")
+			if !ok {
+				return m
+			}
+			id, tail, ok := strings.Cut(rest, "/")
+			if !ok || id == "" || strings.Trim(id, "0123456789") != "" {
+				return m
+			}
+			return "<" + api + "/repos/" + repo.Owner + "/" + repo.Name + "/" + tail + ">"
+		}))
+	}
 }
 
 // stripKeys deletes keys from every object in v, however deep.
@@ -494,23 +529,30 @@ func (s *Server) authored(ctx context.Context, path string) (ok, isPR bool, err 
 	return login != "" && strings.EqualFold(obj.User.Login, login), obj.PullRequest != nil, nil
 }
 
-// storageHosts are where GitHub redirects downloads of run logs and
-// artifacts. The URLs are signed, so they need no token.
-// codeload serves the tarballs and zipballs an anonymous read redirects to.
-var storageHosts = []string{".actions.githubusercontent.com", ".blob.core.windows.net", "objects.githubusercontent.com", "codeload.github.com"}
+// storageHosts are where GitHub redirects downloads of run logs, artifacts,
+// and release assets. The URLs are signed, so they need no token. codeload
+// serves the tarballs and zipballs an anonymous read redirects to. An entry
+// with a leading dot matches the hosts under it, and one without matches
+// only itself.
+var storageHosts = []string{".actions.githubusercontent.com", ".blob.core.windows.net", "objects.githubusercontent.com", "release-assets.githubusercontent.com", "codeload.github.com"}
+
+func storageHost(host string) bool {
+	return slices.ContainsFunc(storageHosts, func(h string) bool {
+		if strings.HasPrefix(h, ".") {
+			return strings.HasSuffix(host, h)
+		}
+		return host == h
+	})
+}
 
 func (s *Server) followStorage(ctx context.Context, loc string) (*http.Response, error) {
 	u, err := url.Parse(loc)
 	if err != nil || u.Scheme != "https" || (u.Port() != "" && u.Port() != "443") {
 		return nil, errors.New("GitHub redirected somewhere hallpass doesn't follow")
 	}
-	ok := false
-	for _, h := range storageHosts {
-		ok = ok || strings.HasSuffix(u.Hostname(), h) || u.Hostname() == strings.TrimPrefix(h, ".")
-	}
 	// The slash keeps out hosts that start with the API's, like
 	// api.github.com.evil.example and api.github.com@evil.example.
-	if !ok && !strings.HasPrefix(loc, s.Config.API()+"/") {
+	if !storageHost(u.Hostname()) && !strings.HasPrefix(loc, s.Config.API()+"/") {
 		return nil, errors.New("GitHub redirected to " + u.Hostname() + ", which hallpass doesn't follow")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, loc, nil)
