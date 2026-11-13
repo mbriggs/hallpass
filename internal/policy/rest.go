@@ -100,11 +100,11 @@ func checkBuiltinRead(rest []string, query url.Values) error {
 			}
 		}
 	case match(rest, "commits/**"):
-		if err := checkRev(rest[1]); err != nil {
+		if err := checkRevPath(rest[1:]); err != nil {
 			return err
 		}
 	case len(rest) >= 3 && rest[0] == "git" && (rest[1] == "trees" || rest[1] == "commits" || rest[1] == "blobs" || rest[1] == "tags"):
-		if err := checkRev(rest[2]); err != nil {
+		if err := checkRevPath(rest[2:]); err != nil {
 			return err
 		}
 	}
@@ -121,15 +121,45 @@ var (
 	compareSides = regexp.MustCompile(`\.\.\.?`)
 )
 
+// describedSHA matches the end of what git describe prints, like
+// v1.2-3-gabc1234. git reads the hex after -g as an abbreviated SHA and
+// ignores what comes before it.
+var describedSHA = regexp.MustCompile(`-g[0-9a-fA-F]{4,}$`)
+
 // checkRev refuses an abbreviated SHA, and any revision expression, like
-// abc1234~0, since one can wrap an abbreviated SHA. Full SHAs and ref names
-// pass: a ref name can't hold ~, ^, :, or @{.
+// abc1234~0 or x-1-gabc1234, since one can wrap an abbreviated SHA. Full
+// SHAs and ref names pass: a ref name can't hold ~, ^, :, or @{. A ref
+// whose name ends as git describe's output does, in -g and four or more
+// hex digits, is refused too, since the broker can't tell the two apart.
 func checkRev(rev string) error {
 	if shortSHA.MatchString(rev) {
 		return errorf("hallpass needs the full SHA, not %q, because GitHub resolves abbreviated ones across forks", rev)
 	}
-	if strings.ContainsAny(rev, "~^:") || strings.Contains(rev, "@{") {
+	return checkRevExpr(rev, rev)
+}
+
+// checkRevExpr refuses rev when part, its last segment or all of it, holds
+// what makes a revision an expression.
+func checkRevExpr(part, rev string) error {
+	if strings.ContainsAny(part, "~^:") || strings.Contains(part, "@{") || describedSHA.MatchString(part) {
 		return errorf("hallpass needs a full SHA or a ref name, not the expression %q, because GitHub resolves abbreviated SHAs across forks", rev)
+	}
+	return nil
+}
+
+// checkRevPath checks the revision that starts a route's remaining
+// segments. A ref name may hold slashes, so the revision may run past the
+// first segment, and where it ends depends on the route. So each later
+// segment is checked as the end of an expression: a/b-1-gabc1234 wraps an
+// abbreviated SHA as b-1-gabc1234 does.
+func checkRevPath(segs []string) error {
+	if err := checkRev(segs[0]); err != nil {
+		return err
+	}
+	for i := 1; i < len(segs); i++ {
+		if err := checkRevExpr(segs[i], strings.Join(segs[:i+1], "/")); err != nil {
+			return err
+		}
 	}
 	return nil
 }
