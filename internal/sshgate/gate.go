@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -72,9 +73,9 @@ type Server struct {
 // them: port 22, then port 443 for networks that block 22.
 var GitHubAddrs = []string{"github.com:22", "ssh.github.com:443"}
 
-// An address that has another after it gets quickDial to connect; the last
-// one tried gets fullDial.
-const (
+// An address that has another after it gets quickDial to connect and finish
+// the SSH handshake; the last one tried gets fullDial. Tests shorten them.
+var (
 	quickDial = 5 * time.Second
 	fullDial  = 20 * time.Second
 )
@@ -696,9 +697,11 @@ func (s *Server) Check() (login, addr string, err error) {
 	return "", "", fmt.Errorf("GitHub didn't recognize the key: %s", strings.TrimSpace(msg))
 }
 
-// dial connects to the first of the addresses that answers, starting with the
-// one that worked last. It moves on only when the TCP connection fails: a
-// host key or auth failure on one address would fail on the others too.
+// dial connects to the first of the addresses that completes the SSH
+// handshake, starting with the one that worked last. It moves on when the
+// connection fails, goes silent, or doesn't speak SSH. Once an address has
+// presented a host key, its answer stands: a key that doesn't match, or
+// GitHub refusing the broker's key, is the error the caller gets.
 func (s *Server) dial() (*ssh.Client, string, error) {
 	signer, err := ssh.NewSignerFromSigner(s.Signer)
 	if err != nil {
@@ -738,19 +741,53 @@ func (s *Server) dial() (*ssh.Client, string, error) {
 		if i < len(addrs)-1 {
 			timeout = quickDial
 		}
-		conn, err := net.DialTimeout("tcp", addr, timeout)
+		client, answered, err := handshake(addr, timeout, cfg)
 		if err != nil {
+			if answered {
+				return nil, "", err
+			}
 			failed = append(failed, err.Error())
 			continue
 		}
-		c, chans, reqs, err := ssh.NewClientConn(conn, addr, cfg)
-		if err != nil {
-			return nil, "", err
-		}
 		s.reached(addr)
-		return ssh.NewClient(c, chans, reqs), addr, nil
+		return client, addr, nil
 	}
 	return nil, "", errors.New(strings.Join(failed, "; "))
+}
+
+// handshake connects to addr and runs the SSH handshake, both within budget,
+// then lifts the deadline so a long fetch isn't cut off. answered says the
+// address presented a host key before err, so err is its verdict on the host
+// key or the broker's key, not a network fault another address might avoid.
+func handshake(addr string, budget time.Duration, cfg *ssh.ClientConfig) (client *ssh.Client, answered bool, err error) {
+	deadline := time.Now().Add(budget)
+	conn, err := (&net.Dialer{Deadline: deadline}).Dial("tcp", addr)
+	if err != nil {
+		return nil, false, err
+	}
+	var presented atomic.Bool
+	attempt := *cfg
+	attempt.HostKeyCallback = func(host string, remote net.Addr, key ssh.PublicKey) error {
+		presented.Store(true)
+		return cfg.HostKeyCallback(host, remote, key)
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
+		conn.Close()
+		return nil, false, err
+	}
+	c, chans, reqs, err := ssh.NewClientConn(conn, addr, &attempt)
+	if err != nil {
+		conn.Close()
+		if !presented.Load() {
+			err = fmt.Errorf("%s: %w", addr, err)
+		}
+		return nil, presented.Load(), err
+	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		c.Close()
+		return nil, true, err
+	}
+	return ssh.NewClient(c, chans, reqs), true, nil
 }
 
 // order lists the addresses to try, the one that worked last first.
