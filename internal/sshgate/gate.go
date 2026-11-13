@@ -424,6 +424,11 @@ func (s *Server) relayPush(client *ssh.Client, repo github.Repo, rule config.Rul
 			refused[ref] = why
 		}
 	}
+	if !push.Reports() {
+		// GitHub's report is the broker's only record of what a push
+		// changed. git always asks for it.
+		refused = all(push, "hallpass logs what GitHub does with each ref, and this client didn't ask GitHub to report it. git does, with report-status")
+	}
 	refuse := func(refused map[string]string) bool {
 		log.Warn("refused", "reason", "push", "refs", refused)
 		// git reads the answer after it sends the pack, so take the pack
@@ -474,6 +479,9 @@ func (s *Server) relayPush(client *ssh.Client, repo github.Repo, rule config.Rul
 		}
 	}
 
+	// Logged before any of it goes, so the log holds what was sent even if
+	// the broker stops before GitHub answers.
+	log.Info("forwarded", sent(push)...)
 	_, _ = stdin.Write(push.Raw)
 	if pack != nil {
 		_, _ = io.Copy(stdin, pack)
@@ -485,9 +493,16 @@ func (s *Server) relayPush(client *ssh.Client, repo github.Repo, rule config.Rul
 		_, _ = io.Copy(stdin, in)
 		stdin.Close()
 	}()
+	// The client may hang up before GitHub answers, and the push lands all
+	// the same. So the answer is read to its end whether or not the client
+	// is still there to take it.
 	var report bytes.Buffer
-	_, _ = io.Copy(io.MultiWriter(o.writer(FrameStdout), &capped{&report, 1 << 20}), up)
+	_, _ = io.Copy(io.MultiWriter(&capped{&report, 1 << 20}, &lenient{w: o.writer(FrameStdout)}), up)
 	rep := policy.ReportStatus(report.Bytes(), push.SideBand())
+	if !rep.Answered {
+		log.Warn("failed", "reason", "GitHub's answer to this push didn't arrive, so hallpass can't say which refs it applied")
+		return true
+	}
 	accepted := rep.Accepted
 	// Record where each accepted branch now points, so agents can go on
 	// from there and from nowhere else. The default branch stays out:
@@ -815,6 +830,22 @@ func (s *Server) reached(addr string) {
 	if changed && s.Log != nil {
 		s.Log.Info("reaching GitHub over SSH", "addr", addr)
 	}
+}
+
+// lenient writes to w until a write fails, then takes the rest and drops
+// it, so a copy to several writers goes on after one of them is gone.
+type lenient struct {
+	w      io.Writer
+	failed bool
+}
+
+func (l *lenient) Write(p []byte) (int, error) {
+	if !l.failed {
+		if _, err := l.w.Write(p); err != nil {
+			l.failed = true
+		}
+	}
+	return len(p), nil
 }
 
 type capped struct {
