@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/mbriggs/hallpass/internal/github"
@@ -48,6 +49,47 @@ func TestLoadIgnoresVia(t *testing.T) {
 	c, err := Load(path)
 	if err != nil || len(c.Repos) != 1 {
 		t.Fatalf("Load = %+v, %v", c, err)
+	}
+}
+
+// A key the config has no setting for is refused at load and named, since
+// ignoring it would leave whatever it meant to restrict open.
+func TestLoadRefusesUnknownKeys(t *testing.T) {
+	for _, tc := range []struct {
+		name, toml, want string
+	}{
+		{"misspelled access", "[[repo]]\nmatch = \"acme/x\"\nacess = \"read\"\n", "repo.acess"},
+		{"misspelled repo protected_paths", "[[repo]]\nmatch = \"acme/x\"\nprotected_path = [\"CODEOWNERS\"]\n", "repo.protected_path"},
+		{"misspelled deny", "denny = [\"pr.create\"]\n", "denny"},
+		{"unknown table", "[tokn]\nsecret = \"file:/x\"\n", "tokn;"},
+		// protected_branches after the [[repo]] tables lands in the last
+		// one, where it would protect nothing.
+		{"top-level key after [[repo]]", "[[repo]]\nmatch = \"acme/x\"\n\nprotected_branches = [\"staging\"]\n", "go above the first [[repo]]"},
+	} {
+		path := filepath.Join(t.TempDir(), "hallpass.toml")
+		os.WriteFile(path, []byte(tc.toml), 0o644)
+		c, err := Load(path)
+		if err == nil {
+			t.Errorf("%s: loaded %+v", tc.name, c)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err = %v, want it to say %q", tc.name, err, tc.want)
+		}
+	}
+}
+
+// protected_branches takes a branch name or a prefix and /*. Anything else
+// would match no branch, so it's refused.
+func TestProtectedBranches(t *testing.T) {
+	for _, p := range []string{"", "*", "/*", "release-*", "deploy*", "release/*/x", "release/**", "refs/heads/staging", "Refs/heads/*", "a..b", "a b", "-x", "x.lock"} {
+		if err := (&Config{ProtectedBranches: []string{p}}).Validate(); err == nil {
+			t.Errorf("protected branch %q loaded", p)
+		}
+	}
+	ok := &Config{ProtectedBranches: []string{"main", "master", "release/*", "production", "deploy/prod/*", "Staging"}}
+	if err := ok.Validate(); err != nil {
+		t.Error(err)
 	}
 }
 

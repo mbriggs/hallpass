@@ -172,7 +172,9 @@ It doesn't protect against these:
   a pattern: agents can create any branch that `protected_branches` in
   `/etc/hallpass/hallpass.toml` doesn't name. The broker doesn't read
   GitHub's rulesets or environments, so add those names there, like
-  `staging` or `deploy/*`. A script such a workflow runs, like
+  `staging` or `deploy/*`. An entry is a branch name or a prefix and `/*`,
+  and the broker refuses a config with any other pattern, like `deploy-*`
+  or `refs/heads/staging`. A script such a workflow runs, like
   `scripts/deploy.sh`, is the agent's to change unless you name it in
   [`protected_paths`](#protected-paths). The broker doesn't read workflows
   to find what they run, so it protects only what you list, and not what
@@ -324,6 +326,11 @@ Like `protected_branches`, there's no command for it. Edit the file as
 root, then run `sudo /opt/hallpass/bin/hallpass install`, which checks the
 config and restarts the broker. `hallpass policy show acme/widgets` lists
 the paths in effect there and which layer added each.
+
+The broker refuses a config with a key it has no setting for, like a
+misspelled `protected_paths`, rather than ignore it. A key below a
+`[[repo]]` line belongs to that repo, so put top-level keys like
+`protected_branches` above the first `[[repo]]`.
 
 The layers add up: a repo gets the built-in paths, the global ones, its
 `OWNER/*` entry's, and its own entry's. Unlike an operation, which the
