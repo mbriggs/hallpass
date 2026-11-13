@@ -56,6 +56,24 @@ func logReport(log *slog.Logger, rep policy.Report) {
 	log.Warn(msg, attrs...)
 }
 
+// sent is what the forwarded line says of a push: each command as
+// REF:OLD..NEW, up to maxRejected of them, and sent_more for the rest. A
+// ref here passed CheckPush, so it holds no space or colon.
+//
+//	level=INFO msg=forwarded sent=[refs/heads/a:0000...0000..1111...1111]
+func sent(p policy.Push) []any {
+	shown := p.Updates[:min(len(p.Updates), maxRejected)]
+	list := make([]string, len(shown))
+	for i, u := range shown {
+		list[i] = truncate(u.Ref, maxRejectRef) + ":" + u.Old + ".." + u.New
+	}
+	attrs := []any{"sent", list}
+	if more := len(p.Updates) - len(shown); more > 0 {
+		attrs = append(attrs, "sent_more", more)
+	}
+	return attrs
+}
+
 // truncate cuts s to at most n bytes on a rune boundary, marking the cut.
 func truncate(s string, n int) string {
 	if len(s) <= n {

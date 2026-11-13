@@ -122,6 +122,33 @@ func TestQuietView(t *testing.T) {
 				logLine(0, "INFO", "allowed", conn("1")+" exit=0"),
 			},
 			[]string{"pushed   ssh  acme/widgets  push refs/heads/a refs/heads/b -> exit 0"}},
+		{"a forwarded line folds into GitHub's answer, past another request",
+			[]string{
+				logLine(0, "INFO", "forwarded", conn("1")+" sent=[refs/heads/a:"+strings.Repeat("0", 40)+".."+strings.Repeat("1", 40)+"]"),
+				logLine(1, "INFO", "allowed", `via=gh uid=501 pid=9 procs=gh repo=acme/widgets route="GET pulls" status=200`),
+				logLine(2, "INFO", "pushed", conn("1")+" refs=[refs/heads/a]"),
+				logLine(2, "INFO", "allowed", conn("1")+" exit=0"),
+			},
+			[]string{"GET pulls -> 200", "pushed   ssh  acme/widgets  push refs/heads/a -> exit 0"}},
+		{"a forwarded push whose answer didn't arrive folds into the failure",
+			[]string{
+				logLine(0, "INFO", "forwarded", conn("1")+" sent=[refs/heads/a:"+strings.Repeat("0", 40)+".."+strings.Repeat("1", 40)+"]"),
+				logLine(2, "WARN", "failed", conn("1")+` reason="GitHub's answer to this push didn't arrive"`),
+			},
+			[]string{"failed   ssh  acme/widgets  push: GitHub's answer to this push didn't arrive"}},
+		{"a forwarded push the broker never saw answered shows when the broker starts again",
+			[]string{
+				logLine(0, "INFO", "forwarded", conn("1")+" sent=\"[refs/heads/a:"+strings.Repeat("0", 40)+".."+strings.Repeat("1", 40)+" refs/heads/b:"+strings.Repeat("2", 40)+".."+strings.Repeat("0", 40)+"]\" sent_more=3"),
+				logLine(1, "INFO", "allowed", `via=gh uid=501 pid=9 procs=gh repo=acme/widgets route="GET pulls" status=200`),
+				logLine(5, "INFO", "serving", "token=true"),
+				logLine(6, "INFO", "forwarded", conn("2")+" sent=[refs/heads/c:"+strings.Repeat("0", 40)+".."+strings.Repeat("3", 40)+"]"),
+			},
+			[]string{
+				"GET pulls -> 200",
+				"08:00:00  forwarded  ssh  acme/widgets  push refs/heads/a 0000000..1111111 refs/heads/b 2222222..0000000 and 3 more, and GitHub's answer isn't in the log, so it may have applied these",
+				"broker started",
+				"08:00:06  forwarded  ssh  acme/widgets  push refs/heads/c 0000000..3333333, and GitHub's answer isn't in the log",
+			}},
 		{"a failed push keeps its exit code",
 			[]string{
 				logLine(0, "INFO", "pushed", conn("1")+" refs=[refs/heads/a]"),

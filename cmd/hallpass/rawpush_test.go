@@ -129,6 +129,13 @@ func pktLine(s string) string { return fmt.Sprintf("%04x%s", len(s)+4, s) }
 // the protocol by hand would, and returns what the gate answered.
 func (r *rawRig) push(command string, pack []byte) (stdout, stderr string) {
 	r.t.Helper()
+	return r.send(command, pack, false)
+}
+
+// send is push, and with hangUp it closes the connection once the push is
+// sent, without waiting for the answer.
+func (r *rawRig) send(command string, pack []byte, hangUp bool) (stdout, stderr string) {
+	r.t.Helper()
 	c, err := net.Dial("unix", r.sock)
 	if err != nil {
 		r.t.Fatal(err)
@@ -165,6 +172,9 @@ func (r *rawRig) push(command string, pack []byte) (stdout, stderr string) {
 	body := append([]byte(pktLine(command+"\n")+"0000"), pack...)
 	if _, err := c.Write(body); err != nil {
 		r.t.Fatal(err)
+	}
+	if hangUp {
+		return "", ""
 	}
 	_ = c.(*net.UnixConn).CloseWrite()
 	for read() {
@@ -215,5 +225,62 @@ func TestDeleteMustStartFromGitHubsCommit(t *testing.T) {
 	}
 	if got := r.git(r.bare, "rev-parse", "refs/heads/agent/b"); got != user {
 		t.Errorf("the user's branch is at %q, want %s", got, user)
+	}
+}
+
+// waitLog waits for the broker to log a line that holds want, and returns
+// the log.
+func (r *rawRig) waitLog(want string) string {
+	r.t.Helper()
+	for range 500 {
+		if l := string(r.log.Bytes()); strings.Contains(l, want) {
+			return l
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	r.t.Fatalf("no %q in the log:\n%s", want, r.log.Bytes())
+	return ""
+}
+
+// GitHub's report is the broker's only record of what a push changed: the
+// log's refs and the ledger both come from it. A client that doesn't ask
+// for the report would get a push applied that neither holds, so it's
+// refused before anything reaches GitHub.
+func TestPushMustAskForGitHubsReport(t *testing.T) {
+	t.Parallel()
+	r := newRawRig(t)
+	oid, pack := r.commit("quiet")
+	out, _ := r.push(zeroOID+" "+oid+" refs/heads/agent/quiet\x00", pack)
+	if !strings.Contains(out, "ng refs/heads/agent/quiet hallpass: hallpass logs what GitHub does with each ref") {
+		t.Errorf("answer %q", out)
+	}
+	if got, err := r.gitTry(r.bare, "rev-parse", "--verify", "-q", "refs/heads/agent/quiet"); err == nil {
+		t.Errorf("GitHub has agent/quiet at %s", got)
+	}
+	if l := r.waitLog("msg=refused"); strings.Contains(l, "msg=forwarded") {
+		t.Errorf("the push was forwarded:\n%s", l)
+	}
+}
+
+// A client that hangs up once its push is sent doesn't stop GitHub from
+// applying it. The broker reads GitHub's answer all the same, so the log
+// and the ledger hold what landed.
+func TestPushIsRecordedWhenTheClientHangsUp(t *testing.T) {
+	t.Parallel()
+	r := newRawRig(t)
+	oid, pack := r.commit("hang up")
+	r.send(zeroOID+" "+oid+" refs/heads/agent/gone\x00report-status", pack, true)
+	l := r.waitLog("msg=pushed")
+	if want := "msg=forwarded"; !strings.Contains(l, want) || !strings.Contains(l, "sent=[refs/heads/agent/gone:"+zeroOID+".."+oid+"]") {
+		t.Errorf("the log doesn't say what was sent:\n%s", l)
+	}
+	if !strings.Contains(l, "msg=pushed") || !strings.Contains(l, "refs=[refs/heads/agent/gone]") {
+		t.Errorf("the log doesn't say what GitHub accepted:\n%s", l)
+	}
+	if got := r.git(r.bare, "rev-parse", "refs/heads/agent/gone"); got != oid {
+		t.Fatalf("GitHub has agent/gone at %q, want %s", got, oid)
+	}
+	if tip := r.gate.Ledger.Tip(widgets, "agent/gone"); tip != oid {
+		t.Errorf("the ledger has %q for agent/gone, want %s", tip, oid)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -66,6 +67,13 @@ func (p Push) SideBand() bool {
 		}
 	}
 	return false
+}
+
+// Reports reports whether the client asked GitHub to say what it did with
+// each ref. The broker reads that answer to log the push and to record the
+// branches agents now own.
+func (p Push) Reports() bool {
+	return slices.Contains(p.Capabilities, "report-status") || slices.Contains(p.Capabilities, "report-status-v2")
 }
 
 // maxCommandSection bounds how much of a push body is read before the pack.
@@ -360,6 +368,9 @@ func RefusePush(p Push, refused map[string]string) []byte {
 type Report struct {
 	Accepted []string
 	Rejected []Rejection
+	// Answered says GitHub's answer arrived: it starts with an unpack
+	// line. Without one, nothing says which refs GitHub applied.
+	Answered bool
 }
 
 // Rejection is a ref GitHub didn't update, and why. Both come from the
@@ -395,7 +406,9 @@ func ReportStatus(body []byte, sideBand bool) Report {
 			break
 		}
 		l := strings.TrimSuffix(string(line), "\n")
-		if ref, found := strings.CutPrefix(l, "ok "); found {
+		if strings.HasPrefix(l, "unpack ") {
+			rep.Answered = true
+		} else if ref, found := strings.CutPrefix(l, "ok "); found {
 			rep.Accepted = append(rep.Accepted, ref)
 		} else if rest, found := strings.CutPrefix(l, "ng "); found {
 			ref, reason, _ := strings.Cut(rest, " ")

@@ -25,7 +25,7 @@ var shown = map[string]bool{
 	"via": true, "uid": true, "pid": true, "procs": true, "repo": true, "now": true,
 	"route": true, "graphql": true, "op": true, "object": true,
 	"status": true, "exit": true, "reason": true, "refs": true,
-	"rejected": true, "rejected_more": true,
+	"rejected": true, "rejected_more": true, "sent": true, "sent_more": true,
 }
 
 // Line renders r on one line for a terminal:
@@ -48,6 +48,9 @@ type entry struct {
 	// when the last of them was logged.
 	count int
 	last  time.Time
+	// unanswered marks a forwarded record whose push has no later record
+	// of GitHub's answer.
+	unanswered bool
 }
 
 func (v View) line(e entry) string {
@@ -107,6 +110,16 @@ func (v View) line(e entry) string {
 	case r.Msg == "failed":
 		t.add(plain, ": ")
 		t.add(red, r.Get("reason"))
+	case r.Msg == "forwarded":
+		for c := range strings.FieldsSeq(strings.Trim(r.Get("sent"), "[]")) {
+			t.add(plain, " "+sentCommand(c))
+		}
+		if more := r.Get("sent_more"); more != "" {
+			t.add(plain, " and "+more+" more")
+		}
+		if e.unanswered {
+			t.add(red, ", and GitHub's answer isn't in the log, so it may have applied these")
+		}
 	case isPush(r):
 		refs := strings.Trim(r.Get("refs"), "[]")
 		rejected, more, ok := r.Rejected()
@@ -169,6 +182,17 @@ func (v View) line(e entry) string {
 	return t.String()
 }
 
+// sentCommand shortens a forwarded command, REF:OLD..NEW, to the ref and
+// the first seven digits of each commit. Anything else prints as it is.
+func sentCommand(c string) string {
+	ref, ids, ok := strings.Cut(c, ":")
+	from, to, ok2 := strings.Cut(ids, "..")
+	if !ok || !ok2 || len(from) < 7 || len(to) < 7 {
+		return c
+	}
+	return ref + " " + from[:7] + ".." + to[:7]
+}
+
 // result writes what came of an allowed request: GitHub's HTTP status, or
 // git's exit code. A failure is red.
 func result(t *text, r Record) {
@@ -222,8 +246,14 @@ func action(r Record) string {
 }
 
 // Printer writes records a line each, as Scan hands them over. Unless All
-// is set it keeps the output short in three ways that can't hide a refusal:
+// is set it keeps the output short in four ways that can't hide a refusal:
 //
+//   - It holds back the forwarded line the broker logs when it sends a push
+//     to GitHub, and drops it once the line with GitHub's answer comes. A
+//     forwarded line with no answer after it means the broker stopped
+//     before GitHub answered, and the push may have landed. That line
+//     prints, marked, when the broker's next start comes up or the log
+//     ends, so it can come after later lines.
 //   - It leaves out allowed status checks on the control socket. git asks
 //     for one before every signature, to see whether the key is the
 //     broker's.
@@ -237,8 +267,10 @@ type Printer struct {
 
 	w       io.Writer
 	pending *entry
-	shown   int
-	hidden  int
+	// sent are forwarded records still waiting for GitHub's answer.
+	sent   []entry
+	shown  int
+	hidden int
 }
 
 // NewPrinter returns a Printer that writes to w.
@@ -255,6 +287,20 @@ func (p *Printer) Add(r Record) error {
 		p.hidden++
 		return nil
 	}
+	switch {
+	case r.Msg == "forwarded":
+		p.sent = append(p.sent, entry{Record: r, count: 1})
+		return nil
+	case r.Msg == "serving":
+		// A broker that starts again has no push in flight.
+		if err := p.flushSent(); err != nil {
+			return err
+		}
+	case answers(r):
+		if i := slices.IndexFunc(p.sent, func(e entry) bool { return sentBy(e, r) }); i >= 0 {
+			p.sent = slices.Delete(p.sent, i, i+1)
+		}
+	}
 	if e := p.pending; e != nil {
 		switch {
 		case endsPush(*e, r):
@@ -266,19 +312,38 @@ func (p *Printer) Add(r Record) error {
 			return nil
 		}
 	}
-	err := p.Flush()
+	err := p.flushPending()
 	p.pending = &entry{Record: r, count: 1, last: r.Time}
 	return err
 }
 
-// Flush writes the line Add is holding back, if any.
+// Flush writes the lines Add is holding back, if any. Call it once the log
+// has no more records.
 func (p *Printer) Flush() error {
+	return p.flushSent()
+}
+
+func (p *Printer) flushPending() error {
 	if p.pending == nil {
 		return nil
 	}
 	e := *p.pending
 	p.pending = nil
 	return p.write(e)
+}
+
+// flushSent writes the pending line and then each forwarded line that got
+// no answer.
+func (p *Printer) flushSent() error {
+	err := p.flushPending()
+	for _, e := range p.sent {
+		e.unanswered = true
+		if err == nil {
+			err = p.write(e)
+		}
+	}
+	p.sent = nil
+	return err
 }
 
 func (p *Printer) write(e entry) error {
@@ -305,6 +370,19 @@ func endsPush(e entry, r Record) bool {
 	return isPush(e.Record) && e.result == nil && e.count == 1 &&
 		r.Msg == "allowed" && r.Get("op") == "receive-pack" && r.Get("exit") != "" &&
 		slices.Equal(without(e.Attrs, "refs", "rejected", "rejected_more"), without(r.Attrs, "exit"))
+}
+
+// answers reports whether r says what came of a push the broker forwarded:
+// GitHub's answer, or that none arrived.
+func answers(r Record) bool {
+	return isPush(r) || r.Msg == "failed" && r.Get("op") == "receive-pack"
+}
+
+// sentBy reports whether r is the answer to the push e forwarded. The
+// broker logs both from one connection's logger, so the attrs match but
+// for what each line adds.
+func sentBy(e entry, r Record) bool {
+	return slices.Equal(without(e.Attrs, "sent", "sent_more"), without(r.Attrs, "refs", "rejected", "rejected_more", "reason"))
 }
 
 // isPush reports whether r is GitHub's answer to a push the broker
