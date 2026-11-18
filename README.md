@@ -232,6 +232,12 @@ includes it from each git's system config:
   `http_unix_socket` setting sends gh's requests as plain HTTP to the broker.
   The broker classifies each REST route and GraphQL document against
   GitHub's schema, resolves node IDs to repos, and adds the token.
+  `hallpass gh auth` answers by itself: `status` reports the placeholder
+  account `hallpass` as logged in, `token` prints the placeholder token, and
+  `login`, `logout`, `refresh`, `switch`, `setup-git`, and `git-credential`
+  succeed without doing anything. For tools that run `gh` by name,
+  `hallpass gh-shim [DIR]` writes `DIR/gh` (default `~/.local/bin`), a
+  script that runs `hallpass gh`. Put DIR before the real gh on PATH.
 - **Signing.** `gpg.ssh.program` is `hallpass-sign`, which takes
   `ssh-keygen -Y sign` arguments. For the broker's key it asks the broker,
   which signs only git commits and tags. Everything else goes to the real
@@ -564,6 +570,7 @@ Run `hallpass help` for the full list. Root commands go through
 | `ledger list OWNER/REPO` | root | Lists the branches agents may update |
 | `skills` | you | Installs or updates the agent skills; `install` offers this |
 | `gh ARGS` | you | Runs gh through the broker |
+| `gh-shim [--remove] [DIR]` | you | Writes or removes `DIR/gh`, a script that runs `hallpass gh`. DIR defaults to `~/.local/bin` |
 
 ## License
 

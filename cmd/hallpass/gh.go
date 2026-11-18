@@ -18,6 +18,9 @@ func gh(args []string) error {
 	if _, err := os.Stat(system.GHConfig + "/config.yml"); err != nil {
 		return fmt.Errorf("gh through hallpass needs a token, and this machine has none. Get one: sudo %s login", system.Binary)
 	}
+	if handled, err := ghAuth(args, os.Stdin, os.Stdout, os.Stderr); handled {
+		return err
+	}
 	bin, err := realGH()
 	if err != nil {
 		return err
@@ -43,7 +46,8 @@ func ghEnv(env []string) []string {
 	return append(out, "GH_CONFIG_DIR="+system.GHConfig, "GH_NO_UPDATE_NOTIFIER=1", "GH_NO_EXTENSION_UPDATE_NOTIFIER=1")
 }
 
-// realGH finds gh on PATH, skipping anything that resolves to hallpass.
+// realGH finds gh on PATH, skipping anything that resolves to hallpass and
+// any shim gh-shim wrote, either of which would run hallpass gh again.
 func realGH() (string, error) {
 	if p := os.Getenv("HALLPASS_GH"); p != "" {
 		return p, nil
@@ -56,7 +60,7 @@ func realGH() (string, error) {
 		if err != nil || fi.IsDir() || fi.Mode()&0o111 == 0 {
 			continue
 		}
-		if r, _ := filepath.EvalSymlinks(p); r == self {
+		if r, _ := filepath.EvalSymlinks(p); r == self || isShim(p) {
 			continue
 		}
 		return p, nil
