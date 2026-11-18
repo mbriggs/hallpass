@@ -47,6 +47,9 @@ optional; set up the ones you want:
 
 Daily use. git calls these for you:
   hallpass gh ARGS...                  run gh through the broker
+  hallpass gh-shim [--remove] [DIR]    write DIR/gh, a script that runs hallpass gh,
+                                       for tools that run gh by name; DIR defaults
+                                       to ~/.local/bin
   git personal ARGS...                 run git with your own credentials instead
 
 Maintenance, as root:
@@ -117,6 +120,8 @@ func main() {
 		err = skillsCmd(args)
 	case "gh":
 		err = gh(args)
+	case "gh-shim":
+		err = ghShimCmd(args)
 	case "sign":
 		err = signCmd(args)
 	case "ssh":
