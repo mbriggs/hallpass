@@ -20,6 +20,9 @@ answer, gets 403 with a `hallpass: ` reason.
 - `rest-readonly` refuses writes to a `--read` repo.
 - `rest-op` refuses operations that are off by default (merge, opening issues).
 - `rest-route` refuses a route hallpass never allows (secrets).
+- `rest-status-off` refuses a commit status by default,
+  `rest-status-allowed` sends it once the repo allows `status.write`, and
+  `rest-status-short-sha` refuses an abbreviated SHA even then.
 - `rest-read-off` refuses a read that's off by default but config can open
   (Actions variables).
 - `rest-author-colleague` refuses edits to a colleague's issue, and

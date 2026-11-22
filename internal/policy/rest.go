@@ -118,6 +118,7 @@ func checkBuiltinRead(rest []string, query url.Values) error {
 
 var (
 	shortSHA     = regexp.MustCompile(`^[0-9a-fA-F]{4,39}$`)
+	fullSHA      = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 	compareSides = regexp.MustCompile(`\.\.\.?`)
 )
 
@@ -494,5 +495,11 @@ func restWrites(repo github.Repo, rest []string) []restWrite {
 		{method: "POST", path: "actions/runs/#/rerun-failed-jobs", op: op.WorkflowRerun, keys: []string{"enable_debug_logging"}, empty: true},
 		{method: "POST", path: "actions/jobs/#/rerun", op: op.WorkflowRerun, keys: []string{"enable_debug_logging"}, empty: true},
 		{method: "POST", path: "actions/workflows/*/dispatches", op: op.WorkflowDispatch, keys: []string{"ref", "inputs"}},
+		{method: "POST", path: "statuses/*", op: op.StatusWrite, keys: []string{"state", "target_url", "description", "context"}, check: func(map[string]any) (op.Op, error) {
+			if !fullSHA.MatchString(n(1)) {
+				return "", errorf("hallpass needs the full commit SHA to set a status, not %q", n(1))
+			}
+			return "", nil
+		}},
 	}
 }
