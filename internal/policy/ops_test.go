@@ -72,6 +72,25 @@ func TestEveryWriteHasAnOperation(t *testing.T) {
 	}
 }
 
+// A status lands on exactly one commit, so a branch name, which would follow
+// the branch, or an abbreviated SHA, which GitHub resolves across forks, is
+// refused, and so is a body key the route doesn't list.
+func TestStatusWriteNeedsFullSHA(t *testing.T) {
+	const body = `{"state":"success","context":"ci/custom"}`
+	for _, rev := range []string{"main", "abc1234", strings.Repeat("a", 39), strings.Repeat("A", 40), strings.Repeat("a", 41)} {
+		if _, err := ClassifyREST("POST", "/repos/acme/widgets/statuses/"+rev, []byte(body), nil); err == nil {
+			t.Errorf("status on %q passed", rev)
+		}
+	}
+	target := "/repos/acme/widgets/statuses/" + strings.Repeat("a", 40)
+	if _, err := ClassifyREST("POST", target, []byte(`{"state":"success","extra":1}`), nil); err == nil {
+		t.Error("status with an unlisted key passed")
+	}
+	if _, err := ClassifyREST("POST", "/repos/acme/widgets/check-runs", []byte(`{"name":"x","head_sha":"`+strings.Repeat("a", 40)+`"}`), nil); err == nil {
+		t.Error("creating a check run passed")
+	}
+}
+
 // A mutation entry with no operation is refused at the node check, not
 // waved through.
 func TestWriteWithoutOperationIsRefused(t *testing.T) {

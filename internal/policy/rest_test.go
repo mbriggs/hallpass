@@ -102,6 +102,7 @@ func TestRESTOps(t *testing.T) {
 		{"POST", "/repos/acme/widgets/actions/jobs/7/rerun", ``, []op.Op{op.WorkflowRerun}},
 		{"POST", "/repos/acme/widgets/actions/workflows/deploy.yml/dispatches", `{"ref":"main","inputs":{"env":"prod"}}`, []op.Op{op.WorkflowDispatch}},
 		{"POST", "/repos/acme/widgets/actions/workflows/42/dispatches", `{"ref":"main"}`, []op.Op{op.WorkflowDispatch}},
+		{"POST", "/repos/acme/widgets/statuses/" + strings.Repeat("a", 40), `{"state":"success","context":"ci/custom","description":"ok","target_url":"https://example.com/1"}`, []op.Op{op.StatusWrite}},
 	}
 	for _, c := range cases {
 		r, err := ClassifyREST(c.method, c.target, []byte(c.body), nil)

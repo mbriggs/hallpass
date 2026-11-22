@@ -264,10 +264,12 @@ the git push. Denying `pr.merge` refuses `gh pr merge` and
 
 | On by default | Off by default |
 | --- | --- |
-| `pr.create`, `pr.edit`, `pr.request-review`, `issue.edit`, `comment`, `review.comment`, `anonymous` | `issue.create`, `assign`, `push.default`, `review.verdict`, `pr.merge`, `labels`, `workflow.rerun`, `workflow.dispatch` |
+| `pr.create`, `pr.edit`, `pr.request-review`, `issue.edit`, `comment`, `review.comment`, `anonymous` | `issue.create`, `assign`, `push.default`, `review.verdict`, `pr.merge`, `labels`, `workflow.rerun`, `workflow.dispatch`, `status.write` |
 
 `review.verdict` covers approving and requesting changes. `pr.merge` covers
-merging, the merge queue, and auto-merge.
+merging, the merge queue, and auto-merge. `status.write` covers commit
+statuses on a full SHA. It doesn't cover check runs, which GitHub lets only
+GitHub Apps write.
 
 Change them for every repo, or for one allowlist entry:
 
@@ -296,6 +298,8 @@ remove it.
   reviewing.
 - `workflow.dispatch` lets agents pick the ref and inputs of a workflow
   that often deploys with real secrets.
+- `status.write` lets agents report any status context as passing,
+  including one branch protection requires.
 - `push.default` passes even when `protected_branches` names the default
   branch. Agents still can't delete it, but they can force-push it, because
   the broker can't tell a force push from a fast-forward. Turn on GitHub's

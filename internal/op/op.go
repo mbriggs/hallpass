@@ -29,6 +29,7 @@ const (
 	Labels           Op = "labels"
 	WorkflowRerun    Op = "workflow.rerun"
 	WorkflowDispatch Op = "workflow.dispatch"
+	StatusWrite      Op = "status.write"
 	Anonymous        Op = "anonymous"
 )
 
@@ -72,6 +73,8 @@ var All = []Info{
 		Warn: "A rerun gets the same secrets the run had."},
 	{Op: WorkflowDispatch, Does: "dispatch workflows",
 		Warn: "Agents choose the ref and inputs. A dispatched workflow, often a deploy, runs that ref's code with the workflow's secrets."},
+	{Op: StatusWrite, Does: "set commit statuses",
+		Warn: "Agents can report any status context as passing, including one branch protection requires, so a PR can look green and become mergeable without the real check having run."},
 }
 
 // Lookup finds an operation by name.

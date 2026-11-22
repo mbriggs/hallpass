@@ -115,6 +115,25 @@ feature_rest() {
   mv "$S/hallpass.toml.before-anonymous" "$cfg"
   restart_broker || return
 
+  local sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  case_ rest-status-off
+  check fail 'agents may not set commit statuses in acme/widgets' "gh api -X POST repos/acme/widgets/statuses/$sha -f state=success -f context=ci/custom"
+  fake_lacks statuses/
+
+  cp "$cfg" "$S/hallpass.toml.before-status"
+  awk '{print} /^match = "acme\/widgets"$/ {print "allow = [\"status.write\"]"}' "$S/hallpass.toml.before-status" > "$cfg"
+  restart_broker || return
+  case_ rest-status-allowed
+  check 0 '"id":101' "gh api -X POST repos/acme/widgets/statuses/$sha -f state=success -f context=ci/custom"
+  fake_has "\"method\":\"POST\",\"path\":\"/api/repos/acme/widgets/statuses/$sha\""
+
+  case_ rest-status-short-sha
+  check fail 'hallpass needs the full commit SHA' 'gh api -X POST repos/acme/widgets/statuses/abc1234 -f state=success'
+  fake_lacks statuses/
+
+  mv "$S/hallpass.toml.before-status" "$cfg"
+  restart_broker || return
+
   case_ rest-token
   check 0 hallpass-brokered "grep oauth_token \"$S/gh/hosts.yml\""
   check fail '' "grep oauth_token \"$S/gh/hosts.yml\" | grep -v hallpass-brokered"
