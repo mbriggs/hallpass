@@ -326,6 +326,10 @@ func runLogs() string {
 
 func graphql(reply func(int, string), q string) {
 	switch {
+	case strings.Contains(q, "SearchType_enumValues"):
+		reply(200, `{"data":{"SearchType":{"enumValues":[{"name":"ISSUE"},{"name":"ISSUE_ADVANCED"}]}}}`)
+	case strings.Contains(q, "PullRequestSearch"):
+		reply(200, `{"data":{"search":{"issueCount":1,"nodes":[{"number":7,"title":"fake search pr","state":"MERGED","url":"https://github.com/acme/widgets/pull/7","headRefName":"agent/x","isDraft":false,"createdAt":"2026-01-01T00:00:00Z"}],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}`)
 	case strings.Contains(q, "nodes(ids"):
 		reply(200, nodes(q))
 	case strings.Contains(q, "IssueByNumber"):

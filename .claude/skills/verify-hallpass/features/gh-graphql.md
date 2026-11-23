@@ -28,6 +28,12 @@ IDs to repos, and filters text that bots would treat as a command.
 - `gql-renames`: a query with `followRenames: true` is refused with
   `hallpass only allows repository(followRenames: false)`, and doesn't
   reach the fake.
+- `gql-pr-search`: `gh pr list --search is:merged` prints the fake's PR.
+  gh sends `ISSUE_ADVANCED` with `( is:merged )`, and the fake sees a plain
+  `is:merged repo:acme/widgets type:pr` search.
+- `gql-pr-search-allowlist`: the same search of `acme/secret` is refused.
+- `gql-pr-search-colon`: a term ending in `:` is refused, since it could
+  take the `repo:` after it as its value.
 - `gql-merge`: `gh pr merge` is refused with `GraphQL: hallpass: agents may
   not merge PRs`, and no `mergePullRequest` reaches the fake.
 - `gql-approve`: `gh pr review --approve` is refused with `agents may not

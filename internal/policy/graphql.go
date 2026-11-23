@@ -219,10 +219,18 @@ func (w *walker) queryRoot(set ast.SelectionSet) error {
 		case "search":
 			// GitHub ignores repo: in user and repo searches, so only issue
 			// searches stay inside the repo.
-			if args["type"] != "ISSUE" {
-				return errorf("hallpass only allows GraphQL searches of type ISSUE")
+			q := fmt.Sprint(args["query"])
+			switch args["type"] {
+			case "ISSUE":
+			case "ISSUE_ADVANCED":
+				var err error
+				if q, err = w.asIssueSearch(f, q); err != nil {
+					return err
+				}
+			default:
+				return errorf("hallpass only allows GraphQL searches of type ISSUE or ISSUE_ADVANCED")
 			}
-			r, err := SearchRepo(fmt.Sprint(args["query"]))
+			r, err := SearchRepo(q)
 			if err != nil {
 				return err
 			}
@@ -231,6 +239,56 @@ func (w *walker) queryRoot(set ast.SelectionSet) error {
 		}
 		return errorf("hallpass doesn't allow the GraphQL query field %s", f.Name)
 	})
+}
+
+// asIssueSearch rewrites an ISSUE_ADVANCED search, which gh sends for
+// pr list --search, into the ISSUE search SearchRepo knows how to confine.
+// A rewritten variable would change what an earlier root field was checked
+// with, so the search must be the first one.
+func (w *walker) asIssueSearch(f *ast.Field, q string) (string, error) {
+	if len(w.g.Fields) != 1 {
+		return "", errorf("hallpass allows an ISSUE_ADVANCED search only as the first field of a query")
+	}
+	q, err := plainIssueQuery(q)
+	if err != nil {
+		return "", err
+	}
+	w.setArg(f, "query", q)
+	w.setArg(f, "type", "ISSUE")
+	return q, nil
+}
+
+// setArg replaces a string or enum argument's value, in the variable when
+// the argument is one.
+func (w *walker) setArg(f *ast.Field, name, value string) {
+	a := f.Arguments.ForName(name)
+	if a.Value.Kind == ast.Variable {
+		w.vars[a.Value.Raw] = value
+		return
+	}
+	a.Value.Raw = value
+}
+
+// plainIssueQuery removes the "( terms ) " wrapper gh puts around a search.
+// An ISSUE search reads a qualifier right after the parenthesis as text, so
+// ( is:merged ) would find nothing. Any other parenthesis is refused, and so
+// is a term ending in a colon, which could take the repo: after it as its
+// value once the wrapper is gone.
+func plainIssueQuery(q string) (string, error) {
+	if s, ok := strings.CutPrefix(q, "( "); ok {
+		if inner, after, ok := strings.Cut(s, " ) "); ok {
+			q = inner + " " + after
+		}
+	}
+	if strings.ContainsAny(q, "()") {
+		return "", errorf("hallpass doesn't allow parentheses in an advanced search")
+	}
+	for tok := range strings.FieldsSeq(q) {
+		if strings.HasSuffix(tok, ":") {
+			return "", errorf("hallpass doesn't allow a search term ending in a colon (%s)", tok)
+		}
+	}
+	return q, nil
 }
 
 func (w *walker) mutationRoot(set ast.SelectionSet) error {
