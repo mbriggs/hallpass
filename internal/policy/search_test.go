@@ -9,6 +9,76 @@ import (
 	"github.com/mbriggs/hallpass/internal/github"
 )
 
+// An ISSUE_ADVANCED search reaches GitHub as a plain ISSUE search, which is
+// the one SearchRepo confines, without gh's parentheses.
+func TestAdvancedSearchIsSentAsIssue(t *testing.T) {
+	t.Parallel()
+	const byVar = `query($q:String!,$type:SearchType!){search(query:$q,type:$type,first:5){issueCount}}`
+	vars := func(q string) map[string]any { return map[string]any{"q": q, "type": "ISSUE_ADVANCED"} }
+
+	for q, want := range map[string]string{
+		"( is:merged ) repo:acme/widgets type:pr":      "is:merged repo:acme/widgets type:pr",
+		"( status is:open ) repo:acme/widgets type:pr": "status is:open repo:acme/widgets type:pr",
+		"is:merged repo:acme/widgets":                  "is:merged repo:acme/widgets",
+	} {
+		g, err := ClassifyGraphQL(gql(byVar, vars(q)), nil)
+		if err != nil {
+			t.Errorf("%q: %v", q, err)
+			continue
+		}
+		var sent struct {
+			Variables struct{ Q, Type string } `json:"variables"`
+		}
+		if err := json.Unmarshal(g.Body, &sent); err != nil {
+			t.Fatal(err)
+		}
+		if sent.Variables.Q != want || sent.Variables.Type != "ISSUE" {
+			t.Errorf("%q: sent %q as %s, want %q as ISSUE", q, sent.Variables.Q, sent.Variables.Type, want)
+		}
+		if len(g.Repos) != 1 || g.Repos[0].String() != "acme/widgets" {
+			t.Errorf("%q: repos %v", q, g.Repos)
+		}
+	}
+
+	g, err := ClassifyGraphQL(gql(`{search(query:"( is:merged ) repo:acme/widgets",type:ISSUE_ADVANCED,first:5){issueCount}}`, nil), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := string(g.Body); strings.Contains(s, "ISSUE_ADVANCED") || strings.Contains(s, "( is:merged") {
+		t.Errorf("literal search sent unchanged: %s", s)
+	}
+
+	for _, q := range []string{
+		"( a ) repo:acme/widgets ( b )",
+		"(a) repo:acme/widgets",
+		"( a ( b ) ) repo:acme/widgets",
+		"( label: ) repo:acme/widgets",
+		"label: repo:acme/widgets",
+		"( a OR b ) repo:acme/widgets",
+		`( "a b" ) repo:acme/widgets`,
+		"( a ) repo:acme/widgets repo:acme/secret",
+		"( a ) org:acme",
+		"( a )",
+	} {
+		if _, err := ClassifyGraphQL(gql(byVar, vars(q)), nil); err == nil {
+			t.Errorf("%q passed", q)
+		}
+	}
+
+	for _, typ := range []string{"ISSUE_SEMANTIC", "ISSUE_HYBRID", "REPOSITORY"} {
+		if _, err := ClassifyGraphQL(gql(byVar, map[string]any{"q": "repo:acme/widgets", "type": typ}), nil); err == nil {
+			t.Errorf("search of type %s passed", typ)
+		}
+	}
+
+	// A root field before the search was checked with the variable's old
+	// value, so the rewrite can't run.
+	shared := `query($q:String!,$type:SearchType!){a:search(query:$q,type:ISSUE,first:1){issueCount} b:search(query:$q,type:$type,first:1){issueCount}}`
+	if _, err := ClassifyGraphQL(gql(shared, vars("( a ) repo:acme/widgets")), nil); err == nil {
+		t.Error("advanced search after another root field passed")
+	}
+}
+
 func TestSearchRepo(t *testing.T) {
 	t.Parallel()
 	allowed := []string{

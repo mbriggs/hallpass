@@ -36,4 +36,18 @@ feature_graphql() {
   case_ gql-chatops-path
   check 0 'https://github.com/acme/widgets/pull/1#issuecomment-1' 'gh pr comment 1 -R acme/widgets -b "/tmp/out is where the run left it"'
   fake_has '/tmp/out is where the run left it'
+
+  case_ gql-pr-search
+  check 0 'fake search pr' 'gh pr list -R acme/widgets --state all --search is:merged'
+  fake_has 'is:merged repo:acme/widgets type:pr'
+  fake_lacks '( is:merged'
+  fake_lacks 'ISSUE_ADVANCED'
+
+  case_ gql-pr-search-allowlist
+  check fail "acme/secret isn't in hallpass's allowlist" 'gh pr list -R acme/secret --state all --search is:merged'
+  fake_lacks PullRequestSearch
+
+  case_ gql-pr-search-colon
+  check fail "doesn't allow a search term ending in a colon" "gh pr list -R acme/widgets --state all --search 'label:'"
+  fake_lacks PullRequestSearch
 }
